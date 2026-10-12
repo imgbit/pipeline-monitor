@@ -1,10 +1,7 @@
 #!/bin/sh
-# Usage: examples/run-example.sh [build-dir]
+# Usage: examples/run-example.sh [pipeline description]
+# Prints the graph of a running pipeline as JSON. BUILD_DIR defaults to build.
 set -e
-build_dir="${1:-build}"
+build_dir="${BUILD_DIR:-build}"
 
-GST_PLUGIN_PATH="$build_dir/src" \
-GST_TRACERS=pipeline-monitor \
-GST_DEBUG=pipeline-monitor:5 \
-GST_DEBUG_NO_COLOR=1 \
-  gst-launch-1.0 -q videotestsrc num-buffers=30 ! queue ! fakesink
+GST_PLUGIN_PATH="$build_dir/src" "$build_dir/examples/print-graph" "$@"
