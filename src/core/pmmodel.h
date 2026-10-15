@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
 #ifndef __PM_MODEL_H__
 #define __PM_MODEL_H__
 

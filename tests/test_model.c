@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
 #include <gst/gst.h>
 #include <gst/gsttracer.h>
 #include <json-glib/json-glib.h>
