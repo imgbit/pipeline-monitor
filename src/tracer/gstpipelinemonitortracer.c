@@ -226,12 +226,13 @@ parse_options (GstPipelineMonitorTracer * self, gchar ** ui_dir)
   desc = g_strdup_printf ("params,%s", params);
   s = gst_structure_from_string (desc, NULL);
   if (s == NULL) {
-    GST_WARNING_OBJECT (self, "cannot parse options '%s'", params);
+    g_printerr ("pipeline-monitor: cannot parse options '%s', using "
+        "defaults\n", params);
   } else {
     if (gst_structure_has_field (s, "port") &&
         (!gst_structure_get_int (s, "port", &port) || port < 0 ||
             port > G_MAXUINT16)) {
-      GST_WARNING_OBJECT (self, "invalid port, using %d", DEFAULT_PORT);
+      g_printerr ("pipeline-monitor: invalid port, using %d\n", DEFAULT_PORT);
       port = DEFAULT_PORT;
     }
     *ui_dir = g_strdup (gst_structure_get_string (s, "ui-dir"));
