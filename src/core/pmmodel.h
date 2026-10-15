@@ -21,6 +21,8 @@ void pm_model_update_element (PmModel * model, gpointer element,
     gboolean is_bin, gboolean is_pipeline);
 void pm_model_set_parent (PmModel * model, gpointer element, gpointer parent);
 void pm_model_sync_state (PmModel * model, GstElement * element);
+void pm_model_set_state (PmModel * model, gpointer element, GstState state,
+    GstState pending);
 
 void pm_model_add_pad (PmModel * model, gpointer element, gpointer pad,
     const gchar * name, GstPadDirection direction, const gchar * presence,

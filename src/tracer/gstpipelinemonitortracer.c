@@ -167,7 +167,20 @@ do_element_change_state_post (GstTracer * tracer, GstClockTime ts,
     GstElement * element, GstStateChange transition,
     GstStateChangeReturn result)
 {
-  sync_state (GST_PIPELINE_MONITOR_TRACER (tracer), element);
+  GstPipelineMonitorTracer *self = GST_PIPELINE_MONITOR_TRACER (tracer);
+  GstState next = GST_STATE_TRANSITION_NEXT (transition);
+
+  /* On success GStreamer completes the change right after this hook, and
+   * posts no message when the state does not change (PLAYING to PLAYING).
+   * Record the outcome now so the pending state does not go stale. */
+  if ((result == GST_STATE_CHANGE_SUCCESS ||
+          result == GST_STATE_CHANGE_NO_PREROLL) &&
+      GST_STATE_PENDING (element) == next) {
+    sync_element (self, element);
+    pm_model_set_state (self->model, element, next, GST_STATE_VOID_PENDING);
+    return;
+  }
+  sync_state (self, element);
 }
 
 static void

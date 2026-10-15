@@ -51,9 +51,11 @@ describe_json_element (JsonObject * element, const gchar * parent_path,
   JsonArray *children = json_object_get_array_member (element, "children");
   guint i;
 
-  g_hash_table_add (set, g_strdup_printf ("E %s %s %s", path,
+  g_hash_table_add (set, g_strdup_printf ("E %s %s %s/%s", path,
           json_object_get_string_member (element, "type"),
-          json_object_get_string_member (element, "state")));
+          json_object_get_string_member (element, "state"),
+          json_object_get_string_member_with_default (element, "pending",
+              "VOID_PENDING")));
 
   for (i = 0; i < json_array_get_length (pads); i++) {
     JsonObject *pad = json_array_get_object_element (pads, i);
@@ -196,9 +198,10 @@ describe_element (GstElement * element, GHashTable * set)
   GstIterator *it;
   GValue item = G_VALUE_INIT;
 
-  g_hash_table_add (set, g_strdup_printf ("E %s %s %s", path,
+  g_hash_table_add (set, g_strdup_printf ("E %s %s %s/%s", path,
           G_OBJECT_TYPE_NAME (element),
-          gst_element_state_get_name (GST_STATE (element))));
+          gst_element_state_get_name (GST_STATE (element)),
+          gst_element_state_get_name (GST_STATE_PENDING (element))));
   g_free (path);
 
   it = gst_element_iterate_pads (element);

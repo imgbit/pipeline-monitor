@@ -233,21 +233,36 @@ pm_model_set_parent (PmModel * model, gpointer object, gpointer parent)
   g_mutex_unlock (&model->lock);
 }
 
+static void
+store_state (PmModel * model, gpointer object, GstState state,
+    GstState pending)
+{
+  PmElement *element = g_hash_table_lookup (model->elements, object);
+
+  if (element != NULL && (element->state != state ||
+          element->pending != pending)) {
+    element->state = state;
+    element->pending = pending;
+    changed (model);
+  }
+}
+
 /* Reads the state inside the lock so that concurrent callers cannot store
  * an older value over a newer one. */
 void
 pm_model_sync_state (PmModel * model, GstElement * object)
 {
-  PmElement *element;
-
   g_mutex_lock (&model->lock);
-  element = g_hash_table_lookup (model->elements, object);
-  if (element != NULL && (element->state != GST_STATE (object) ||
-          element->pending != GST_STATE_PENDING (object))) {
-    element->state = GST_STATE (object);
-    element->pending = GST_STATE_PENDING (object);
-    changed (model);
-  }
+  store_state (model, object, GST_STATE (object), GST_STATE_PENDING (object));
+  g_mutex_unlock (&model->lock);
+}
+
+void
+pm_model_set_state (PmModel * model, gpointer object, GstState state,
+    GstState pending)
+{
+  g_mutex_lock (&model->lock);
+  store_state (model, object, state, pending);
   g_mutex_unlock (&model->lock);
 }
 
