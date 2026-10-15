@@ -1,6 +1,9 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #include "gstpipelinemonitortracer.h"
 #include "pmmodel.h"
+#include "pmserver.h"
+
+#define DEFAULT_PORT 8765
 
 GST_DEBUG_CATEGORY_STATIC (gst_pipeline_monitor_debug);
 #define GST_CAT_DEFAULT gst_pipeline_monitor_debug
@@ -10,12 +13,14 @@ struct _GstPipelineMonitorTracer
   GstTracer parent;
 
   PmModel *model;
+  PmServer *server;
 };
 
 enum
 {
   PROP_0,
   PROP_GRAPH,
+  PROP_URL,
 };
 
 #define _do_init \
@@ -181,10 +186,64 @@ gst_pipeline_monitor_tracer_get_property (GObject * object, guint prop_id,
     case PROP_GRAPH:
       g_value_take_string (value, pm_model_to_json (self->model));
       break;
+    case PROP_URL:
+      g_value_set_string (value,
+          self->server ? pm_server_get_url (self->server) : NULL);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;
   }
+}
+
+/* Options come from GST_TRACERS="pipeline-monitor(port=9000)". */
+static guint
+parse_port (GstPipelineMonitorTracer * self)
+{
+  gchar *params = NULL, *desc;
+  GstStructure *s;
+  gint port = DEFAULT_PORT;
+
+  g_object_get (self, "params", &params, NULL);
+  if (params == NULL)
+    return DEFAULT_PORT;
+
+  desc = g_strdup_printf ("params,%s", params);
+  s = gst_structure_from_string (desc, NULL);
+  if (s == NULL) {
+    GST_WARNING_OBJECT (self, "cannot parse options '%s'", params);
+  } else {
+    if (gst_structure_has_field (s, "port") &&
+        (!gst_structure_get_int (s, "port", &port) || port < 0 ||
+            port > G_MAXUINT16)) {
+      GST_WARNING_OBJECT (self, "invalid port, using %d", DEFAULT_PORT);
+      port = DEFAULT_PORT;
+    }
+    gst_structure_free (s);
+  }
+  g_free (desc);
+  g_free (params);
+  return port;
+}
+
+static void
+gst_pipeline_monitor_tracer_constructed (GObject * object)
+{
+  GstPipelineMonitorTracer *self = GST_PIPELINE_MONITOR_TRACER (object);
+  GError *error = NULL;
+
+  G_OBJECT_CLASS (gst_pipeline_monitor_tracer_parent_class)->constructed
+      (object);
+
+  self->server = pm_server_new (self->model, parse_port (self), &error);
+  if (self->server == NULL) {
+    g_printerr ("pipeline-monitor: cannot start server: %s\n", error->message);
+    g_error_free (error);
+    return;
+  }
+  pm_model_set_changed_func (self->model,
+      (PmModelChangedFunc) pm_server_notify, self->server);
+  g_printerr ("pipeline-monitor: %s\n", pm_server_get_url (self->server));
 }
 
 static void
@@ -192,6 +251,10 @@ gst_pipeline_monitor_tracer_finalize (GObject * object)
 {
   GstPipelineMonitorTracer *self = GST_PIPELINE_MONITOR_TRACER (object);
 
+  if (self->server != NULL) {
+    pm_model_set_changed_func (self->model, NULL, NULL);
+    pm_server_free (self->server);
+  }
   pm_model_free (self->model);
 
   G_OBJECT_CLASS (gst_pipeline_monitor_tracer_parent_class)->finalize (object);
@@ -203,11 +266,16 @@ gst_pipeline_monitor_tracer_class_init (GstPipelineMonitorTracerClass * klass)
   GObjectClass *gobject_class = G_OBJECT_CLASS (klass);
 
   gobject_class->get_property = gst_pipeline_monitor_tracer_get_property;
+  gobject_class->constructed = gst_pipeline_monitor_tracer_constructed;
   gobject_class->finalize = gst_pipeline_monitor_tracer_finalize;
 
   g_object_class_install_property (gobject_class, PROP_GRAPH,
       g_param_spec_string ("graph", "Graph",
           "Snapshot of all pipelines in the process as JSON", NULL,
+          G_PARAM_READABLE | G_PARAM_STATIC_STRINGS));
+  g_object_class_install_property (gobject_class, PROP_URL,
+      g_param_spec_string ("url", "URL",
+          "Address of the web server, NULL if it is not running", NULL,
           G_PARAM_READABLE | G_PARAM_STATIC_STRINGS));
 }
 

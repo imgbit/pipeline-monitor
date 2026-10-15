@@ -1,7 +1,13 @@
 #!/bin/sh
-# Usage: examples/run-example.sh [pipeline description]
-# Prints the graph of a running pipeline as JSON. BUILD_DIR defaults to build.
+# Usage: examples/run-example.sh [--serve] [pipeline description]
+# Prints the graph of a running pipeline as JSON, or with --serve keeps it
+# running for the web server. BUILD_DIR defaults to build.
 set -e
 build_dir="${BUILD_DIR:-build}"
+program=print-graph
+if [ "$1" = "--serve" ]; then
+  program=serve
+  shift
+fi
 
-GST_PLUGIN_PATH="$build_dir/src" "$build_dir/examples/print-graph" "$@"
+GST_PLUGIN_PATH="$build_dir/src" exec "$build_dir/examples/$program" "$@"

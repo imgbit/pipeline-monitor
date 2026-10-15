@@ -48,6 +48,9 @@ struct _PmModel
   GHashTable *pads;
   GHashTable *links_by_src;
   GHashTable *links_by_sink;
+
+  PmModelChangedFunc changed_func;
+  gpointer changed_data;
 };
 
 static void
@@ -97,9 +100,29 @@ pm_model_free (PmModel * model)
   g_free (model);
 }
 
+/* Called with the lock held, so the callback must be cheap. Holding the lock
+ * also means no call is in progress once the callback is cleared. */
+static void
+changed (PmModel * model)
+{
+  if (model->changed_func != NULL)
+    model->changed_func (model->changed_data);
+}
+
+void
+pm_model_set_changed_func (PmModel * model, PmModelChangedFunc func,
+    gpointer user_data)
+{
+  g_mutex_lock (&model->lock);
+  model->changed_func = func;
+  model->changed_data = user_data;
+  g_mutex_unlock (&model->lock);
+}
+
 static void
 remove_link (PmModel * model, PmLink * link)
 {
+  changed (model);
   g_hash_table_remove (model->links_by_src, link->src);
   g_hash_table_remove (model->links_by_sink, link->sink);
 }
@@ -125,6 +148,7 @@ remove_pad (PmModel * model, gpointer object)
     return;
   g_ptr_array_remove (pad->element->pads, object);
   g_hash_table_remove (model->pads, object);
+  changed (model);
 }
 
 static void
@@ -133,6 +157,7 @@ set_parent (PmModel * model, gpointer object, PmElement * element,
 {
   if (element->parent == parent)
     return;
+  changed (model);
   if (element->parent != NULL)
     g_ptr_array_remove (element->parent->children, object);
   element->parent = parent;
@@ -154,13 +179,14 @@ remove_element (PmModel * model, gpointer object, PmElement * element)
   g_hash_table_remove (model->elements, object);
 }
 
-static void
+static gboolean
 replace_string (gchar ** dest, const gchar * value)
 {
   if (value == NULL || g_strcmp0 (*dest, value) == 0)
-    return;
+    return FALSE;
   g_free (*dest);
   *dest = g_strdup (value);
+  return TRUE;
 }
 
 void
@@ -169,10 +195,12 @@ pm_model_update_element (PmModel * model, gpointer object, const gchar * name,
     gboolean is_pipeline)
 {
   PmElement *element;
+  gboolean updated = FALSE;
 
   g_mutex_lock (&model->lock);
   element = g_hash_table_lookup (model->elements, object);
   if (element == NULL) {
+    updated = TRUE;
     element = g_new0 (PmElement, 1);
     element->id = model->next_id++;
     element->state = GST_STATE_NULL;
@@ -180,11 +208,14 @@ pm_model_update_element (PmModel * model, gpointer object, const gchar * name,
     element->pads = g_ptr_array_new ();
     g_hash_table_insert (model->elements, object, element);
   }
-  replace_string (&element->name, name);
-  replace_string (&element->factory, factory);
-  replace_string (&element->type, type);
+  updated |= replace_string (&element->name, name);
+  updated |= replace_string (&element->factory, factory);
+  updated |= replace_string (&element->type, type);
+  updated |= element->is_bin != is_bin || element->is_pipeline != is_pipeline;
   element->is_bin = is_bin;
   element->is_pipeline = is_pipeline;
+  if (updated)
+    changed (model);
   g_mutex_unlock (&model->lock);
 }
 
@@ -211,9 +242,11 @@ pm_model_sync_state (PmModel * model, GstElement * object)
 
   g_mutex_lock (&model->lock);
   element = g_hash_table_lookup (model->elements, object);
-  if (element != NULL) {
+  if (element != NULL && (element->state != GST_STATE (object) ||
+          element->pending != GST_STATE_PENDING (object))) {
     element->state = GST_STATE (object);
     element->pending = GST_STATE_PENDING (object);
+    changed (model);
   }
   g_mutex_unlock (&model->lock);
 }
@@ -245,6 +278,7 @@ pm_model_add_pad (PmModel * model, gpointer element_object, gpointer object,
   pad->is_ghost = is_ghost;
   pad->element = element;
   g_ptr_array_add (element->pads, object);
+  changed (model);
 
 done:
   g_mutex_unlock (&model->lock);
@@ -274,6 +308,7 @@ pm_model_link (PmModel * model, gpointer src, gpointer sink)
   link->sink = sink;
   g_hash_table_insert (model->links_by_src, src, link);
   g_hash_table_insert (model->links_by_sink, sink, link);
+  changed (model);
   g_mutex_unlock (&model->lock);
 }
 

@@ -8,8 +8,13 @@ G_BEGIN_DECLS
 
 typedef struct _PmModel PmModel;
 
+typedef void (*PmModelChangedFunc) (gpointer user_data);
+
 PmModel *pm_model_new (void);
 void pm_model_free (PmModel * model);
+
+void pm_model_set_changed_func (PmModel * model, PmModelChangedFunc func,
+    gpointer user_data);
 
 void pm_model_update_element (PmModel * model, gpointer element,
     const gchar * name, const gchar * factory, const gchar * type,

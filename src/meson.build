@@ -7,6 +7,7 @@ plugin_c_args = [
 
 plugin_sources = files(
   'core/pmmodel.c',
+  'server/pmserver.c',
   'tracer/gstpipelinemonitor.c',
   'tracer/gstpipelinemonitortracer.c',
 )
@@ -14,8 +15,8 @@ plugin_sources = files(
 gstpipelinemonitor = shared_module('gstpipelinemonitor',
   plugin_sources,
   c_args : plugin_c_args,
-  include_directories : include_directories('core'),
-  dependencies : [gst_dep],
+  include_directories : include_directories('core', 'server'),
+  dependencies : [gst_dep, soup_dep],
   install : true,
   install_dir : plugins_install_dir)
 

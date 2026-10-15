@@ -1,7 +1,7 @@
 test_env = environment()
 test_env.set('GST_PLUGIN_PATH', plugin_build_dir)
 test_env.set('GST_REGISTRY', meson.current_build_dir() / 'registry.bin')
-test_env.set('GST_TRACERS', 'pipeline-monitor')
+test_env.set('GST_TRACERS', 'pipeline-monitor(port=0)')
 
 test_load = executable('test_load', 'test_load.c',
   c_args : ['-DGST_USE_UNSTABLE_API'],
@@ -23,3 +23,14 @@ if json_glib_dep.found()
     depends : [gstpipelinemonitor],
     timeout : 120)
 endif
+
+test_server = executable('test_server',
+  'test_server.c', '../src/core/pmmodel.c', '../src/server/pmserver.c',
+  c_args : ['-DGST_USE_UNSTABLE_API'],
+  include_directories : include_directories('../src/core', '../src/server'),
+  dependencies : [gst_dep, soup_dep])
+
+test('server', test_server,
+  env : test_env,
+  depends : [gstpipelinemonitor],
+  timeout : 120)
