@@ -1,0 +1,97 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "build",
+      "type": "shell",
+      "command": "[ -d build/meson-private ] || meson setup build; meson compile -C build",
+      "windows": {
+        "command": "if (-not (Test-Path build/meson-private)) { meson setup build }; meson compile -C build"
+      },
+      "problemMatcher": {
+        "base": "$gcc",
+        "fileLocation": [
+          "relative",
+          "${workspaceFolder}/build"
+        ]
+      },
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    },
+    {
+      "label": "test",
+      "type": "shell",
+      "command": "[ -d build/meson-private ] || meson setup build; meson test -C build --print-errorlogs",
+      "windows": {
+        "command": "if (-not (Test-Path build/meson-private)) { meson setup build }; meson test -C build --print-errorlogs"
+      },
+      "problemMatcher": {
+        "base": "$gcc",
+        "fileLocation": [
+          "relative",
+          "${workspaceFolder}/build"
+        ]
+      },
+      "group": {
+        "kind": "test",
+        "isDefault": true
+      }
+    },
+    {
+      "label": "reconfigure",
+      "type": "shell",
+      "command": "meson setup --reconfigure build || meson setup build",
+      "windows": {
+        "command": "meson setup --reconfigure build; if ($LASTEXITCODE) { meson setup build }"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "clean rebuild",
+      "type": "shell",
+      "command": "rm -rf build && meson setup build && meson compile -C build",
+      "windows": {
+        "command": "if (Test-Path build) { Remove-Item -Recurse -Force build }; meson setup build; meson compile -C build"
+      },
+      "problemMatcher": {
+        "base": "$gcc",
+        "fileLocation": [
+          "relative",
+          "${workspaceFolder}/build"
+        ]
+      }
+    },
+    {
+      "label": "use debug build (no optimisation)",
+      "type": "shell",
+      "command": "[ -d build/meson-private ] || meson setup build; meson configure build -Dbuildtype=debug && meson compile -C build",
+      "windows": {
+        "command": "if (-not (Test-Path build/meson-private)) { meson setup build }; meson configure build -Dbuildtype=debug; meson compile -C build"
+      },
+      "problemMatcher": {
+        "base": "$gcc",
+        "fileLocation": [
+          "relative",
+          "${workspaceFolder}/build"
+        ]
+      }
+    },
+    {
+      "label": "use optimised build (default)",
+      "type": "shell",
+      "command": "[ -d build/meson-private ] || meson setup build; meson configure build -Dbuildtype=debugoptimized && meson compile -C build",
+      "windows": {
+        "command": "if (-not (Test-Path build/meson-private)) { meson setup build }; meson configure build -Dbuildtype=debugoptimized; meson compile -C build"
+      },
+      "problemMatcher": {
+        "base": "$gcc",
+        "fileLocation": [
+          "relative",
+          "${workspaceFolder}/build"
+        ]
+      }
+    }
+  ]
+}
