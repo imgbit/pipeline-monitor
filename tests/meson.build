@@ -26,6 +26,7 @@ endif
 
 test_server = executable('test_server',
   'test_server.c', '../src/core/pmmodel.c', '../src/server/pmserver.c',
+  ui_resources,
   c_args : ['-DGST_USE_UNSTABLE_API'],
   include_directories : include_directories('../src/core', '../src/server'),
   dependencies : [gst_dep, soup_dep])

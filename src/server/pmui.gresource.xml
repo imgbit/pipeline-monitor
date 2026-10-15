@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <gresource prefix="/pipeline-monitor/ui">
+    <file>index.html</file>
+    <file>style.css</file>
+    <file>app.js</file>
+    <file>layout.js</file>
+    <file>render.js</file>
+    <file>panel.js</file>
+    <file>vendor/elkjs/elk-api.js</file>
+    <file compressed="true">vendor/elkjs/elk-worker.min.js</file>
+  </gresource>
+</gresources>

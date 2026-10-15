@@ -209,14 +209,15 @@ gst_pipeline_monitor_tracer_get_property (GObject * object, guint prop_id,
   }
 }
 
-/* Options come from GST_TRACERS="pipeline-monitor(port=9000)". */
+/* Options come from GST_TRACERS="pipeline-monitor(port=9000,ui-dir=web)". */
 static guint
-parse_port (GstPipelineMonitorTracer * self)
+parse_options (GstPipelineMonitorTracer * self, gchar ** ui_dir)
 {
   gchar *params = NULL, *desc;
   GstStructure *s;
   gint port = DEFAULT_PORT;
 
+  *ui_dir = NULL;
   g_object_get (self, "params", &params, NULL);
   if (params == NULL)
     return DEFAULT_PORT;
@@ -232,6 +233,7 @@ parse_port (GstPipelineMonitorTracer * self)
       GST_WARNING_OBJECT (self, "invalid port, using %d", DEFAULT_PORT);
       port = DEFAULT_PORT;
     }
+    *ui_dir = g_strdup (gst_structure_get_string (s, "ui-dir"));
     gst_structure_free (s);
   }
   g_free (desc);
@@ -244,11 +246,15 @@ gst_pipeline_monitor_tracer_constructed (GObject * object)
 {
   GstPipelineMonitorTracer *self = GST_PIPELINE_MONITOR_TRACER (object);
   GError *error = NULL;
+  gchar *ui_dir;
+  guint port;
 
   G_OBJECT_CLASS (gst_pipeline_monitor_tracer_parent_class)->constructed
       (object);
 
-  self->server = pm_server_new (self->model, parse_port (self), &error);
+  port = parse_options (self, &ui_dir);
+  self->server = pm_server_new (self->model, port, ui_dir, &error);
+  g_free (ui_dir);
   if (self->server == NULL) {
     g_printerr ("pipeline-monitor: cannot start server: %s\n", error->message);
     g_error_free (error);

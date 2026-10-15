@@ -12,8 +12,12 @@ plugin_sources = files(
   'tracer/gstpipelinemonitortracer.c',
 )
 
+ui_resources = gnome.compile_resources('pmui', 'server/pmui.gresource.xml',
+  source_dir : meson.project_source_root() / 'web',
+  c_name : 'pm_ui')
+
 gstpipelinemonitor = shared_module('gstpipelinemonitor',
-  plugin_sources,
+  plugin_sources, ui_resources,
   c_args : plugin_c_args,
   include_directories : include_directories('core', 'server'),
   dependencies : [gst_dep, soup_dep],

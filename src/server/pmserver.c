@@ -1,22 +1,18 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #include "pmserver.h"
+#include "pmui.h"
 
 #include <libsoup/soup.h>
 #include <string.h>
 
 #define PORT_ATTEMPTS 10
 #define UPDATE_INTERVAL_MS 100
-
-static const gchar index_html[] =
-    "<!doctype html>\n<html><head><meta charset=\"utf-8\">"
-    "<title>pipeline-monitor</title></head><body>"
-    "<h1>pipeline-monitor</h1>"
-    "<p><a href=\"/api/graph\">/api/graph</a> returns the graph as JSON. "
-    "<code>/ws</code> streams it over a WebSocket.</p></body></html>\n";
+#define UI_RESOURCE_PATH "/pipeline-monitor/ui/"
 
 struct _PmServer
 {
   PmModel *model;
+  gchar *ui_dir;
   guint requested_port;
   guint port;
   gchar *url;
@@ -85,26 +81,93 @@ check_request (PmServer * self, SoupServerMessage * msg)
 
 static void
 set_response (SoupServerMessage * msg, const gchar * content_type,
-    gchar * body, gboolean take)
+    GBytes * body)
 {
+  gsize size;
+  gconstpointer data = g_bytes_get_data (body, &size);
+
   soup_message_headers_replace (soup_server_message_get_response_headers (msg),
-      "Cache-Control", "no-store");
+      "Cache-Control", "no-cache");
   soup_server_message_set_status (msg, SOUP_STATUS_OK, NULL);
-  soup_server_message_set_response (msg, content_type,
-      take ? SOUP_MEMORY_TAKE : SOUP_MEMORY_STATIC, body, strlen (body));
+  soup_server_message_set_response (msg, content_type, SOUP_MEMORY_COPY, data,
+      size);
+}
+
+static const gchar *
+content_type_for (const gchar * path)
+{
+  if (g_str_has_suffix (path, ".html"))
+    return "text/html; charset=utf-8";
+  if (g_str_has_suffix (path, ".js"))
+    return "text/javascript; charset=utf-8";
+  if (g_str_has_suffix (path, ".css"))
+    return "text/css; charset=utf-8";
+  if (g_str_has_suffix (path, ".svg"))
+    return "image/svg+xml";
+  return NULL;
+}
+
+/* Plain relative paths only: no "..", no hidden files, no empty parts. */
+static gboolean
+ui_path_valid (const gchar * path)
+{
+  gchar **parts = g_strsplit (path, "/", -1);
+  gboolean valid = TRUE;
+  guint i;
+
+  for (i = 0; parts[i] != NULL && valid; i++) {
+    const gchar *c;
+
+    valid = parts[i][0] != '\0' && parts[i][0] != '.';
+    for (c = parts[i]; *c != '\0' && valid; c++)
+      valid = g_ascii_isalnum (*c) || *c == '.' || *c == '-' || *c == '_';
+  }
+  g_strfreev (parts);
+  return valid;
+}
+
+static GBytes *
+load_ui_file (PmServer * self, const gchar * path)
+{
+  gchar *contents, *filename, *resource;
+  gsize size;
+  GBytes *bytes = NULL;
+
+  if (self->ui_dir != NULL) {
+    filename = g_build_filename (self->ui_dir, path, NULL);
+    if (g_file_get_contents (filename, &contents, &size, NULL))
+      bytes = g_bytes_new_take (contents, size);
+    g_free (filename);
+    return bytes;
+  }
+
+  if (pm_ui_get_resource () == NULL)
+    return NULL;
+  resource = g_strconcat (UI_RESOURCE_PATH, path, NULL);
+  bytes = g_resource_lookup_data (pm_ui_get_resource (), resource,
+      G_RESOURCE_LOOKUP_FLAGS_NONE, NULL);
+  g_free (resource);
+  return bytes;
 }
 
 static void
-handle_index (SoupServer * soup, SoupServerMessage * msg, const char *path,
+handle_ui (SoupServer * soup, SoupServerMessage * msg, const char *path,
     GHashTable * query, gpointer user_data)
 {
-  if (!check_request (user_data, msg))
+  PmServer *self = user_data;
+  const gchar *file = strcmp (path, "/") == 0 ? "index.html" : path + 1;
+  const gchar *content_type = content_type_for (file);
+  GBytes *body;
+
+  if (!check_request (self, msg))
     return;
-  if (strcmp (path, "/") != 0) {
+  if (content_type == NULL || !ui_path_valid (file)
+      || (body = load_ui_file (self, file)) == NULL) {
     soup_server_message_set_status (msg, SOUP_STATUS_NOT_FOUND, NULL);
     return;
   }
-  set_response (msg, "text/html; charset=utf-8", (gchar *) index_html, FALSE);
+  set_response (msg, content_type, body);
+  g_bytes_unref (body);
 }
 
 static void
@@ -112,10 +175,16 @@ handle_graph (SoupServer * soup, SoupServerMessage * msg, const char *path,
     GHashTable * query, gpointer user_data)
 {
   PmServer *self = user_data;
+  gchar *graph;
 
   if (!check_request (self, msg))
     return;
-  set_response (msg, "application/json", pm_model_to_json (self->model), TRUE);
+  graph = pm_model_to_json (self->model);
+  soup_message_headers_replace (soup_server_message_get_response_headers (msg),
+      "Cache-Control", "no-store");
+  soup_server_message_set_status (msg, SOUP_STATUS_OK, NULL);
+  soup_server_message_set_response (msg, "application/json", SOUP_MEMORY_TAKE,
+      graph, strlen (graph));
 }
 
 /* Runs before the WebSocket handshake; setting a status rejects it. */
@@ -248,7 +317,7 @@ server_thread (gpointer user_data)
   g_main_context_push_thread_default (self->context);
 
   self->soup = soup_server_new ("server-header", "pipeline-monitor ", NULL);
-  soup_server_add_handler (self->soup, NULL, handle_index, self, NULL);
+  soup_server_add_handler (self->soup, NULL, handle_ui, self, NULL);
   soup_server_add_handler (self->soup, "/api/graph", handle_graph, self, NULL);
   soup_server_add_handler (self->soup, "/ws", handle_ws_request, self, NULL);
   soup_server_add_websocket_handler (self->soup, "/ws", NULL, NULL,
@@ -284,11 +353,13 @@ quit_loop (gpointer user_data)
 }
 
 PmServer *
-pm_server_new (PmModel * model, guint port, GError ** error)
+pm_server_new (PmModel * model, guint port, const gchar * ui_dir,
+    GError ** error)
 {
   PmServer *self = g_new0 (PmServer, 1);
 
   self->model = model;
+  self->ui_dir = g_strdup (ui_dir);
   self->requested_port = port;
   self->context = g_main_context_new ();
   self->loop = g_main_loop_new (self->context, FALSE);
@@ -329,6 +400,7 @@ pm_server_free (PmServer * self)
   g_mutex_clear (&self->lock);
   g_cond_clear (&self->cond);
   g_free (self->last_graph);
+  g_free (self->ui_dir);
   g_free (self->url);
   g_free (self);
 }

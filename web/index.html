@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pipeline-monitor</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="style.css">
+<script src="vendor/elkjs/elk-api.js"></script>
+<script type="module" src="app.js"></script>
+</head>
+<body>
+<header>
+  <span class="brand">pipeline-monitor</span>
+  <select id="pipeline-select" aria-label="Pipeline" hidden></select>
+  <span id="pipeline-name"></span>
+  <span id="pipeline-state" class="state"></span>
+  <span id="element-count" class="muted"></span>
+  <span class="spacer"></span>
+  <span id="connection" class="connection">connecting</span>
+</header>
+<main>
+  <svg id="graph" role="img" aria-label="Pipeline graph"></svg>
+  <div id="empty" class="empty" hidden>Waiting for a pipeline…</div>
+  <div class="toolbar">
+    <button id="zoom-in" title="Zoom in">+</button>
+    <button id="zoom-out" title="Zoom out">−</button>
+    <button id="fit" title="Fit to window">fit</button>
+  </div>
+  <aside id="details" hidden></aside>
+</main>
+</body>
+</html>

@@ -8,7 +8,8 @@ G_BEGIN_DECLS
 
 typedef struct _PmServer PmServer;
 
-PmServer *pm_server_new (PmModel * model, guint port, GError ** error);
+PmServer *pm_server_new (PmModel * model, guint port, const gchar * ui_dir,
+    GError ** error);
 void pm_server_free (PmServer * server);
 
 const gchar *pm_server_get_url (PmServer * server);

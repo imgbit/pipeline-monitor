@@ -12,6 +12,8 @@ gst_req = '>= 1.22'
 gst_dep = dependency('gstreamer-1.0', version : gst_req)
 soup_dep = dependency('libsoup-3.0', version : '>= 3.0')
 
+gnome = import('gnome')
+
 plugins_install_dir = get_option('libdir') / 'gstreamer-1.0'
 
 subdir('src')

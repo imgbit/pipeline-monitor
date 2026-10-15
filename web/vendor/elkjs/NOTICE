@@ -1,0 +1,14 @@
+elkjs 0.12.0
+Copyright (c) Kiel University and others.
+
+These files are distributed unmodified under the Eclipse Public License 2.0
+(see LICENSE in this directory). elkjs is available under
+"EPL-2.0 OR GPL-3.0-or-later"; pipeline-monitor uses it under EPL-2.0.
+
+The Source Code for this Program is available under the Eclipse Public
+License 2.0:
+  elkjs:        https://github.com/kieler/elkjs (tag 0.12.0)
+  Eclipse ELK:  https://github.com/eclipse-elk/elk
+
+Files taken from https://registry.npmjs.org/elkjs/-/elkjs-0.12.0.tgz:
+  lib/elk-api.js, lib/elk-worker.min.js, LICENSE.md (saved as LICENSE)
