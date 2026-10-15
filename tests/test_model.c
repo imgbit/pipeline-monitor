@@ -227,10 +227,11 @@ describe_element (GstElement * element, GHashTable * set)
 /* The tracer learns about a state change just after it happened, so allow
  * the two descriptions a moment to agree. */
 static void
-assert_graph_matches (GstElement * pipeline)
+assert_pipelines_match (GstElement ** pipelines, guint n_pipelines)
 {
   gchar *actual = NULL, *expected = NULL;
   gint tries;
+  guint i;
 
   for (tries = 0; tries < 200; tries++) {
     GHashTable *set = g_hash_table_new_full (g_str_hash, g_str_equal, g_free,
@@ -240,7 +241,8 @@ assert_graph_matches (GstElement * pipeline)
     g_free (actual);
     g_free (expected);
     actual = describe_json (graph);
-    describe_element (pipeline, set);
+    for (i = 0; i < n_pipelines; i++)
+      describe_element (pipelines[i], set);
     expected = join_sorted (set);
     g_free (graph);
 
@@ -253,6 +255,12 @@ assert_graph_matches (GstElement * pipeline)
 
   g_free (expected);
   g_free (actual);
+}
+
+static void
+assert_graph_matches (GstElement * pipeline)
+{
+  assert_pipelines_match (&pipeline, 1);
 }
 
 static void
@@ -412,6 +420,37 @@ test_dynamic_changes (void)
   assert_graph_empty ();
 }
 
+/* Every pipeline in the process is reported; loose bins are not. */
+static void
+test_two_pipelines (void)
+{
+  GError *error = NULL;
+  GstElement *pipelines[2], *loose;
+
+  assert_graph_empty ();
+
+  pipelines[0] = gst_parse_launch ("fakesrc ! queue ! fakesink", &error);
+  g_assert_no_error (error);
+  pipelines[1] = gst_parse_launch ("fakesrc is-live=true ! identity ! "
+      "fakesink async=false", &error);
+  g_assert_no_error (error);
+  loose = gst_bin_new ("loose");
+  gst_bin_add (GST_BIN (loose), gst_element_factory_make ("identity", NULL));
+
+  set_state_and_wait (pipelines[0], GST_STATE_PLAYING);
+  set_state_and_wait (pipelines[1], GST_STATE_PAUSED);
+  assert_pipelines_match (pipelines, 2);
+
+  set_state_and_wait (pipelines[0], GST_STATE_NULL);
+  gst_object_unref (pipelines[0]);
+  assert_pipelines_match (&pipelines[1], 1);
+
+  set_state_and_wait (pipelines[1], GST_STATE_NULL);
+  gst_object_unref (pipelines[1]);
+  gst_object_unref (loose);
+  assert_graph_empty ();
+}
+
 int
 main (int argc, char **argv)
 {
@@ -424,6 +463,7 @@ main (int argc, char **argv)
   g_test_add_func ("/model/sometimes-pads", test_sometimes_pads);
   g_test_add_func ("/model/json-escaping", test_json_escaping);
   g_test_add_func ("/model/dynamic-changes", test_dynamic_changes);
+  g_test_add_func ("/model/two-pipelines", test_two_pipelines);
 
   return g_test_run ();
 }

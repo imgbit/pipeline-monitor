@@ -35,3 +35,21 @@ test('server', test_server,
   env : test_env,
   depends : [gstpipelinemonitor],
   timeout : 120)
+
+test_options = executable('test_options', 'test_options.c',
+  c_args : ['-DGST_USE_UNSTABLE_API'],
+  dependencies : [gst_dep, soup_dep])
+
+test('options', test_options,
+  env : test_env,
+  depends : [gstpipelinemonitor],
+  timeout : 120)
+
+python = find_program('python3', required : false)
+if python.found()
+  test('ui', python,
+    args : [files('test_ui.py'), serve],
+    env : test_env,
+    depends : [gstpipelinemonitor, serve],
+    timeout : 120)
+endif

@@ -17,5 +17,5 @@ gnome = import('gnome')
 plugins_install_dir = get_option('libdir') / 'gstreamer-1.0'
 
 subdir('src')
-subdir('tests')
 subdir('examples')
+subdir('tests')
