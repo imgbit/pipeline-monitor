@@ -1,3 +1,4 @@
+/* SPDX-FileCopyrightText: 2026 Łukasz Huńczak */
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #ifndef __PM_SERVER_H__
 #define __PM_SERVER_H__

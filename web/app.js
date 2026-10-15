@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Łukasz Huńczak
+// SPDX-License-Identifier: LGPL-2.1-or-later
+
 import { buildElkGraph, elementPath } from "./layout.js";
 import { GraphView, countElements } from "./render.js";
 import { showDetails } from "./panel.js";

@@ -1,3 +1,4 @@
+/* SPDX-FileCopyrightText: 2026 Łukasz Huńczak */
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #ifndef __GST_PIPELINE_MONITOR_TRACER_H__
 #define __GST_PIPELINE_MONITOR_TRACER_H__

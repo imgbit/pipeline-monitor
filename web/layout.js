@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Łukasz Huńczak
+// SPDX-License-Identifier: LGPL-2.1-or-later
+
 // Converts one pipeline from /api/graph into an ELK graph.
 
 import { countElements } from "./render.js";

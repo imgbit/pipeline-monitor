@@ -1,7 +1,7 @@
 plugin_c_args = [
   '-DPACKAGE="pipeline-monitor"',
   '-DVERSION="@0@"'.format(meson.project_version()),
-  '-DPACKAGE_ORIGIN="Unknown package origin"',
+  '-DPACKAGE_ORIGIN="https://github.com/imgbit/pipeline-monitor"',
   '-DGST_USE_UNSTABLE_API',
 ]
 

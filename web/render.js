@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Łukasz Huńczak
+// SPDX-License-Identifier: LGPL-2.1-or-later
+
 // Draws an ELK layout as SVG and handles pan and zoom.
 
 const SVG = "http://www.w3.org/2000/svg";
