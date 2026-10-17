@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  ubuntu:
+    name: Ubuntu (${{ matrix.variant }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [default, sanitizers]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            meson ninja-build pkg-config libglib2.0-dev-bin \
+            libgstreamer1.0-dev gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
+            libsoup-3.0-dev libjson-glib-dev python3
+      - name: Build
+        run: |
+          if [ "${{ matrix.variant }}" = sanitizers ]; then
+            meson setup build -Db_sanitize=address,undefined -Db_lundef=false
+          else
+            meson setup build
+          fi
+          meson compile -C build
+      - name: Test
+        env:
+          GST_REGISTRY_FORK: ${{ matrix.variant == 'sanitizers' && 'no' || '' }}
+          ASAN_OPTIONS: detect_leaks=0
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: meson test -C build --print-errorlogs
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: testlog-ubuntu-${{ matrix.variant }}
+          path: build/meson-logs/
+
+  debian-12:
+    name: Debian 12 (GStreamer 1.22)
+    runs-on: ubuntu-24.04
+    container: debian:12
+    steps:
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            git ca-certificates meson ninja-build pkg-config gcc \
+            libglib2.0-dev-bin libgstreamer1.0-dev \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-bad libsoup-3.0-dev libjson-glib-dev python3
+      - uses: actions/checkout@v4
+      - name: Build
+        run: meson setup build && meson compile -C build
+      - name: Test
+        run: meson test -C build --print-errorlogs
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: testlog-debian-12
+          path: build/meson-logs/
+
+  # Manual only while the repository is private (macOS minutes count 10x).
+  macos:
+    name: macOS (Homebrew)
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: brew install meson ninja pkgconf gstreamer libsoup json-glib
+      - name: Build
+        run: meson setup build && meson compile -C build
+      - name: Test
+        run: meson test -C build --print-errorlogs
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: testlog-macos
+          path: build/meson-logs/
+
