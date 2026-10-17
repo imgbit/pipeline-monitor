@@ -44,7 +44,8 @@ machine and only from its own page.
 ## Status
 
 Version 0.1 shows the pipeline graph. It is tested on macOS (Apple Silicon)
-with GStreamer 1.28.8. Linux and Windows are not tested yet.
+with GStreamer 1.28.8, and on Linux in CI: Ubuntu 24.04 with GStreamer 1.24
+and Debian 12 with GStreamer 1.22. Windows is not tested yet.
 
 ## License
 
