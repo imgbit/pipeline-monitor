@@ -284,11 +284,21 @@ assert_graph_matches (GstElement * pipeline)
   assert_pipelines_match (&pipeline, 1);
 }
 
+/* The last reference to a pipeline can be dropped by a GStreamer thread
+ * a moment after the test releases its own. */
 static void
 assert_graph_empty (void)
 {
-  gchar *graph = get_graph ();
+  gchar *graph = NULL;
+  gint tries;
 
+  for (tries = 0; tries < 200; tries++) {
+    g_free (graph);
+    graph = get_graph ();
+    if (g_strcmp0 (graph, EMPTY_GRAPH) == 0)
+      break;
+    g_usleep (10 * G_TIME_SPAN_MILLISECOND);
+  }
   g_assert_cmpstr (graph, ==, EMPTY_GRAPH);
   g_free (graph);
 }
