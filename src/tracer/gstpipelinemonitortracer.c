@@ -20,7 +20,6 @@ struct _GstPipelineMonitorTracer
 enum
 {
   PROP_0,
-  PROP_GRAPH,
   PROP_URL,
 };
 
@@ -197,9 +196,6 @@ gst_pipeline_monitor_tracer_get_property (GObject * object, guint prop_id,
   GstPipelineMonitorTracer *self = GST_PIPELINE_MONITOR_TRACER (object);
 
   switch (prop_id) {
-    case PROP_GRAPH:
-      g_value_take_string (value, pm_model_to_json (self->model));
-      break;
     case PROP_URL:
       g_value_set_string (value,
           self->server ? pm_server_get_url (self->server) : NULL);
@@ -290,10 +286,6 @@ gst_pipeline_monitor_tracer_class_init (GstPipelineMonitorTracerClass * klass)
   gobject_class->constructed = gst_pipeline_monitor_tracer_constructed;
   gobject_class->finalize = gst_pipeline_monitor_tracer_finalize;
 
-  g_object_class_install_property (gobject_class, PROP_GRAPH,
-      g_param_spec_string ("graph", "Graph",
-          "Snapshot of all pipelines in the process as JSON", NULL,
-          G_PARAM_READABLE | G_PARAM_STATIC_STRINGS));
   g_object_class_install_property (gobject_class, PROP_URL,
       g_param_spec_string ("url", "URL",
           "Address of the web server, NULL if it is not running", NULL,

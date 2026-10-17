@@ -181,7 +181,8 @@ def start_server(serve, pipeline):
                 found["url"] = m.group(1)
 
     threading.Thread(target=read, daemon=True).start()
-    end = time.time() + 10
+    # The first run after a build can spend a while scanning plugins.
+    end = time.time() + 60
     while "url" not in found and time.time() < end:
         time.sleep(0.05)
     assert "url" in found, "server did not report its address"

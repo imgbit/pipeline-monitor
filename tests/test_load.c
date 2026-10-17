@@ -77,6 +77,29 @@ test_sees_elements (void)
   g_assert_cmpint (g_atomic_int_get (&elements_seen), >=, 3);
 }
 
+/* GStreamer lists tracer properties in DOT dumps; the graph must not end up
+ * there and make every dump unreadable. */
+static void
+test_dot_dump (void)
+{
+  GError *error = NULL;
+  GstElement *pipeline;
+  gchar *dot;
+
+  pipeline = gst_parse_launch ("fakesrc ! fakesink", &error);
+  g_assert_no_error (error);
+  dot = gst_debug_bin_to_dot_data (GST_BIN (pipeline),
+      GST_DEBUG_GRAPH_SHOW_ALL);
+
+  if (strstr (dot, "Active Tracers") != NULL)
+    g_assert_nonnull (strstr (dot, "GstPipelineMonitorTracer"));
+  g_assert_null (strstr (dot, "pipelines"));
+  g_assert_null (strstr (dot, "graph="));
+
+  g_free (dot);
+  gst_object_unref (pipeline);
+}
+
 int
 main (int argc, char **argv)
 {
@@ -89,6 +112,7 @@ main (int argc, char **argv)
   g_test_add_func ("/load/registered", test_registered);
   g_test_add_func ("/load/active", test_active);
   g_test_add_func ("/load/sees-elements", test_sees_elements);
+  g_test_add_func ("/load/dot-dump", test_dot_dump);
 
   return g_test_run ();
 }

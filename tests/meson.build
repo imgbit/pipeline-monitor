@@ -16,7 +16,7 @@ json_glib_dep = dependency('json-glib-1.0', required : false)
 if json_glib_dep.found()
   test_model = executable('test_model', 'test_model.c',
     c_args : ['-DGST_USE_UNSTABLE_API'],
-    dependencies : [gst_dep, json_glib_dep])
+    dependencies : [gst_dep, json_glib_dep, soup_dep])
 
   test('model', test_model,
     env : test_env,

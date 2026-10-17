@@ -149,7 +149,7 @@ static void
 test_http (void)
 {
   GstElement *pipeline;
-  gchar *body, *type, *graph;
+  gchar *body, *type;
 
   g_assert_cmpuint (get_status ("", "GET", NULL, &body, &type), ==, 200);
   g_assert_cmpstr (type, ==, "text/html");
@@ -167,10 +167,7 @@ test_http (void)
   pipeline = start_pipeline ("fakesrc ! queue ! fakesink name=http-sink");
   g_assert_cmpuint (get_status ("api/graph", "GET", NULL, &body, NULL), ==,
       200);
-  graph = tracer_string ("graph");
-  g_assert_cmpstr (body, ==, graph);
-  g_assert_nonnull (strstr (body, "http-sink"));
-  g_free (graph);
+  g_assert_nonnull (strstr (body, "\"name\":\"http-sink\""));
   g_free (body);
   stop_pipeline (pipeline);
 

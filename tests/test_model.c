@@ -3,25 +3,46 @@
 #include <gst/gst.h>
 #include <gst/gsttracer.h>
 #include <json-glib/json-glib.h>
+#include <libsoup/soup.h>
 
 #define EMPTY_GRAPH "{\"pipelines\":[],\"links\":[]}"
+
+static SoupSession *session;
+static gchar *graph_url;
 
 static gchar *
 get_graph (void)
 {
+  SoupMessage *msg = soup_message_new ("GET", graph_url);
+  GError *error = NULL;
+  GBytes *body;
+  gchar *graph;
+
+  body = soup_session_send_and_read (session, msg, NULL, &error);
+  g_assert_no_error (error);
+  g_assert_cmpuint (soup_message_get_status (msg), ==, 200);
+  graph = g_strndup (g_bytes_get_data (body, NULL), g_bytes_get_size (body));
+
+  g_bytes_unref (body);
+  g_object_unref (msg);
+  return graph;
+}
+
+static gchar *
+tracer_url (void)
+{
   GList *tracers, *l;
-  gchar *graph = NULL;
+  gchar *url = NULL;
 
   tracers = gst_tracing_get_active_tracers ();
   for (l = tracers; l != NULL; l = l->next) {
     if (g_strcmp0 (G_OBJECT_TYPE_NAME (l->data),
             "GstPipelineMonitorTracer") == 0)
-      g_object_get (l->data, "graph", &graph, NULL);
+      g_object_get (l->data, "url", &url, NULL);
   }
   g_list_free_full (tracers, gst_object_unref);
-  g_assert_nonnull (graph);
-
-  return graph;
+  g_assert_nonnull (url);
+  return url;
 }
 
 static gchar *
@@ -454,8 +475,15 @@ test_two_pipelines (void)
 int
 main (int argc, char **argv)
 {
+  gchar *url;
+  gint ret;
+
   g_test_init (&argc, &argv, NULL);
   gst_init (&argc, &argv);
+  session = soup_session_new ();
+  url = tracer_url ();
+  graph_url = g_strconcat (url, "api/graph", NULL);
+  g_free (url);
 
   g_test_add_func ("/model/chain", test_chain);
   g_test_add_func ("/model/nested-bins", test_nested_bins);
@@ -465,5 +493,8 @@ main (int argc, char **argv)
   g_test_add_func ("/model/dynamic-changes", test_dynamic_changes);
   g_test_add_func ("/model/two-pipelines", test_two_pipelines);
 
-  return g_test_run ();
+  ret = g_test_run ();
+  g_free (graph_url);
+  g_object_unref (session);
+  return ret;
 }
