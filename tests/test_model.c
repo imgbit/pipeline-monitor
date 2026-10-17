@@ -370,10 +370,13 @@ test_request_pads (void)
 static void
 test_sometimes_pads (void)
 {
-  if (!have_elements ("videotestsrc", "jpegenc", "decodebin3", NULL))
+  if (!have_elements ("videotestsrc", "jpegenc", "decodebin3", "videoconvert",
+          NULL))
     return;
+  /* videoconvert keeps the decoder off GL memory, which needs an
+   * NSApplication on macOS. */
   check_pipeline ("videotestsrc is-live=true ! jpegenc ! decodebin3 ! "
-      "fakesink");
+      "videoconvert ! fakesink");
 }
 
 static void
