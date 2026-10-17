@@ -90,10 +90,14 @@ class WebSocket:
 class Browser:
     def __init__(self, chrome, profile):
         port = free_port()
+        args = [chrome, "--headless=new", f"--remote-debugging-port={port}",
+                f"--user-data-dir={profile}", "--hide-scrollbars",
+                "--no-first-run", "--window-size=1400,800"]
+        # CI containers and Ubuntu 24.04 runners often block Chrome's sandbox.
+        if os.environ.get("CI"):
+            args.append("--no-sandbox")
         self.proc = subprocess.Popen(
-            [chrome, "--headless=new", f"--remote-debugging-port={port}",
-             f"--user-data-dir={profile}", "--hide-scrollbars",
-             "--no-first-run", "--window-size=1400,800", "about:blank"],
+            args + ["about:blank"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         page = None
         for _ in range(100):
