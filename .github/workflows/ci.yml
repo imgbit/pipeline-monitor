@@ -68,10 +68,8 @@ jobs:
           name: testlog-debian-12
           path: build/meson-logs/
 
-  # Manual only while the repository is private (macOS minutes count 10x).
   macos:
     name: macOS (Homebrew)
-    if: github.event_name == 'workflow_dispatch'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
