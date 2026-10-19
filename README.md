@@ -16,6 +16,22 @@ variable, without changing your application, and open http://127.0.0.1:8765/.
 
 Requires GStreamer 1.22 or newer, libsoup 3 and Meson.
 
+On Ubuntu 24.04 or Debian 12:
+
+```sh
+sudo apt install meson ninja-build pkg-config libgstreamer1.0-dev \
+  libsoup-3.0-dev libjson-glib-dev gstreamer1.0-plugins-base \
+  gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
+```
+
+On macOS with Homebrew:
+
+```sh
+brew install meson ninja pkgconf gstreamer libsoup json-glib
+```
+
+Then:
+
 ```sh
 meson setup build
 meson compile -C build
