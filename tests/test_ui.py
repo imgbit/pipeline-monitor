@@ -96,19 +96,30 @@ class Browser:
         # CI containers and Ubuntu 24.04 runners often block Chrome's sandbox.
         if os.environ.get("CI"):
             args.append("--no-sandbox")
+        # Kept so a failed start can say why; CI machines start Chrome slowly.
+        self.log = open(os.path.join(profile, "chrome.log"), "wb")
         self.proc = subprocess.Popen(
             args + ["about:blank"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            stdout=subprocess.DEVNULL, stderr=self.log)
         page = None
-        for _ in range(100):
+        end = time.time() + 30
+        while page is None and time.time() < end and self.proc.poll() is None:
             try:
                 targets = json.load(urllib.request.urlopen(
                     f"http://127.0.0.1:{port}/json/list"))
                 page = next(t for t in targets if t["type"] == "page")
-                break
             except Exception:
                 time.sleep(0.1)
-        assert page, "Chrome did not start"
+        if page is None:
+            code = self.proc.poll()
+            self.proc.kill()
+            self.proc.wait()
+            self.log.close()
+            with open(self.log.name, errors="replace") as f:
+                output = f.read()[-3000:]
+            state = (f"exited with code {code}" if code is not None
+                     else "no answer within 30 s")
+            raise AssertionError(f"Chrome did not start ({state}):\n{output}")
         self.ws = WebSocket(page["webSocketDebuggerUrl"])
         self.next_id = 0
         self.errors = []
@@ -169,6 +180,7 @@ class Browser:
         self.ws.close()
         self.proc.terminate()
         self.proc.wait()
+        self.log.close()
 
 
 def start_server(serve, pipeline):
