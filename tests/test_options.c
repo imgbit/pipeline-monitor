@@ -62,8 +62,11 @@ test_ui_dir (void)
   if (g_test_subprocess ()) {
     gchar *dir = g_dir_make_tmp ("pm-options-XXXXXX", NULL);
     gchar *file = g_build_filename (dir, "app.js", NULL);
-    gchar *tracers = g_strdup_printf ("pipeline-monitor(port=0,ui-dir=%s)",
-        dir);
+    /* Quoted with forward slashes: the option syntax cannot take a bare
+     * Windows path (backslashes, short names with '~'). */
+    gchar *path = g_strdelimit (g_strdup (dir), "\\", '/');
+    gchar *tracers = g_strdup_printf ("pipeline-monitor(port=0,ui-dir=\"%s\")",
+        path);
     SoupSession *session = soup_session_new ();
     SoupMessage *msg;
     GBytes *body;
@@ -88,11 +91,26 @@ test_ui_dir (void)
     g_free (app);
     g_free (url);
     g_free (tracers);
+    g_free (path);
     g_free (file);
     g_free (dir);
     return;
   }
   run_in_subprocess ();
+}
+
+static void
+test_ui_dir_missing (void)
+{
+  if (g_test_subprocess ()) {
+    gchar *url = start_tracer ("pipeline-monitor(port=0,ui-dir=pm-no-such-dir)");
+
+    g_free (url);
+    return;
+  }
+  g_test_trap_subprocess (NULL, 0, G_TEST_SUBPROCESS_DEFAULT);
+  g_test_trap_assert_passed ();
+  g_test_trap_assert_stderr ("*ui-dir 'pm-no-such-dir' is not a folder*");
 }
 
 static void
@@ -140,6 +158,7 @@ main (int argc, char **argv)
   g_test_init (&argc, &argv, NULL);
 
   g_test_add_func ("/options/ui-dir", test_ui_dir);
+  g_test_add_func ("/options/ui-dir-missing", test_ui_dir_missing);
   g_test_add_func ("/options/port-out-of-range", test_port_out_of_range);
   g_test_add_func ("/options/port-not-a-number", test_port_not_a_number);
   g_test_add_func ("/options/unparsable", test_unparsable_options);
