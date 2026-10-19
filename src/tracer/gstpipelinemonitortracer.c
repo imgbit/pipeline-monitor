@@ -251,6 +251,9 @@ gst_pipeline_monitor_tracer_constructed (GObject * object)
       (object);
 
   port = parse_options (self, &ui_dir);
+  if (ui_dir != NULL && !g_file_test (ui_dir, G_FILE_TEST_IS_DIR))
+    g_printerr ("pipeline-monitor: ui-dir '%s' is not a folder, the page "
+        "will not load\n", ui_dir);
   self->server = pm_server_new (self->model, port, ui_dir, &error);
   g_free (ui_dir);
   if (self->server == NULL) {
