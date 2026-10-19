@@ -98,7 +98,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Restore GStreamer
         id: gst-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: C:\gstreamer
           key: gstreamer-msvc-x86_64-${{ env.GST_VERSION }}-${{ env.GST_SHA256 }}
@@ -111,6 +111,13 @@ jobs:
           if ((Get-FileHash $exe -Algorithm SHA256).Hash -ne $env:GST_SHA256) { throw "checksum mismatch" }
           Start-Process -Wait -FilePath ".\$exe" -ArgumentList "/VERYSILENT","/NORESTART","/ALLUSERS","/TYPE=devel","/DIR=$env:GST_ROOT"
           Remove-Item $exe
+      # Saved right after installing, so failing tests don't prevent it.
+      - name: Save GStreamer
+        if: steps.gst-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: C:\gstreamer
+          key: ${{ steps.gst-cache.outputs.cache-primary-key }}
       - name: Set up GStreamer paths
         shell: pwsh
         run: |
