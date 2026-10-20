@@ -199,9 +199,9 @@ class Browser:
         self.log.close()
 
 
-def start_server(serve, pipeline):
+def start_server(serve, pipeline, *args):
     env = dict(os.environ, GST_TRACERS="pipeline-monitor(port=0)")
-    proc = subprocess.Popen([serve, pipeline], env=env,
+    proc = subprocess.Popen([serve, *args, pipeline], env=env,
                             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                             text=True)
     found = {}
@@ -223,7 +223,8 @@ def start_server(serve, pipeline):
 
 def element_selector(name):
     return ("[...document.querySelectorAll('#graph .node')]"
-            f".find(n => n.textContent.startsWith({json.dumps(name)}))")
+            ".find(n => n.querySelector(':scope > .name')?.textContent === "
+            f"{json.dumps(name)})")
 
 
 def check(browser, url):
@@ -276,6 +277,8 @@ def check(browser, url):
         time.sleep(0.2)
     assert len(counts) > 1, f"graph did not update live: {counts}"
 
+    check_log(browser)
+
     browser.call("Emulation.setDeviceMetricsOverride", width=390, height=760,
                  deviceScaleFactor=1, mobile=True)
     time.sleep(0.3)
@@ -283,6 +286,52 @@ def check(browser, url):
     browser.call("Emulation.clearDeviceMetricsOverride")
 
     assert not browser.errors, f"errors in the page: {browser.errors}"
+
+
+# The server runs "serve --warnings": the tee "t" posts a warning each time
+# a branch is added or removed (every two seconds).
+def check_log(browser):
+    counter = "document.getElementById('log-counter')"
+    rows = "document.querySelectorAll('#log-rows .log-row').length"
+    tee = element_selector("t")
+    badge = f"{tee}?.querySelector('.badge')"
+
+    assert browser.wait(f"{counter}.textContent.includes('warning')"), \
+        "warning counter did not appear"
+    assert browser.eval(f"{counter}.classList.contains('has-warnings')")
+    assert browser.wait(f"!!{badge}"), "no badge on the tee"
+
+    browser.click("#log-counter")
+    assert browser.wait("!document.getElementById('log-panel').hidden"), \
+        "log panel did not open"
+    assert browser.wait(f"{rows} > 0"), "no rows in the log panel"
+    assert browser.eval("document.querySelector('#log-rows .log-path')"
+                        ".textContent") == "t"
+    assert browser.eval("document.querySelector('#log-rows .log-path')"
+                        ".title.startsWith('pipeline0/t')")
+
+    browser.click("#log-rows .log-path")
+    assert browser.wait("document.querySelector('#details h2')?.textContent"
+                        " === 't'"), "clicking a row did not select the tee"
+
+    browser.click("#details .mute-toggle")
+    assert browser.wait(f"{rows} === 0"), "muted rows still shown"
+    assert browser.wait(f"{badge}?.classList.contains('muted')"), \
+        "badge not shown as muted"
+    browser.call("Page.reload")
+    assert browser.wait(f"{badge}?.classList.contains('muted')"), \
+        "mute not remembered after reload"
+    browser.click("#log-counter")
+    browser.click("#log-muted .unmute")
+    assert browser.wait(f"{rows} > 0"), "unmuting did not bring rows back"
+
+    browser.click("#log-clear")
+    assert browser.wait(f"{rows} === 0"), "clear did not empty the panel"
+    assert browser.eval(f"{counter}.textContent") == "No errors"
+    assert browser.wait(f"{rows} > 0", timeout=6), \
+        "new warnings did not appear after clear"
+    assert browser.eval("document.querySelector('#log-rows .log-count')"
+                        ".textContent") == "", "count did not restart at clear"
 
 
 def screenshot(browser, url, path):
@@ -309,7 +358,10 @@ def main():
         return 77
 
     profile = tempfile.mkdtemp(prefix="pm-ui-test-")
-    server, url = start_server(serve, SHOT_PIPELINE if shot else PIPELINE)
+    if shot:
+        server, url = start_server(serve, SHOT_PIPELINE)
+    else:
+        server, url = start_server(serve, PIPELINE, "--warnings")
     browser = None
     try:
         browser = Browser(chrome, profile)

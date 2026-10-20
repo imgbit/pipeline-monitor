@@ -19,6 +19,8 @@
   <span id="pipeline-state" class="state"></span>
   <span id="element-count" class="muted"></span>
   <span class="spacer"></span>
+  <button id="log-counter" class="log-counter" aria-controls="log-panel"
+    aria-expanded="false" hidden>No errors</button>
   <span id="connection" class="connection">connecting</span>
 </header>
 <main>
@@ -32,5 +34,15 @@
   </div>
   <aside id="details" hidden></aside>
 </main>
+<section id="log-panel" class="log-panel" aria-label="Errors and warnings" hidden>
+  <div class="log-head">
+    <strong>Errors and warnings</strong>
+    <span id="log-muted" class="log-muted"></span>
+    <span class="spacer"></span>
+    <button id="log-clear" title="Hide everything seen so far (this browser only)">clear</button>
+    <button id="log-close" class="close" title="Close">×</button>
+  </div>
+  <div id="log-rows" class="log-rows"></div>
+</section>
 </body>
 </html>

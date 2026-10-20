@@ -15,7 +15,25 @@ function add(parent, tag, content, cls) {
   return node;
 }
 
-export function showDetails(aside, selection, index, onClose) {
+function showLog(aside, log) {
+  const button = add(aside, "button", log.muted ? "Unmute" : "Mute",
+    "mute-toggle");
+  button.title = log.muted ? "Show this element's errors and warnings again"
+    : "Hide this element's errors and warnings (this browser only)";
+  button.addEventListener("click", log.toggleMute);
+  if (log.entries.length === 0)
+    return;
+  const list = add(aside, "ul", undefined, "log-list");
+  for (const e of log.entries.slice(0, 20)) {
+    const li = add(list, "li", undefined, e.level);
+    li.textContent = `${new Date(e.last).toLocaleTimeString()} ${e.text}` +
+      (e.count > 1 ? ` ×${e.count}` : "");
+    li.title = e.debug || "";
+  }
+}
+
+// log: { entries, muted, toggleMute } for the selected element, or null.
+export function showDetails(aside, selection, index, onClose, log) {
   if (!selection) {
     aside.hidden = true;
     aside.replaceChildren();
@@ -44,9 +62,13 @@ export function showDetails(aside, selection, index, onClose) {
   if (element.bin)
     row("contains", `${countElements(element)} elements`);
 
-  if (element.pads.length === 0)
-    return;
+  if (element.pads.length > 0)
+    showPads(aside, element, index);
+  if (log)
+    showLog(aside, log);
+}
 
+function showPads(aside, element, index) {
   const table = add(aside, "table");
   const head = add(table, "tr");
   for (const h of ["pad", "dir", "presence", "linked to"])

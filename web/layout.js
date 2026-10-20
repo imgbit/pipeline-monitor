@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Łukasz Huńczak
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
-// Converts one pipeline from /api/graph into an ELK graph.
+// Converts one pipeline from the graph message into an ELK graph.
 
 import { countElements } from "./render.js";
 
@@ -9,6 +9,7 @@ const HEADER = 38;
 const ROW = 18;
 const PORT = 8;
 const BIN_HEADER = 42;
+const BADGE = 32;
 
 const canvas = document.createElement("canvas");
 const ctx = canvas.getContext("2d");
@@ -39,7 +40,8 @@ function leafNode(element, info, kind, inside) {
   const { sinks, srcs } = sides(element);
   const toggle = kind === "collapsed" ? 28 : 0;
   const factory = element.factory || element.type;
-  const title = Math.max(textWidth(element.name, 13, "600") + 18 + toggle,
+  const title = Math.max(
+    textWidth(element.name, 13, "600") + 18 + toggle + BADGE,
     textWidth(inside ? `${factory} · ${inside}` : factory, 11) + toggle);
   const pads = maxLabel(sinks) + maxLabel(srcs) + 24;
   const width = Math.max(90, title, pads) + 24;
@@ -88,7 +90,8 @@ function binNode(element, info, parents, collapsed) {
       "elk.portConstraints": "FIXED_SIDE",
       "elk.padding": `[top=${BIN_HEADER},left=24,bottom=16,right=24]`,
       "elk.nodeSize.constraints": "MINIMUM_SIZE",
-      "elk.nodeSize.minimum": `(${textWidth(element.name, 13, "600") + 70}, 60)`,
+      "elk.nodeSize.minimum":
+        `(${textWidth(element.name, 13, "600") + 70 + BADGE}, 60)`,
     },
     kind: "bin",
   };

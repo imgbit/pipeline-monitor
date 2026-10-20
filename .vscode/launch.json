@@ -68,6 +68,40 @@
       }
     },
     {
+      "name": "serve example with warnings (UI from web/)",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/build/examples/serve",
+      "args": [
+        "--warnings",
+        "${input:pipeline}"
+      ],
+      "cwd": "${workspaceFolder}",
+      "environment": [
+        {
+          "name": "GST_PLUGIN_PATH",
+          "value": "${workspaceFolder}/build/src"
+        },
+        {
+          "name": "GST_TRACERS",
+          "value": "pipeline-monitor(ui-dir=${workspaceFolder}/web)"
+        }
+      ],
+      "externalConsole": false,
+      "preLaunchTask": "build",
+      "serverReadyAction": {
+        "pattern": "pipeline-monitor: (http://\\S+)",
+        "uriFormat": "%s",
+        "action": "openExternally"
+      },
+      "osx": {
+        "MIMode": "lldb"
+      },
+      "linux": {
+        "MIMode": "gdb"
+      }
+    },
+    {
       "name": "print-graph example",
       "type": "cppdbg",
       "request": "launch",

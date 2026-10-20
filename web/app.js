@@ -4,6 +4,7 @@
 import { buildElkGraph, elementPath } from "./layout.js";
 import { GraphView, countElements } from "./render.js";
 import { showDetails } from "./panel.js";
+import { LogView } from "./log.js";
 
 const $ = (id) => document.getElementById(id);
 const COLLAPSED_KEY = "pipeline-monitor.collapsed";
@@ -35,6 +36,38 @@ const view = new GraphView($("graph"), {
     $("auto-fit").setAttribute("aria-pressed", String(on));
   },
 });
+
+const log = new LogView({
+  counter: $("log-counter"),
+  panel: $("log-panel"),
+  rows: $("log-rows"),
+  mutedList: $("log-muted"),
+  clear: $("log-clear"),
+  close: $("log-close"),
+}, {
+  select(id) {
+    if (buildIndex(state.graph).elements.has(id))
+      view.handlers.select(id);
+  },
+  clear() {
+    log.clear(elementCounts(state.graph));
+    update();
+  },
+  changed() {
+    update();
+  },
+});
+
+// Current error and warning counters of every element, by id.
+function elementCounts(graph) {
+  const counts = new Map();
+  const visit = (e) => {
+    counts.set(e.id, { errors: e.errors || 0, warnings: e.warnings || 0 });
+    e.children.forEach(visit);
+  };
+  graph.pipelines.forEach(visit);
+  return counts;
+}
 
 function loadCollapsed() {
   try {
@@ -167,13 +200,27 @@ async function layoutAndRender() {
   const layout = await elk.layout(graph);
   const selectedPads = new Set(selection
     ? selection.element.pads.map((p) => `p${p.id}`) : []);
+  const badges = new Map();
+  for (const [id, { element, path }] of index.elements) {
+    const badge = log.badge(id, path, element.errors, element.warnings);
+    if (badge)
+      badges.set(id, badge);
+  }
 
   view.render(layout, info, {
     selected: state.selected,
     selectedPads,
     appeared: appearedIds(pipeline, index),
+    badges,
   });
-  showDetails($("details"), selection, index, () => view.handlers.select(null));
+  const details = selection && log.enabled ? {
+    entries: log.entriesFor(selection.element.id),
+    muted: log.isMuted(selection.path),
+    toggleMute: () => log.setMuted(selection.path,
+      !log.isMuted(selection.path)),
+  } : null;
+  showDetails($("details"), selection, index, () => view.handlers.select(null),
+    details);
 }
 
 function connect(delay = 1000) {
@@ -184,12 +231,17 @@ function connect(delay = 1000) {
     status.textContent = "connected";
     status.className = "connection connected";
     delay = 1000;
+    log.reset();
   };
   ws.onmessage = (event) => {
     const message = JSON.parse(event.data);
     if (message.type === "graph") {
       state.graph = message.graph;
       update();
+    } else if (message.type === "log") {
+      log.apply(message.log);
+      if (state.selected !== null)
+        update();
     }
   };
   ws.onclose = () => {

@@ -208,11 +208,33 @@ export class GraphView {
     title(t, expanded ? "Collapse bin" : "Expand bin");
   }
 
+  // Error count in red, otherwise the warning count in amber; grey if muted.
+  drawBadge(g, node, badge, beforeToggle) {
+    if (!badge)
+      return;
+    const n = badge.errors || badge.warnings;
+    const cls = ["badge", badge.errors ? "has-errors" : "has-warnings"];
+    if (badge.muted)
+      cls.push("muted");
+    const b = el("g", { class: cls.join(" ") }, g);
+    const label = n > 99 ? "99+" : String(n);
+    // A circle for one digit, a pill that grows for more.
+    const width = 16 + (label.length - 1) * 6;
+    const right = node.x + node.width - (beforeToggle ? 28 : 4);
+    const y = node.y + 7;
+    el("rect", { x: right - width, y, width, height: 16, rx: 8 }, b);
+    text(b, right - width / 2, y + 11.5, "", label, "middle");
+    title(b, [badge.errors && `${badge.errors} errors`,
+      badge.warnings && `${badge.warnings} warnings`,
+      badge.muted && "muted"].filter(Boolean).join(", "));
+  }
+
   drawBin(parent, node, meta, info, view) {
     const g = this.nodeGroup(parent, node, meta, view, "bin");
     this.drawHeader(g, node, meta.element, meta.element.factory ||
       meta.element.type);
     this.drawToggle(g, node, meta.path, true);
+    this.drawBadge(g, node, view.badges.get(meta.element.id), true);
     this.drawPorts(g, node, info);
   }
 
@@ -227,6 +249,7 @@ export class GraphView {
     this.drawHeader(g, node, e, factory);
     if (collapsed)
       this.drawToggle(g, node, meta.path, false);
+    this.drawBadge(g, node, view.badges.get(e.id), collapsed);
     this.drawPorts(g, node, info);
   }
 

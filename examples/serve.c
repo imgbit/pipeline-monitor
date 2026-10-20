@@ -2,8 +2,10 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #include <gst/gst.h>
 
-/* Runs a pipeline until it ends. If it has a tee named "t", a branch is
- * added and removed every two seconds to produce live updates. */
+/* Usage: serve [--warnings] [pipeline description]
+ * Runs a pipeline until it ends. If it has a tee named "t", a branch is
+ * added and removed every two seconds to produce live updates; with
+ * --warnings the tee also posts a warning each time. */
 
 typedef struct
 {
@@ -12,6 +14,7 @@ typedef struct
   GstElement *queue;
   GstElement *sink;
   GstPad *tee_pad;
+  gboolean warnings;
 } Branch;
 
 static void
@@ -54,6 +57,9 @@ toggle_branch (gpointer user_data)
     add_branch (b);
   else
     remove_branch (b);
+  if (b->warnings)
+    GST_ELEMENT_WARNING (b->tee, STREAM, FAILED, ("example warning: %s",
+            b->queue ? "branch added" : "branch removed"), (NULL));
   return G_SOURCE_CONTINUE;
 }
 
@@ -89,6 +95,11 @@ main (int argc, char **argv)
 
   g_setenv ("GST_TRACERS", "pipeline-monitor", FALSE);
   gst_init (&argc, &argv);
+  if (argc > 1 && g_strcmp0 (argv[1], "--warnings") == 0) {
+    branch.warnings = TRUE;
+    argv++;
+    argc--;
+  }
   if (argc > 1)
     description = argv[1];
 

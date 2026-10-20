@@ -180,6 +180,7 @@ static void
 test_ui_files (void)
 {
   const gchar *scripts[] = { "app.js", "layout.js", "render.js", "panel.js",
+    "log.js",
     "vendor/elkjs/elk-api.js", "vendor/elkjs/elk-worker.min.js"
   };
   gchar *body, *type, *url;
