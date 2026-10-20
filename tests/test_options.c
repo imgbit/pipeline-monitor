@@ -114,6 +114,37 @@ test_ui_dir_missing (void)
 }
 
 static void
+test_log_off (void)
+{
+  if (g_test_subprocess ()) {
+    gchar *url = start_tracer ("pipeline-monitor(port=0,log=false)");
+    gchar *log_url = g_strconcat (url, "api/log", NULL);
+    GstElement *element = gst_element_factory_make ("identity", NULL);
+    GError *error = g_error_new_literal (GST_CORE_ERROR,
+        GST_CORE_ERROR_FAILED, "ignored");
+    SoupSession *session = soup_session_new ();
+    SoupMessage *msg = soup_message_new ("GET", log_url);
+    GBytes *body;
+
+    gst_element_post_message (element,
+        gst_message_new_warning (GST_OBJECT (element), error, NULL));
+    body = soup_session_send_and_read (session, msg, NULL, NULL);
+    g_assert_cmpmem (g_bytes_get_data (body, NULL), g_bytes_get_size (body),
+        "{\"enabled\":false,\"seq\":0,\"entries\":[]}", 38);
+
+    g_bytes_unref (body);
+    g_object_unref (msg);
+    g_object_unref (session);
+    g_error_free (error);
+    gst_object_unref (element);
+    g_free (log_url);
+    g_free (url);
+    return;
+  }
+  run_in_subprocess ();
+}
+
+static void
 test_port_out_of_range (void)
 {
   if (g_test_subprocess ()) {
@@ -159,6 +190,7 @@ main (int argc, char **argv)
 
   g_test_add_func ("/options/ui-dir", test_ui_dir);
   g_test_add_func ("/options/ui-dir-missing", test_ui_dir_missing);
+  g_test_add_func ("/options/log-off", test_log_off);
   g_test_add_func ("/options/port-out-of-range", test_port_out_of_range);
   g_test_add_func ("/options/port-not-a-number", test_port_not_a_number);
   g_test_add_func ("/options/unparsable", test_unparsable_options);

@@ -4,28 +4,36 @@
 #include <gst/gsttracer.h>
 #include <json-glib/json-glib.h>
 #include <libsoup/soup.h>
+#include <string.h>
 
 #define EMPTY_GRAPH "{\"pipelines\":[],\"links\":[]}"
 
 static SoupSession *session;
 static gchar *graph_url;
+static gchar *log_url;
 
 static gchar *
-get_graph (void)
+http_get (const gchar * url)
 {
-  SoupMessage *msg = soup_message_new ("GET", graph_url);
+  SoupMessage *msg = soup_message_new ("GET", url);
   GError *error = NULL;
   GBytes *body;
-  gchar *graph;
+  gchar *text;
 
   body = soup_session_send_and_read (session, msg, NULL, &error);
   g_assert_no_error (error);
   g_assert_cmpuint (soup_message_get_status (msg), ==, 200);
-  graph = g_strndup (g_bytes_get_data (body, NULL), g_bytes_get_size (body));
+  text = g_strndup (g_bytes_get_data (body, NULL), g_bytes_get_size (body));
 
   g_bytes_unref (body);
   g_object_unref (msg);
-  return graph;
+  return text;
+}
+
+static gchar *
+get_graph (void)
+{
+  return http_get (graph_url);
 }
 
 static gchar *
@@ -482,6 +490,303 @@ test_two_pipelines (void)
   assert_graph_empty ();
 }
 
+/* Log checks */
+
+static JsonParser *
+get_log (JsonArray ** entries)
+{
+  JsonParser *parser = json_parser_new ();
+  gchar *json = http_get (log_url);
+  GError *error = NULL;
+
+  json_parser_load_from_data (parser, json, -1, &error);
+  g_assert_no_error (error);
+  g_free (json);
+  *entries = json_object_get_array_member (json_node_get_object
+      (json_parser_get_root (parser)), "entries");
+  return parser;
+}
+
+/* Entries whose element path ends with "/name". */
+static GPtrArray *
+log_entries_of (JsonArray * entries, const gchar * name)
+{
+  GPtrArray *found = g_ptr_array_new ();
+  gchar *suffix = g_strconcat ("/", name, NULL);
+  guint i;
+
+  for (i = 0; i < json_array_get_length (entries); i++) {
+    JsonObject *entry = json_array_get_object_element (entries, i);
+
+    if (g_str_has_suffix (json_object_get_string_member (entry, "path"),
+            suffix))
+      g_ptr_array_add (found, entry);
+  }
+  g_free (suffix);
+  return found;
+}
+
+static gint64
+find_count (JsonObject * element, const gchar * name, const gchar * field)
+{
+  JsonArray *children = json_object_get_array_member (element, "children");
+  guint i;
+
+  if (g_strcmp0 (json_object_get_string_member (element, "name"), name) == 0)
+    return json_object_get_int_member_with_default (element, field, 0);
+  for (i = 0; i < json_array_get_length (children); i++) {
+    gint64 n = find_count (json_array_get_object_element (children, i), name,
+        field);
+    if (n >= 0)
+      return n;
+  }
+  return -1;
+}
+
+/* The error or warning count the graph shows for an element. */
+static gint64
+graph_count (const gchar * name, const gchar * field)
+{
+  JsonParser *parser = json_parser_new ();
+  gchar *graph = get_graph ();
+  JsonArray *pipelines;
+  gint64 n = -1;
+  guint i;
+
+  g_assert_true (json_parser_load_from_data (parser, graph, -1, NULL));
+  pipelines = json_object_get_array_member (json_node_get_object
+      (json_parser_get_root (parser)), "pipelines");
+  for (i = 0; i < json_array_get_length (pipelines) && n < 0; i++)
+    n = find_count (json_array_get_object_element (pipelines, i), name, field);
+  g_object_unref (parser);
+  g_free (graph);
+  return n;
+}
+
+static void
+post (GstElement * element, GstMessageType type, const gchar * text)
+{
+  GError *error = g_error_new_literal (GST_CORE_ERROR, GST_CORE_ERROR_FAILED,
+      text);
+  GstMessage *msg = type == GST_MESSAGE_ERROR ?
+      gst_message_new_error (GST_OBJECT (element), error, "some detail") :
+      gst_message_new_warning (GST_OBJECT (element), error, "some detail");
+
+  gst_element_post_message (element, msg);
+  g_error_free (error);
+}
+
+static void
+test_log_messages (void)
+{
+  GstElement *pipeline = gst_pipeline_new (NULL);
+  GstElement *outer = gst_bin_new ("log-outer");
+  GstElement *inner = gst_bin_new ("log-inner");
+  GstElement *element = gst_element_factory_make ("identity", "log-msg");
+  GPtrArray *found;
+  JsonParser *parser;
+  JsonArray *entries;
+  JsonObject *entry;
+
+  gst_bin_add (GST_BIN (inner), element);
+  gst_bin_add (GST_BIN (outer), inner);
+  gst_bin_add (GST_BIN (pipeline), outer);
+  post (element, GST_MESSAGE_ERROR, "it broke");
+  post (element, GST_MESSAGE_WARNING, "it wobbled");
+
+  parser = get_log (&entries);
+  found = log_entries_of (entries, "log-msg");
+  g_assert_cmpuint (found->len, ==, 2);
+  entry = g_ptr_array_index (found, 0);
+  g_assert_cmpstr (json_object_get_string_member (entry, "level"), ==,
+      "error");
+  g_assert_cmpstr (json_object_get_string_member (entry, "source"), ==,
+      "message");
+  g_assert_true (g_str_has_suffix (json_object_get_string_member (entry,
+              "path"), "/log-outer/log-inner/log-msg"));
+  g_assert_cmpstr (json_object_get_string_member (entry, "text"), ==,
+      "it broke");
+  g_assert_cmpstr (json_object_get_string_member (entry, "debug"), ==,
+      "some detail");
+  g_assert_cmpstr (json_object_get_string_member (entry, "domain"), ==,
+      g_quark_to_string (GST_CORE_ERROR));
+  g_assert_cmpint (json_object_get_int_member (entry, "code"), ==,
+      GST_CORE_ERROR_FAILED);
+  entry = g_ptr_array_index (found, 1);
+  g_assert_cmpstr (json_object_get_string_member (entry, "level"), ==,
+      "warning");
+  g_ptr_array_unref (found);
+  g_object_unref (parser);
+
+  g_assert_cmpint (graph_count ("log-msg", "errors"), ==, 1);
+  g_assert_cmpint (graph_count ("log-msg", "warnings"), ==, 1);
+  g_assert_cmpint (graph_count ("log-inner", "errors"), ==, 0);
+
+  gst_object_unref (pipeline);
+}
+
+static void
+test_log_repeats (void)
+{
+  GstElement *pipeline = gst_pipeline_new (NULL);
+  GstElement *element = gst_element_factory_make ("identity", "log-repeat");
+  GstBus *bus = gst_element_get_bus (pipeline);
+  GPtrArray *found;
+  JsonParser *parser;
+  JsonArray *entries;
+  gint i;
+
+  gst_bus_set_flushing (bus, TRUE);
+  gst_bin_add (GST_BIN (pipeline), element);
+  for (i = 0; i < 10000; i++)
+    post (element, GST_MESSAGE_WARNING, "same again");
+  post (element, GST_MESSAGE_WARNING, "something else");
+
+  parser = get_log (&entries);
+  found = log_entries_of (entries, "log-repeat");
+  g_assert_cmpuint (found->len, ==, 2);
+  g_assert_cmpint (json_object_get_int_member (g_ptr_array_index (found, 0),
+          "count"), ==, 10000);
+  g_assert_cmpint (json_object_get_int_member (g_ptr_array_index (found, 1),
+          "count"), ==, 1);
+  g_ptr_array_unref (found);
+  g_object_unref (parser);
+  g_assert_cmpint (graph_count ("log-repeat", "warnings"), ==, 10001);
+
+  gst_object_unref (bus);
+  gst_object_unref (pipeline);
+}
+
+static void
+test_log_state_change (void)
+{
+  GError *error = NULL;
+  GstElement *pipeline = gst_parse_launch ("filesrc name=log-file "
+      "location=/nonexistent/pipeline-monitor ! fakesink", &error);
+  GPtrArray *found;
+  JsonParser *parser;
+  JsonArray *entries;
+  JsonObject *entry;
+  gchar *name = gst_element_get_name (pipeline);
+  guint i;
+
+  g_assert_no_error (error);
+  g_assert_cmpint (gst_element_set_state (pipeline, GST_STATE_PAUSED), ==,
+      GST_STATE_CHANGE_FAILURE);
+
+  /* filesrc posts its own error; GstBaseSrc may add a generic one. */
+  parser = get_log (&entries);
+  found = log_entries_of (entries, "log-file");
+  g_assert_cmpuint (found->len, >=, 2);
+  entry = g_ptr_array_index (found, 0);
+  g_assert_cmpstr (json_object_get_string_member (entry, "source"), ==,
+      "message");
+  g_assert_cmpstr (json_object_get_string_member (entry, "level"), ==,
+      "error");
+  g_assert_cmpint (json_object_get_int_member (entry, "code"), ==,
+      GST_RESOURCE_ERROR_NOT_FOUND);
+  entry = g_ptr_array_index (found, found->len - 1);
+  g_assert_cmpstr (json_object_get_string_member (entry, "source"), ==,
+      "state-change");
+  g_assert_cmpstr (json_object_get_string_member (entry, "text"), ==,
+      "state change from READY to PAUSED failed");
+  g_ptr_array_unref (found);
+
+  /* The pipeline fails because of filesrc and is not logged itself. */
+  for (i = 0; i < json_array_get_length (entries); i++)
+    g_assert_cmpstr (json_object_get_string_member
+        (json_array_get_object_element (entries, i), "path"), !=, name);
+  g_object_unref (parser);
+
+  g_free (name);
+  gst_element_set_state (pipeline, GST_STATE_NULL);
+  gst_object_unref (pipeline);
+}
+
+static void
+test_log_link (void)
+{
+  GError *error = NULL;
+  GstElement *pipeline = gst_parse_launch ("audiotestsrc name=log-asrc "
+      "videoconvert name=log-vconv fakesrc name=log-src fakesink name=log-sink1 "
+      "fakesink name=log-sink2", &error);
+  GstPad *pads[5];
+  const gchar *names[5][2] = {
+    {"log-asrc", "src"}, {"log-vconv", "sink"}, {"log-src", "src"},
+    {"log-sink1", "sink"}, {"log-sink2", "sink"}
+  };
+  GPtrArray *found;
+  JsonParser *parser;
+  JsonArray *entries;
+  guint i;
+
+  g_assert_no_error (error);
+  for (i = 0; i < G_N_ELEMENTS (pads); i++) {
+    GstElement *e = gst_bin_get_by_name (GST_BIN (pipeline), names[i][0]);
+    pads[i] = gst_element_get_static_pad (e, names[i][1]);
+    gst_object_unref (e);
+  }
+
+  g_assert_cmpint (gst_pad_link (pads[0], pads[1]), ==,
+      GST_PAD_LINK_NOFORMAT);
+  g_assert_cmpint (gst_pad_link (pads[2], pads[3]), ==, GST_PAD_LINK_OK);
+  /* Linking again to the same peer is harmless; to another one is not. */
+  g_assert_cmpint (gst_pad_link (pads[2], pads[3]), ==,
+      GST_PAD_LINK_WAS_LINKED);
+  g_assert_cmpint (gst_pad_link (pads[2], pads[4]), ==,
+      GST_PAD_LINK_WAS_LINKED);
+
+  parser = get_log (&entries);
+  found = log_entries_of (entries, "log-asrc");
+  g_assert_cmpuint (found->len, ==, 1);
+  g_assert_cmpstr (json_object_get_string_member (g_ptr_array_index (found,
+              0), "source"), ==, "link");
+  g_assert_nonnull (strstr (json_object_get_string_member
+          (g_ptr_array_index (found, 0), "text"), "no common format"));
+  g_ptr_array_unref (found);
+  found = log_entries_of (entries, "log-src");
+  g_assert_cmpuint (found->len, ==, 1);
+  g_assert_nonnull (strstr (json_object_get_string_member
+          (g_ptr_array_index (found, 0), "text"), "log-sink2"));
+  g_ptr_array_unref (found);
+  g_object_unref (parser);
+
+  for (i = 0; i < G_N_ELEMENTS (pads); i++)
+    gst_object_unref (pads[i]);
+  gst_object_unref (pipeline);
+}
+
+/* Runs last: it fills the whole log. */
+static void
+test_log_limit (void)
+{
+  GstElement *pipeline = gst_pipeline_new (NULL);
+  GstElement *element = gst_element_factory_make ("identity", "log-limit");
+  GstBus *bus = gst_element_get_bus (pipeline);
+  JsonParser *parser;
+  JsonArray *entries;
+  gint i;
+
+  gst_bus_set_flushing (bus, TRUE);
+  gst_bin_add (GST_BIN (pipeline), element);
+  for (i = 0; i < 600; i++) {
+    gchar *text = g_strdup_printf ("warning %d", i);
+    post (element, GST_MESSAGE_WARNING, text);
+    g_free (text);
+  }
+
+  parser = get_log (&entries);
+  g_assert_cmpuint (json_array_get_length (entries), ==, 500);
+  g_assert_cmpstr (json_object_get_string_member
+      (json_array_get_object_element (entries, 0), "text"), ==,
+      "warning 100");
+  g_object_unref (parser);
+  g_assert_cmpint (graph_count ("log-limit", "warnings"), ==, 600);
+
+  gst_object_unref (bus);
+  gst_object_unref (pipeline);
+}
+
 int
 main (int argc, char **argv)
 {
@@ -493,6 +798,7 @@ main (int argc, char **argv)
   session = soup_session_new ();
   url = tracer_url ();
   graph_url = g_strconcat (url, "api/graph", NULL);
+  log_url = g_strconcat (url, "api/log", NULL);
   g_free (url);
 
   g_test_add_func ("/model/chain", test_chain);
@@ -502,9 +808,15 @@ main (int argc, char **argv)
   g_test_add_func ("/model/json-escaping", test_json_escaping);
   g_test_add_func ("/model/dynamic-changes", test_dynamic_changes);
   g_test_add_func ("/model/two-pipelines", test_two_pipelines);
+  g_test_add_func ("/log/messages", test_log_messages);
+  g_test_add_func ("/log/repeats", test_log_repeats);
+  g_test_add_func ("/log/state-change", test_log_state_change);
+  g_test_add_func ("/log/link", test_log_link);
+  g_test_add_func ("/log/limit", test_log_limit);
 
   ret = g_test_run ();
   g_free (graph_url);
+  g_free (log_url);
   g_object_unref (session);
   return ret;
 }

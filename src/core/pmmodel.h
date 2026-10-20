@@ -37,6 +37,18 @@ void pm_model_remove_object (PmModel * model, gpointer object);
 
 gchar *pm_model_to_json (PmModel * model);
 
+typedef enum
+{
+  PM_LOG_ERROR,
+  PM_LOG_WARNING,
+} PmLogLevel;
+
+void pm_model_set_log_enabled (PmModel * model, gboolean enabled);
+void pm_model_add_log (PmModel * model, gpointer element, PmLogLevel level,
+    const gchar * source, const gchar * text, const gchar * debug,
+    const gchar * domain, gint code);
+gchar *pm_model_log_to_json (PmModel * model, guint64 since);
+
 G_END_DECLS
 
 #endif /* __PM_MODEL_H__ */

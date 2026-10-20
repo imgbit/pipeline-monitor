@@ -14,6 +14,8 @@ struct _PmElement
   gboolean is_pipeline;
   GstState state;
   GstState pending;
+  guint64 errors;
+  guint64 warnings;
   PmElement *parent;
   GPtrArray *children;
   GPtrArray *pads;
@@ -39,6 +41,29 @@ struct _PmLink
   gpointer sink;
 };
 
+#define LOG_SIZE 500
+
+typedef struct _PmLogEntry PmLogEntry;
+
+struct _PmLogEntry
+{
+  guint64 id;
+  guint64 seq;
+  gint64 first;
+  gint64 last;
+  guint64 count;
+  PmLogLevel level;
+  gchar *source;
+  guint64 element_id;
+  gchar *path;
+  gchar *text;
+  gchar *debug;
+  gchar *domain;
+  gint code;
+  gchar *key;
+  GList *link;
+};
+
 /* Objects are keyed by address. The model holds no references and only
  * reads an object while a caller passes it in. */
 struct _PmModel
@@ -52,6 +77,13 @@ struct _PmModel
 
   PmModelChangedFunc changed_func;
   gpointer changed_data;
+
+  /* Oldest first. Repeats of an entry update it and move it to the end. */
+  gboolean log_enabled;
+  GQueue log;
+  GHashTable *log_by_key;
+  guint64 next_log_id;
+  guint64 log_seq;
 };
 
 static void
@@ -63,6 +95,18 @@ pm_element_free (PmElement * element)
   g_ptr_array_unref (element->children);
   g_ptr_array_unref (element->pads);
   g_free (element);
+}
+
+static void
+pm_log_entry_free (PmLogEntry * entry)
+{
+  g_free (entry->source);
+  g_free (entry->path);
+  g_free (entry->text);
+  g_free (entry->debug);
+  g_free (entry->domain);
+  g_free (entry->key);
+  g_free (entry);
 }
 
 static void
@@ -86,6 +130,10 @@ pm_model_new (void)
       (GDestroyNotify) pm_pad_free);
   model->links_by_src = g_hash_table_new (NULL, NULL);
   model->links_by_sink = g_hash_table_new_full (NULL, NULL, NULL, g_free);
+  model->log_enabled = TRUE;
+  g_queue_init (&model->log);
+  model->log_by_key = g_hash_table_new (g_str_hash, g_str_equal);
+  model->next_log_id = 1;
 
   return model;
 }
@@ -97,6 +145,8 @@ pm_model_free (PmModel * model)
   g_hash_table_unref (model->links_by_sink);
   g_hash_table_unref (model->pads);
   g_hash_table_unref (model->elements);
+  g_hash_table_unref (model->log_by_key);
+  g_queue_clear_full (&model->log, (GDestroyNotify) pm_log_entry_free);
   g_mutex_clear (&model->lock);
   g_free (model);
 }
@@ -421,6 +471,12 @@ append_element (PmModel * model, GString * json, PmElement * element)
   if (element->pending != GST_STATE_VOID_PENDING)
     g_string_append_printf (json, ",\"pending\":\"%s\"",
         gst_element_state_get_name (element->pending));
+  if (element->errors > 0)
+    g_string_append_printf (json, ",\"errors\":%" G_GUINT64_FORMAT,
+        element->errors);
+  if (element->warnings > 0)
+    g_string_append_printf (json, ",\"warnings\":%" G_GUINT64_FORMAT,
+        element->warnings);
   g_string_append (json, ",\"pads\":[");
 
   for (i = 0; i < element->pads->len; i++) {
@@ -519,6 +575,145 @@ pm_model_to_json (PmModel * model)
 
   g_ptr_array_unref (roots);
   g_array_unref (links);
+
+  return g_string_free (json, FALSE);
+}
+
+void
+pm_model_set_log_enabled (PmModel * model, gboolean enabled)
+{
+  g_mutex_lock (&model->lock);
+  model->log_enabled = enabled;
+  g_mutex_unlock (&model->lock);
+}
+
+static gchar *
+element_path (PmElement * element)
+{
+  GString *path = g_string_new (NULL);
+
+  for (; element != NULL; element = element->parent) {
+    g_string_prepend (path, element->name ? element->name : "?");
+    if (element->parent != NULL)
+      g_string_prepend_c (path, '/');
+  }
+  return g_string_free (path, FALSE);
+}
+
+void
+pm_model_add_log (PmModel * model, gpointer object, PmLogLevel level,
+    const gchar * source, const gchar * text, const gchar * debug,
+    const gchar * domain, gint code)
+{
+  PmElement *element;
+  PmLogEntry *entry;
+  gchar *key;
+  gint64 now = g_get_real_time ();
+
+  g_mutex_lock (&model->lock);
+  if (!model->log_enabled)
+    goto done;
+
+  element = object ? g_hash_table_lookup (model->elements, object) : NULL;
+  if (element != NULL) {
+    if (level == PM_LOG_ERROR)
+      element->errors++;
+    else
+      element->warnings++;
+  }
+
+  key = g_strdup_printf ("%" G_GUINT64_FORMAT "|%d|%s|%s",
+      element ? element->id : 0, level, source, text);
+  entry = g_hash_table_lookup (model->log_by_key, key);
+  if (entry != NULL) {
+    g_free (key);
+    entry->count++;
+    entry->last = now;
+    g_queue_unlink (&model->log, entry->link);
+    g_queue_push_tail_link (&model->log, entry->link);
+  } else {
+    entry = g_new0 (PmLogEntry, 1);
+    entry->id = model->next_log_id++;
+    entry->first = entry->last = now;
+    entry->count = 1;
+    entry->level = level;
+    entry->source = g_strdup (source);
+    entry->element_id = element ? element->id : 0;
+    entry->path = element ? element_path (element) : g_strdup ("?");
+    entry->text = g_strdup (text);
+    entry->debug = g_strdup (debug);
+    entry->domain = g_strdup (domain);
+    entry->code = code;
+    entry->key = key;
+    g_queue_push_tail (&model->log, entry);
+    entry->link = model->log.tail;
+    g_hash_table_insert (model->log_by_key, entry->key, entry);
+
+    if (model->log.length > LOG_SIZE) {
+      PmLogEntry *oldest = g_queue_pop_head (&model->log);
+
+      g_hash_table_remove (model->log_by_key, oldest->key);
+      pm_log_entry_free (oldest);
+    }
+  }
+  entry->seq = ++model->log_seq;
+  changed (model);
+
+done:
+  g_mutex_unlock (&model->lock);
+}
+
+static void
+append_log_entry (GString * json, PmLogEntry * entry)
+{
+  g_string_append_printf (json, "{\"id\":%" G_GUINT64_FORMAT
+      ",\"level\":\"%s\",\"source\":", entry->id,
+      entry->level == PM_LOG_ERROR ? "error" : "warning");
+  append_string (json, entry->source);
+  g_string_append_printf (json, ",\"element\":%" G_GUINT64_FORMAT
+      ",\"path\":", entry->element_id);
+  append_string (json, entry->path);
+  g_string_append (json, ",\"text\":");
+  append_string (json, entry->text);
+  if (entry->debug != NULL) {
+    g_string_append (json, ",\"debug\":");
+    append_string (json, entry->debug);
+  }
+  if (entry->domain != NULL) {
+    g_string_append (json, ",\"domain\":");
+    append_string (json, entry->domain);
+    g_string_append_printf (json, ",\"code\":%d", entry->code);
+  }
+  g_string_append_printf (json, ",\"count\":%" G_GUINT64_FORMAT
+      ",\"first\":%" G_GINT64_FORMAT ",\"last\":%" G_GINT64_FORMAT "}",
+      entry->count, entry->first / 1000, entry->last / 1000);
+}
+
+/* Entries added or repeated after sequence number "since", oldest first.
+ * Times are milliseconds since the Unix epoch. */
+gchar *
+pm_model_log_to_json (PmModel * model, guint64 since)
+{
+  GString *json = g_string_new (NULL);
+  gboolean first = TRUE;
+  GList *l;
+
+  g_mutex_lock (&model->lock);
+  g_string_append_printf (json, "{\"enabled\":%s,\"seq\":%" G_GUINT64_FORMAT
+      ",\"entries\":[", model->log_enabled ? "true" : "false",
+      model->log_seq);
+  for (l = model->log.head; l != NULL; l = l->next) {
+    PmLogEntry *entry = l->data;
+
+    if (entry->seq <= since)
+      continue;
+    if (!first)
+      g_string_append_c (json, ',');
+    append_log_entry (json, entry);
+    first = FALSE;
+  }
+  g_mutex_unlock (&model->lock);
+  g_string_append (json, "]}");
 
   return g_string_free (json, FALSE);
 }

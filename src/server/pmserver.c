@@ -172,20 +172,33 @@ handle_ui (SoupServer * soup, SoupServerMessage * msg, const char *path,
 }
 
 static void
-handle_graph (SoupServer * soup, SoupServerMessage * msg, const char *path,
-    GHashTable * query, gpointer user_data)
+set_json_response (SoupServerMessage * msg, gchar * json)
 {
-  PmServer *self = user_data;
-  gchar *graph;
-
-  if (!check_request (self, msg))
-    return;
-  graph = pm_model_to_json (self->model);
   soup_message_headers_replace (soup_server_message_get_response_headers (msg),
       "Cache-Control", "no-store");
   soup_server_message_set_status (msg, SOUP_STATUS_OK, NULL);
   soup_server_message_set_response (msg, "application/json", SOUP_MEMORY_TAKE,
-      graph, strlen (graph));
+      json, strlen (json));
+}
+
+static void
+handle_graph (SoupServer * soup, SoupServerMessage * msg, const char *path,
+    GHashTable * query, gpointer user_data)
+{
+  PmServer *self = user_data;
+
+  if (check_request (self, msg))
+    set_json_response (msg, pm_model_to_json (self->model));
+}
+
+static void
+handle_log (SoupServer * soup, SoupServerMessage * msg, const char *path,
+    GHashTable * query, gpointer user_data)
+{
+  PmServer *self = user_data;
+
+  if (check_request (self, msg))
+    set_json_response (msg, pm_model_log_to_json (self->model, 0));
 }
 
 /* Runs before the WebSocket handshake; setting a status rejects it. */
@@ -320,6 +333,7 @@ server_thread (gpointer user_data)
   self->soup = soup_server_new ("server-header", "pipeline-monitor ", NULL);
   soup_server_add_handler (self->soup, NULL, handle_ui, self, NULL);
   soup_server_add_handler (self->soup, "/api/graph", handle_graph, self, NULL);
+  soup_server_add_handler (self->soup, "/api/log", handle_log, self, NULL);
   soup_server_add_handler (self->soup, "/ws", handle_ws_request, self, NULL);
   soup_server_add_websocket_handler (self->soup, "/ws", NULL, NULL,
       handle_ws, self, NULL);

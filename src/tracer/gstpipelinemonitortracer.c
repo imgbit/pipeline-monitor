@@ -15,6 +15,7 @@ struct _GstPipelineMonitorTracer
 
   PmModel *model;
   PmServer *server;
+  gboolean log;
 };
 
 enum
@@ -127,14 +128,54 @@ do_element_remove_pad (GstTracer * tracer, GstClockTime ts,
   pm_model_remove_pad (GST_PIPELINE_MONITOR_TRACER (tracer)->model, pad);
 }
 
+/* decodebin3 links some pads twice and ignores the result; linking to the
+ * pad that is already the peer is harmless. */
+static gboolean
+already_linked (GstPad * src, GstPad * sink, GstPadLinkReturn result)
+{
+  GstPad *peer;
+  gboolean same;
+
+  if (result != GST_PAD_LINK_WAS_LINKED)
+    return FALSE;
+  peer = gst_pad_get_peer (src);
+  same = peer == sink;
+  gst_clear_object (&peer);
+  return same;
+}
+
+static void
+log_link_failure (GstPipelineMonitorTracer * self, GstPad * src, GstPad * sink,
+    GstPadLinkReturn result)
+{
+  GstElement *element = gst_pad_get_parent_element (resolve_pad (src));
+  gchar *src_name = gst_object_get_path_string (GST_OBJECT (src));
+  gchar *sink_name = gst_object_get_path_string (GST_OBJECT (sink));
+  gchar *text = g_strdup_printf ("cannot link %s to %s: %s", src_name,
+      sink_name, gst_pad_link_get_name (result));
+
+  if (element != NULL)
+    sync_element (self, element);
+  pm_model_add_log (self->model, element, PM_LOG_WARNING, "link", text, NULL,
+      NULL, 0);
+  g_free (text);
+  g_free (sink_name);
+  g_free (src_name);
+  gst_clear_object (&element);
+}
+
 static void
 do_pad_link_post (GstTracer * tracer, GstClockTime ts, GstPad * src,
     GstPad * sink, GstPadLinkReturn result)
 {
-  if (result != GST_PAD_LINK_OK)
+  GstPipelineMonitorTracer *self = GST_PIPELINE_MONITOR_TRACER (tracer);
+
+  if (result != GST_PAD_LINK_OK) {
+    if (self->log && !already_linked (src, sink, result))
+      log_link_failure (self, src, sink, result);
     return;
-  pm_model_link (GST_PIPELINE_MONITOR_TRACER (tracer)->model,
-      resolve_pad (src), resolve_pad (sink));
+  }
+  pm_model_link (self->model, resolve_pad (src), resolve_pad (sink));
 }
 
 static void
@@ -155,11 +196,46 @@ sync_state (GstPipelineMonitorTracer * self, GstElement * element)
 }
 
 static void
+log_message (GstPipelineMonitorTracer * self, GstElement * element,
+    GstMessage * message)
+{
+  GError *error = NULL;
+  gchar *debug = NULL;
+  PmLogLevel level;
+
+  if (GST_MESSAGE_TYPE (message) == GST_MESSAGE_ERROR) {
+    gst_message_parse_error (message, &error, &debug);
+    level = PM_LOG_ERROR;
+  } else {
+    gst_message_parse_warning (message, &error, &debug);
+    level = PM_LOG_WARNING;
+  }
+  sync_element (self, element);
+  pm_model_add_log (self->model, element, level, "message", error->message,
+      debug, g_quark_to_string (error->domain), error->code);
+  g_free (debug);
+  g_error_free (error);
+}
+
+static void
 do_element_post_message_pre (GstTracer * tracer, GstClockTime ts,
     GstElement * element, GstMessage * message)
 {
-  if (GST_MESSAGE_TYPE (message) == GST_MESSAGE_STATE_CHANGED)
-    sync_state (GST_PIPELINE_MONITOR_TRACER (tracer), element);
+  GstPipelineMonitorTracer *self = GST_PIPELINE_MONITOR_TRACER (tracer);
+
+  switch (GST_MESSAGE_TYPE (message)) {
+    case GST_MESSAGE_STATE_CHANGED:
+      sync_state (self, element);
+      break;
+    case GST_MESSAGE_ERROR:
+    case GST_MESSAGE_WARNING:
+      /* Bins re-post their children's messages; keep only the original. */
+      if (self->log && GST_MESSAGE_SRC (message) == GST_OBJECT_CAST (element))
+        log_message (self, element, message);
+      break;
+    default:
+      break;
+  }
 }
 
 static void
@@ -169,6 +245,18 @@ do_element_change_state_post (GstTracer * tracer, GstClockTime ts,
 {
   GstPipelineMonitorTracer *self = GST_PIPELINE_MONITOR_TRACER (tracer);
   GstState next = GST_STATE_TRANSITION_NEXT (transition);
+
+  /* A failing child makes every parent bin fail too; record the child. */
+  if (result == GST_STATE_CHANGE_FAILURE && self->log && !GST_IS_BIN (element)) {
+    gchar *text = g_strdup_printf ("state change from %s to %s failed",
+        gst_element_state_get_name (GST_STATE_TRANSITION_CURRENT (transition)),
+        gst_element_state_get_name (next));
+
+    sync_element (self, element);
+    pm_model_add_log (self->model, element, PM_LOG_ERROR, "state-change", text,
+        NULL, NULL, 0);
+    g_free (text);
+  }
 
   /* On success GStreamer completes the change right after this hook, and
    * posts no message when the state does not change (PLAYING to PLAYING).
@@ -206,7 +294,23 @@ gst_pipeline_monitor_tracer_get_property (GObject * object, guint prop_id,
   }
 }
 
-/* Options come from GST_TRACERS="pipeline-monitor(port=9000,ui-dir=web)". */
+static gboolean
+get_bool_option (const GstStructure * s, const gchar * name, gboolean def)
+{
+  gboolean value;
+  const gchar *str;
+
+  if (gst_structure_get_boolean (s, name, &value))
+    return value;
+  str = gst_structure_get_string (s, name);
+  if (str == NULL)
+    return def;
+  return !(g_ascii_strcasecmp (str, "false") == 0 ||
+      g_ascii_strcasecmp (str, "no") == 0 || g_strcmp0 (str, "0") == 0);
+}
+
+/* Options come from
+ * GST_TRACERS="pipeline-monitor(port=9000,ui-dir=web,log=false)". */
 static guint
 parse_options (GstPipelineMonitorTracer * self, gchar ** ui_dir)
 {
@@ -232,6 +336,7 @@ parse_options (GstPipelineMonitorTracer * self, gchar ** ui_dir)
       port = DEFAULT_PORT;
     }
     *ui_dir = g_strdup (gst_structure_get_string (s, "ui-dir"));
+    self->log = get_bool_option (s, "log", TRUE);
     gst_structure_free (s);
   }
   g_free (desc);
@@ -250,7 +355,9 @@ gst_pipeline_monitor_tracer_constructed (GObject * object)
   G_OBJECT_CLASS (gst_pipeline_monitor_tracer_parent_class)->constructed
       (object);
 
+  self->log = TRUE;
   port = parse_options (self, &ui_dir);
+  pm_model_set_log_enabled (self->model, self->log);
   if (ui_dir != NULL && !g_file_test (ui_dir, G_FILE_TEST_IS_DIR))
     g_printerr ("pipeline-monitor: ui-dir '%s' is not a folder, the page "
         "will not load\n", ui_dir);
