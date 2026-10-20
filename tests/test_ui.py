@@ -26,6 +26,8 @@ PIPELINE = ("videotestsrc is-live=true ! jpegenc ! decodebin3 ! queue ! "
 SHOT_PIPELINE = ("videotestsrc is-live=true ! jpegenc ! decodebin3 ! queue ! "
                  "tee name=split ! queue ! videoconvert ! fakesink "
                  "split. ! queue ! fakesink")
+TRANSFORM = "document.querySelector('#graph > g').getAttribute('transform')"
+AUTO_FIT = "document.getElementById('auto-fit').getAttribute('aria-pressed')"
 NODES = "document.querySelectorAll('#graph .node').length"
 
 
@@ -177,6 +179,14 @@ class Browser:
             self.call("Input.dispatchMouseEvent", type=kind, x=point[0],
                       y=point[1], button="left", clickCount=1)
 
+    # The live graph can move between finding an element and clicking it.
+    def click_until(self, selector, condition, tries=3):
+        for _ in range(tries):
+            self.click(selector)
+            if self.wait(condition, timeout=3):
+                return True
+        return False
+
     def screenshot(self, path):
         data = self.call("Page.captureScreenshot")["data"]
         with open(path, "wb") as f:
@@ -225,20 +235,39 @@ def check(browser, url):
 
     mq = browser.eval(f"{element_selector('multiqueue0')}?.dataset.id")
     assert mq, "multiqueue0 not drawn"
-    browser.click(f'#graph .node[data-id="{mq}"] > rect.box')
-    assert browser.wait("document.querySelector('#details h2')?.textContent"
-                        " === 'multiqueue0'"), "details panel did not open"
+    assert browser.click_until(
+        f'#graph .node[data-id="{mq}"] > rect.box',
+        "document.querySelector('#details h2')?.textContent === 'multiqueue0'"), \
+        "details panel did not open"
 
-    browser.click('.toggle[data-path$="parsebin0"] rect')
-    assert browser.wait("!!document.querySelector('#graph .node.collapsed')")
+    assert browser.eval(AUTO_FIT) == "false", "auto-fit still on after a click"
+    view = browser.eval(TRANSFORM)
+    count = browser.eval(NODES)
+    assert browser.wait(f"{NODES} !== {count}"), "graph did not update live"
+    assert browser.eval(TRANSFORM) == view, "view moved after the user clicked"
+
+    assert browser.click_until(
+        '.toggle[data-path$="parsebin0"] rect',
+        "!!document.querySelector('#graph .node.collapsed')"), \
+        "bin did not collapse"
     assert not browser.eval(f"!!{element_selector('typefind')}"), \
         "children of a collapsed bin are still drawn"
+
+    browser.click("#auto-fit")
+    assert browser.wait(f"{AUTO_FIT} === 'true'"), "auto-fit did not turn on"
+    view = browser.eval(TRANSFORM)
+    count = browser.eval(NODES)
+    assert browser.wait(f"{NODES} !== {count}"), "graph did not update live"
+    assert browser.wait(f"{TRANSFORM} !== {json.dumps(view)}"), \
+        "auto-fit did not follow the graph"
 
     browser.call("Page.reload")
     assert browser.wait("!!document.querySelector('#graph .node.collapsed')"), \
         "collapsed bin not remembered after reload"
-    browser.click('.toggle[data-path$="parsebin0"] rect')
-    assert browser.wait("!document.querySelector('#graph .node.collapsed')")
+    assert browser.click_until(
+        '.toggle[data-path$="parsebin0"] rect',
+        "!document.querySelector('#graph .node.collapsed')"), \
+        "bin did not expand"
 
     counts = set()
     end = time.time() + 5
