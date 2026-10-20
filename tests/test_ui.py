@@ -36,6 +36,12 @@ def find_chrome():
     candidates += [shutil.which(n) for n in
                    ("google-chrome", "google-chrome-stable", "chromium",
                     "chromium-browser", "chrome")]
+    # Windows: Chrome is usually not on PATH.
+    for base in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"):
+        if os.environ.get(base):
+            candidates.append(os.path.join(os.environ[base], "Google",
+                                           "Chrome", "Application",
+                                           "chrome.exe"))
     return next((c for c in candidates if c and os.path.exists(c)), None)
 
 
