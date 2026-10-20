@@ -92,9 +92,10 @@ describe_json_element (JsonObject * element, const gchar * parent_path,
     gchar *pad_path = g_strdup_printf ("%s:%s", path,
         json_object_get_string_member (pad, "name"));
 
-    g_hash_table_add (set, g_strdup_printf ("P %s %s%s", pad_path,
+    g_hash_table_add (set, g_strdup_printf ("P %s %s%s caps=%s", pad_path,
             json_object_get_string_member (pad, "direction"),
-            json_object_get_boolean_member (pad, "ghost") ? " ghost" : ""));
+            json_object_get_boolean_member (pad, "ghost") ? " ghost" : "",
+            json_object_get_string_member_with_default (pad, "caps", "-")));
     g_hash_table_insert (pad_paths,
         GSIZE_TO_POINTER (json_object_get_int_member (pad, "id")), pad_path);
   }
@@ -192,10 +193,15 @@ describe_pad (GstPad * pad, GHashTable * set)
 {
   gchar *path = pad_path (pad);
   GstPad *peer = gst_pad_get_peer (pad);
+  GstCaps *caps = gst_pad_get_current_caps (pad);
+  gchar *caps_text = caps ? gst_caps_to_string (caps) : g_strdup ("-");
 
-  g_hash_table_add (set, g_strdup_printf ("P %s %s%s", path,
+  g_hash_table_add (set, g_strdup_printf ("P %s %s%s caps=%s", path,
           GST_PAD_IS_SRC (pad) ? "src" : "sink",
-          GST_IS_GHOST_PAD (pad) ? " ghost" : ""));
+          GST_IS_GHOST_PAD (pad) ? " ghost" : "", caps_text));
+  g_free (caps_text);
+  if (caps != NULL)
+    gst_caps_unref (caps);
   g_free (path);
 
   if (peer != NULL && GST_PAD_IS_SRC (pad)) {
@@ -487,6 +493,69 @@ test_two_pipelines (void)
   set_state_and_wait (pipelines[1], GST_STATE_NULL);
   gst_object_unref (pipelines[1]);
   gst_object_unref (loose);
+  assert_graph_empty ();
+}
+
+/* Caps checks */
+
+static gboolean
+graph_has (const gchar * needle)
+{
+  gchar *graph = get_graph ();
+  gboolean found = strstr (graph, needle) != NULL;
+
+  g_free (graph);
+  return found;
+}
+
+/* Waits up to 2 s for the graph to (not) contain needle. */
+static gboolean
+wait_graph_has (const gchar * needle, gboolean expected)
+{
+  gint tries;
+
+  for (tries = 0; tries < 200; tries++) {
+    if (graph_has (needle) == expected)
+      return TRUE;
+    g_usleep (10 * G_TIME_SPAN_MILLISECOND);
+  }
+  return FALSE;
+}
+
+static void
+test_caps (void)
+{
+  GError *error = NULL;
+  GstElement *pipeline, *filter;
+  GstCaps *caps;
+
+  assert_graph_empty ();
+  pipeline = gst_parse_launch ("videotestsrc is-live=true ! "
+      "capsfilter name=cf caps=video/x-raw,format=I420,width=320,height=240,"
+      "framerate=30/1 ! fakesink", &error);
+  g_assert_no_error (error);
+  filter = gst_bin_get_by_name (GST_BIN (pipeline), "cf");
+
+  set_state_and_wait (pipeline, GST_STATE_PLAYING);
+  assert_graph_matches (pipeline);
+  g_assert_true (wait_graph_has ("width=(int)320", TRUE));
+
+  /* Renegotiation while playing. */
+  caps = gst_caps_from_string ("video/x-raw,format=I420,width=640,height=480,"
+      "framerate=30/1");
+  g_object_set (filter, "caps", caps, NULL);
+  gst_caps_unref (caps);
+  g_assert_true (wait_graph_has ("width=(int)640", TRUE));
+  assert_graph_matches (pipeline);
+
+  /* Going back to READY clears the pads' caps. */
+  set_state_and_wait (pipeline, GST_STATE_READY);
+  g_assert_true (wait_graph_has ("\"caps\"", FALSE));
+  assert_graph_matches (pipeline);
+
+  set_state_and_wait (pipeline, GST_STATE_NULL);
+  gst_object_unref (filter);
+  gst_object_unref (pipeline);
   assert_graph_empty ();
 }
 
@@ -808,6 +877,7 @@ main (int argc, char **argv)
   g_test_add_func ("/model/json-escaping", test_json_escaping);
   g_test_add_func ("/model/dynamic-changes", test_dynamic_changes);
   g_test_add_func ("/model/two-pipelines", test_two_pipelines);
+  g_test_add_func ("/model/caps", test_caps);
   g_test_add_func ("/log/messages", test_log_messages);
   g_test_add_func ("/log/repeats", test_log_repeats);
   g_test_add_func ("/log/state-change", test_log_state_change);

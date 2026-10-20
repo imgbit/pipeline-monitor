@@ -29,6 +29,7 @@ struct _PmPad
   gchar *name;
   GstPadDirection direction;
   gchar *presence;
+  gchar *caps;
   gboolean is_ghost;
   PmElement *element;
 };
@@ -114,6 +115,7 @@ pm_pad_free (PmPad * pad)
 {
   g_free (pad->name);
   g_free (pad->presence);
+  g_free (pad->caps);
   g_free (pad);
 }
 
@@ -350,6 +352,22 @@ done:
   g_mutex_unlock (&model->lock);
 }
 
+/* caps is the pad's current caps as text, or NULL when it has none. */
+void
+pm_model_set_caps (PmModel * model, gpointer object, const gchar * caps)
+{
+  PmPad *pad;
+
+  g_mutex_lock (&model->lock);
+  pad = g_hash_table_lookup (model->pads, object);
+  if (pad != NULL && g_strcmp0 (pad->caps, caps) != 0) {
+    g_free (pad->caps);
+    pad->caps = g_strdup (caps);
+    changed (model);
+  }
+  g_mutex_unlock (&model->lock);
+}
+
 void
 pm_model_remove_pad (PmModel * model, gpointer object)
 {
@@ -449,6 +467,10 @@ append_pad (GString * json, PmPad * pad)
       pad->direction == GST_PAD_SINK ? "sink" : "unknown");
   if (pad->presence != NULL)
     g_string_append_printf (json, ",\"presence\":\"%s\"", pad->presence);
+  if (pad->caps != NULL) {
+    g_string_append (json, ",\"caps\":");
+    append_string (json, pad->caps);
+  }
   g_string_append_printf (json, ",\"ghost\":%s}",
       pad->is_ghost ? "true" : "false");
 }

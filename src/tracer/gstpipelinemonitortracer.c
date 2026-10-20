@@ -92,6 +92,30 @@ do_bin_remove_pre (GstTracer * tracer, GstClockTime ts, GstBin * bin,
 }
 
 static void
+sync_caps (GstPad * pad, GParamSpec * pspec, GstPipelineMonitorTracer * self)
+{
+  GstCaps *caps = gst_pad_get_current_caps (pad);
+  gchar *text = caps ? gst_caps_to_string (caps) : NULL;
+
+  pm_model_set_caps (self->model, pad, text);
+  g_free (text);
+  if (caps != NULL)
+    gst_caps_unref (caps);
+}
+
+/* GStreamer notifies "caps" whenever a caps event is stored on the pad or
+ * its events are cleared (e.g. on going back to READY). */
+static void
+watch_caps (GstPipelineMonitorTracer * self, GstPad * pad)
+{
+  if (g_signal_handler_find (pad, G_SIGNAL_MATCH_FUNC | G_SIGNAL_MATCH_DATA,
+          0, 0, NULL, sync_caps, self) == 0)
+    g_signal_connect_object (pad, "notify::caps", G_CALLBACK (sync_caps),
+        self, 0);
+  sync_caps (pad, NULL, self);
+}
+
+static void
 do_element_add_pad (GstTracer * tracer, GstClockTime ts, GstElement * element,
     GstPad * pad)
 {
@@ -118,6 +142,7 @@ do_element_add_pad (GstTracer * tracer, GstClockTime ts, GstElement * element,
   sync_element (self, element);
   pm_model_add_pad (self->model, element, pad, name,
       gst_pad_get_direction (pad), presence, GST_IS_GHOST_PAD (pad));
+  watch_caps (self, pad);
   g_free (name);
 }
 
