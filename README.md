@@ -30,6 +30,17 @@ On macOS with Homebrew:
 brew install meson ninja pkgconf gstreamer libsoup json-glib
 ```
 
+On Windows, install the official GStreamer MSVC package from
+[gstreamer.freedesktop.org](https://gstreamer.freedesktop.org/download/)
+with the development files, and Meson with `pip install meson ninja`. Then,
+in a command prompt (adjust `GST` if you installed GStreamer elsewhere):
+
+```bat
+set GST=C:\Program Files\gstreamer\1.0\msvc_x86_64
+set PATH=%GST%\bin;%PATH%
+set PKG_CONFIG_PATH=%GST%\lib\pkgconfig
+```
+
 Then:
 
 ```sh
@@ -38,11 +49,22 @@ meson compile -C build
 meson test -C build
 ```
 
+On Windows, use `meson setup build --vsenv` so that Meson finds the Visual
+Studio compiler.
+
 ## Use
 
 ```sh
 GST_PLUGIN_PATH=$PWD/build/src GST_TRACERS=pipeline-monitor \
   gst-launch-1.0 videotestsrc is-live=true ! videoconvert ! autovideosink
+```
+
+On Windows:
+
+```bat
+set GST_PLUGIN_PATH=%CD%\build\src
+set GST_TRACERS=pipeline-monitor
+gst-launch-1.0 videotestsrc is-live=true ! videoconvert ! autovideosink
 ```
 
 Then open the address it prints, by default http://127.0.0.1:8765/.
@@ -52,7 +74,8 @@ Then open the address it prints, by default http://127.0.0.1:8765/.
 - Choose the port with `GST_TRACERS="pipeline-monitor(port=9000)"`. If the
   port is taken, the next free one is used.
 - Try the example, which adds and removes a branch every two seconds:
-  `./examples/run-example.sh --serve`
+  `./examples/run-example.sh --serve` (on Windows, run
+  `build\examples\serve.exe` with `GST_PLUGIN_PATH` set as above)
 
 The server has no authentication. It only accepts connections from the same
 machine and only from its own page.
@@ -61,7 +84,8 @@ machine and only from its own page.
 
 Version 0.1 shows the pipeline graph. It is tested on macOS (Apple Silicon)
 with GStreamer 1.28.8, and in CI on Ubuntu 24.04 (GStreamer 1.24), Debian 12
-(GStreamer 1.22) and macOS (Homebrew). Windows is not tested yet.
+(GStreamer 1.22), macOS (Homebrew) and Windows (official GStreamer 1.28.8,
+MSVC).
 
 ## License
 
