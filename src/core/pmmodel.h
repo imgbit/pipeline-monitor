@@ -47,7 +47,7 @@ void pm_model_set_log_enabled (PmModel * model, gboolean enabled);
 void pm_model_add_log (PmModel * model, gpointer element, PmLogLevel level,
     const gchar * source, const gchar * text, const gchar * debug,
     const gchar * domain, gint code);
-gchar *pm_model_log_to_json (PmModel * model, guint64 since);
+gchar *pm_model_log_to_json (PmModel * model, guint64 since, guint64 * seq);
 
 G_END_DECLS
 

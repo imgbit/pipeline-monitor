@@ -31,6 +31,7 @@ struct _PmServer
   SoupServer *soup;
   GPtrArray *clients;
   gchar *last_graph;
+  guint64 log_sent;
 
   gint update_scheduled;
 };
@@ -198,7 +199,7 @@ handle_log (SoupServer * soup, SoupServerMessage * msg, const char *path,
   PmServer *self = user_data;
 
   if (check_request (self, msg))
-    set_json_response (msg, pm_model_log_to_json (self->model, 0));
+    set_json_response (msg, pm_model_log_to_json (self->model, 0, NULL));
 }
 
 /* Runs before the WebSocket handshake; setting a status rejects it. */
@@ -213,6 +214,12 @@ static gchar *
 graph_message (const gchar * graph)
 {
   return g_strdup_printf ("{\"type\":\"graph\",\"graph\":%s}", graph);
+}
+
+static gchar *
+log_message (const gchar * log)
+{
+  return g_strdup_printf ("{\"type\":\"log\",\"log\":%s}", log);
 }
 
 static void
@@ -236,39 +243,65 @@ handle_ws (SoupServer * soup, SoupServerMessage * msg, const char *path,
 {
   PmServer *self = user_data;
   gchar *graph = pm_model_to_json (self->model);
-  gchar *text = graph_message (graph);
+  gchar *log = pm_model_log_to_json (self->model, 0, NULL);
+  gchar *text;
 
   g_ptr_array_add (self->clients, g_object_ref (conn));
   g_signal_connect (conn, "closed", G_CALLBACK (on_ws_closed), self);
-  send_text (conn, text);
 
+  /* The whole log once; later updates may repeat some of it, which the
+   * page handles by entry id. */
+  text = graph_message (graph);
+  send_text (conn, text);
   g_free (text);
+  text = log_message (log);
+  send_text (conn, text);
+  g_free (text);
+
+  g_free (log);
   g_free (graph);
+}
+
+static void
+send_to_all (PmServer * self, const gchar * text)
+{
+  guint i;
+
+  for (i = 0; i < self->clients->len; i++)
+    send_text (g_ptr_array_index (self->clients, i), text);
 }
 
 static gboolean
 send_update (gpointer user_data)
 {
   PmServer *self = user_data;
-  gchar *graph, *text;
-  guint i;
+  gchar *graph, *log, *text;
+  guint64 seq;
 
   /* Cleared first so changes made while serialising schedule another send. */
   g_atomic_int_set (&self->update_scheduled, 0);
 
   graph = pm_model_to_json (self->model);
-  if (g_strcmp0 (graph, self->last_graph) == 0) {
+  if (g_strcmp0 (graph, self->last_graph) != 0) {
+    text = graph_message (graph);
+    send_to_all (self, text);
+    g_free (text);
+    g_free (self->last_graph);
+    self->last_graph = graph;
+  } else {
     g_free (graph);
-    return G_SOURCE_REMOVE;
   }
 
-  text = graph_message (graph);
-  for (i = 0; i < self->clients->len; i++)
-    send_text (g_ptr_array_index (self->clients, i), text);
-  g_free (text);
+  /* Only entries added or repeated since the last send. */
+  log = pm_model_log_to_json (self->model, self->log_sent, &seq);
+  if (seq > self->log_sent) {
+    text = log_message (log);
+    send_to_all (self, text);
+    g_free (text);
+    self->log_sent = seq;
+  }
+  g_free (log);
 
-  g_free (self->last_graph);
-  self->last_graph = graph;
   return G_SOURCE_REMOVE;
 }
 

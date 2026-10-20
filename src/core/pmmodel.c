@@ -690,9 +690,10 @@ append_log_entry (GString * json, PmLogEntry * entry)
 }
 
 /* Entries added or repeated after sequence number "since", oldest first.
+ * "seq" receives the sequence number to pass as "since" next time.
  * Times are milliseconds since the Unix epoch. */
 gchar *
-pm_model_log_to_json (PmModel * model, guint64 since)
+pm_model_log_to_json (PmModel * model, guint64 since, guint64 * seq)
 {
   GString *json = g_string_new (NULL);
   gboolean first = TRUE;
@@ -702,6 +703,8 @@ pm_model_log_to_json (PmModel * model, guint64 since)
   g_string_append_printf (json, "{\"enabled\":%s,\"seq\":%" G_GUINT64_FORMAT
       ",\"entries\":[", model->log_enabled ? "true" : "false",
       model->log_seq);
+  if (seq != NULL)
+    *seq = model->log_seq;
   for (l = model->log.head; l != NULL; l = l->next) {
     PmLogEntry *entry = l->data;
 

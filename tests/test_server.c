@@ -324,22 +324,96 @@ ws_disconnect (WsClient * client)
   g_queue_clear_full (&client->messages, g_free);
 }
 
-/* Waits for a graph message and checks whether it mentions needle. */
+/* The next message of the given type; other messages are skipped. */
+static gchar *
+ws_next (WsClient * client, const gchar * type)
+{
+  gchar *prefix = g_strdup_printf ("{\"type\":\"%s\",", type);
+  gchar *message = NULL;
+
+  while (message == NULL) {
+    if (g_queue_is_empty (&client->messages)) {
+      client->got_message = FALSE;
+      g_assert_true (wait_for (&client->got_message));
+    }
+    message = g_queue_pop_head (&client->messages);
+    if (!g_str_has_prefix (message, prefix))
+      g_clear_pointer (&message, g_free);
+  }
+  g_free (prefix);
+  return message;
+}
+
+/* Waits for the next graph message and checks whether it mentions needle. */
 static gboolean
 ws_next_graph_has (WsClient * client, const gchar * needle)
 {
-  gchar *message;
+  gchar *message = ws_next (client, "graph");
   gboolean found;
 
-  if (g_queue_is_empty (&client->messages)) {
-    client->got_message = FALSE;
-    g_assert_true (wait_for (&client->got_message));
-  }
-  message = g_queue_pop_head (&client->messages);
   g_assert_true (g_str_has_prefix (message, "{\"type\":\"graph\",\"graph\":{"));
   found = strstr (message, needle) != NULL;
   g_free (message);
   return found;
+}
+
+static void
+post_warning (GstElement * element, const gchar * text)
+{
+  GError *error = g_error_new_literal (GST_CORE_ERROR, GST_CORE_ERROR_FAILED,
+      text);
+
+  gst_element_post_message (element,
+      gst_message_new_warning (GST_OBJECT (element), error, NULL));
+  g_error_free (error);
+}
+
+/* After connecting, only new or repeated entries are sent. */
+static void
+test_websocket_log (void)
+{
+  SoupSession *session = soup_session_new ();
+  gchar *url = server_url ("ws");
+  GstElement *pipeline = gst_pipeline_new (NULL);
+  GstElement *element = gst_element_factory_make ("identity", "ws-log");
+  GstBus *bus = gst_element_get_bus (pipeline);
+  WsClient client;
+  gchar *message;
+
+  gst_bus_set_flushing (bus, TRUE);
+  gst_bin_add (GST_BIN (pipeline), element);
+
+  ws_connect (&client, session, url, NULL);
+  g_assert_no_error (client.error);
+  message = ws_next (&client, "log");
+  g_assert_true (g_str_has_prefix (message,
+          "{\"type\":\"log\",\"log\":{\"enabled\":true,"));
+  g_free (message);
+
+  post_warning (element, "ws first");
+  message = ws_next (&client, "log");
+  g_assert_nonnull (strstr (message, "\"text\":\"ws first\""));
+  g_assert_nonnull (strstr (message, "\"count\":1,"));
+  g_free (message);
+
+  post_warning (element, "ws second");
+  message = ws_next (&client, "log");
+  g_assert_nonnull (strstr (message, "\"text\":\"ws second\""));
+  g_assert_null (strstr (message, "ws first"));
+  g_free (message);
+
+  post_warning (element, "ws first");
+  message = ws_next (&client, "log");
+  g_assert_nonnull (strstr (message, "\"text\":\"ws first\""));
+  g_assert_nonnull (strstr (message, "\"count\":2,"));
+  g_assert_null (strstr (message, "ws second"));
+  g_free (message);
+
+  ws_disconnect (&client);
+  gst_object_unref (bus);
+  gst_object_unref (pipeline);
+  g_free (url);
+  g_object_unref (session);
 }
 
 static void
@@ -483,6 +557,7 @@ main (int argc, char **argv)
   g_test_add_func ("/server/ui-dir", test_ui_dir);
   g_test_add_func ("/server/host-check", test_host_check);
   g_test_add_func ("/server/websocket", test_websocket);
+  g_test_add_func ("/server/websocket-log", test_websocket_log);
   g_test_add_func ("/server/origin-check", test_origin_check);
   g_test_add_func ("/server/port-fallback", test_port_fallback);
   g_test_add_func ("/server/no-free-port", test_no_free_port);
