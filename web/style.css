@@ -91,6 +91,11 @@ select, button {
 
 button { cursor: pointer; min-width: 28px; }
 button:hover { border-color: var(--accent); }
+button[aria-pressed="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
 
 .state::before {
   content: "";

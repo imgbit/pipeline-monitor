@@ -41,7 +41,7 @@ export class GraphView {
     this.handlers = handlers;
     this.transform = { x: 0, y: 0, k: 1 };
     this.bounds = null;
-    this.userMoved = false;
+    this.autoFit = true;
 
     const defs = el("defs", {}, svg);
     const marker = el("marker", {
@@ -75,7 +75,7 @@ export class GraphView {
       this.svg.classList.add("panning");
       this.transform.x = drag.tx + dx;
       this.transform.y = drag.ty + dy;
-      this.userMoved = true;
+      this.setAutoFit(false);
       this.apply();
     });
     this.svg.addEventListener("pointerup", () => {
@@ -92,7 +92,18 @@ export class GraphView {
     }, { passive: false });
   }
 
+  // Any interaction stops auto-fit, so nothing moves under the cursor.
+  setAutoFit(on) {
+    if (this.autoFit === on)
+      return;
+    this.autoFit = on;
+    this.handlers.autoFit(on);
+    if (on)
+      this.fit();
+  }
+
   click(target) {
+    this.setAutoFit(false);
     const toggle = target.closest(".toggle");
     if (toggle) {
       this.handlers.toggle(toggle.dataset.path);
@@ -113,7 +124,7 @@ export class GraphView {
     this.transform.x = cx - (cx - this.transform.x) * f;
     this.transform.y = cy - (cy - this.transform.y) * f;
     this.transform.k = k;
-    this.userMoved = true;
+    this.setAutoFit(false);
     this.apply();
   }
 
@@ -133,7 +144,6 @@ export class GraphView {
       x: (r.width - width * k) / 2,
       y: (r.height - height * k) / 2,
     };
-    this.userMoved = false;
     this.apply();
   }
 
@@ -162,7 +172,7 @@ export class GraphView {
 
     this.viewport.replaceChildren(bins, edges, nodes);
     this.bounds = { width: layout.width, height: layout.height };
-    if (!this.userMoved)
+    if (this.autoFit)
       this.fit();
   }
 

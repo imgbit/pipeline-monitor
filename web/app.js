@@ -31,6 +31,9 @@ const view = new GraphView($("graph"), {
     saveCollapsed();
     update();
   },
+  autoFit(on) {
+    $("auto-fit").setAttribute("aria-pressed", String(on));
+  },
 });
 
 function loadCollapsed() {
@@ -152,7 +155,7 @@ async function layoutAndRender() {
   }
   if (pipeline.id !== state.pipelineId) {
     state.pipelineId = pipeline.id;
-    view.userMoved = false;
+    view.setAutoFit(true);
   }
 
   const selection = index.elements.get(state.selected);
@@ -203,9 +206,9 @@ $("pipeline-select").addEventListener("change", (e) => {
 });
 $("zoom-in").addEventListener("click", () => view.zoomCenter(1.25));
 $("zoom-out").addEventListener("click", () => view.zoomCenter(0.8));
-$("fit").addEventListener("click", () => view.fit());
+$("auto-fit").addEventListener("click", () => view.setAutoFit(!view.autoFit));
 window.addEventListener("resize", () => {
-  if (!view.userMoved)
+  if (view.autoFit)
     view.fit();
 });
 
