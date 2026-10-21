@@ -327,6 +327,7 @@ send_all_stats (gpointer user_data)
   PmServer *self = user_data;
   guint i;
 
+  pm_monitor_tick (self->monitor);
   for (i = 0; i < self->clients->len; i++) {
     SoupWebsocketConnection *conn = g_ptr_array_index (self->clients, i);
     gchar *stats = pm_monitor_stats_json (self->monitor, conn);

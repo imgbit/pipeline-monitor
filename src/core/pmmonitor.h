@@ -18,6 +18,7 @@ gboolean pm_monitor_add (PmMonitor * monitor, gpointer client, guint64 pad);
 void pm_monitor_remove (PmMonitor * monitor, gpointer client, guint64 pad);
 void pm_monitor_remove_client (PmMonitor * monitor, gpointer client);
 
+void pm_monitor_tick (PmMonitor * monitor);
 gchar *pm_monitor_stats_json (PmMonitor * monitor, gpointer client);
 gchar *pm_monitor_list_json (PmMonitor * monitor);
 

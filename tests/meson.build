@@ -21,8 +21,14 @@ test('model', test_model,
   depends : [gstpipelinemonitor],
   timeout : 120)
 
+core_args = []
+if get_option('b_sanitize') != 'none'
+  core_args += '-DPM_SANITIZED'
+endif
+
 test_core = executable('test_core',
-  'test_core.c', '../src/core/pmmodel.c',
+  'test_core.c', '../src/core/pmmodel.c', '../src/core/pmmonitor.c',
+  c_args : core_args,
   include_directories : include_directories('../src/core'),
   dependencies : [gst_dep, json_glib_dep])
 

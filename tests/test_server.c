@@ -751,6 +751,78 @@ test_monitor_bad_commands (void)
   g_object_unref (session);
 }
 
+/* The next pad-stats entry for pad, which must not be gone. */
+static JsonNode *
+next_entry (WsClient * client, gint64 pad)
+{
+  while (TRUE) {
+    gchar *message = ws_next (client, "pad-stats");
+    JsonNode *root = parse (message);
+    JsonArray *pads = json_object_get_array_member (json_object_get_object_member
+        (json_node_get_object (root), "stats"), "pads");
+    JsonNode *entry = NULL;
+    guint i;
+
+    for (i = 0; i < json_array_get_length (pads); i++)
+      if (json_object_get_int_member (json_array_get_object_element (pads, i),
+              "pad") == pad)
+        entry = json_node_copy (json_array_get_element (pads, i));
+    json_node_unref (root);
+    g_free (message);
+    if (entry != NULL)
+      return entry;
+  }
+}
+
+static void
+test_monitor_values (void)
+{
+  SoupSession *session = soup_session_new ();
+  gchar *url = server_url ("ws");
+  GstElement *pipeline = start_pipeline ("videotestsrc is-live=true ! "
+      "video/x-raw,framerate=30/1 ! fakesink name=values-sink");
+  gint64 pad = pad_id ("values-sink", "sink");
+  WsClient client;
+  JsonNode *node = NULL;
+  JsonObject *entry, *last, *window;
+  gint tries;
+
+  ws_connect (&client, session, url, NULL);
+  ws_send (&client, "{\"type\":\"monitor\",\"pad\":%" G_GINT64_FORMAT "}",
+      pad);
+  /* Wait for a full window. */
+  for (tries = 0; tries < 8; tries++) {
+    g_clear_pointer (&node, json_node_unref);
+    node = next_entry (&client, pad);
+  }
+  entry = json_node_get_object (node);
+
+  g_assert_cmpint (json_object_get_int_member (entry, "bytes"), >, 0);
+  last = json_object_get_object_member (entry, "last");
+  g_assert_false (json_object_get_null_member (last, "pts"));
+  g_assert_cmpint (json_object_get_int_member (last, "duration"), ==,
+      GST_SECOND / 30);
+  /* Live, so on time within a frame or two. */
+  g_assert_cmpint (ABS (json_object_get_int_member (last, "delay")), <,
+      GST_SECOND);
+  g_assert_cmpstr (json_object_get_string_member
+      (json_object_get_object_member (entry, "segment"), "format"), ==,
+      "time");
+  window = json_object_get_object_member (entry, "window");
+  g_assert_cmpfloat (json_object_get_double_member (window, "buffers_per_s"),
+      >, 20);
+  g_assert_cmpfloat (json_object_get_double_member (window, "buffers_per_s"),
+      <, 40);
+  g_assert_cmpint (json_object_get_int_member (window, "gap_avg"), >,
+      GST_SECOND / 60);
+  json_node_unref (node);
+
+  ws_disconnect (&client);
+  stop_pipeline (pipeline);
+  g_free (url);
+  g_object_unref (session);
+}
+
 /* A watched pad that goes away is reported once, then dropped. */
 static void
 test_monitor_pad_gone (void)
@@ -790,6 +862,7 @@ main (int argc, char **argv)
   g_test_add_func ("/server/websocket", test_websocket);
   g_test_add_func ("/server/websocket-log", test_websocket_log);
   g_test_add_func ("/server/monitor", test_monitor);
+  g_test_add_func ("/server/monitor-values", test_monitor_values);
   g_test_add_func ("/server/monitor-bad-commands", test_monitor_bad_commands);
   g_test_add_func ("/server/monitor-pad-gone", test_monitor_pad_gone);
   g_test_add_func ("/server/origin-check", test_origin_check);
