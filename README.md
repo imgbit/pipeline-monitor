@@ -78,8 +78,9 @@ Then open the address it prints, by default http://127.0.0.1:8765/.
   environment or with `setenv()` before `gst_init()`.
 - Choose the port with `GST_TRACERS="pipeline-monitor(port=9000)"`. If the
   port is taken, the next free one is used.
-- Errors and warnings are collected by default; turn that off with
-  `GST_TRACERS="pipeline-monitor(log=false)"`. Options can be combined, e.g.
+- Errors and warnings are recorded by default;
+  `GST_TRACERS="pipeline-monitor(log=false)"` turns that off (your application
+  still receives them as usual). Options can be combined, e.g.
   `pipeline-monitor(port=9000,log=false)`.
 - Try the example, which adds and removes a branch every two seconds:
   `./examples/run-example.sh --serve`; add `--warnings` to also see warnings
