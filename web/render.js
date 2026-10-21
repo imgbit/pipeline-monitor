@@ -3,6 +3,7 @@
 
 // Draws an ELK layout as SVG and handles pan and zoom.
 
+
 const SVG = "http://www.w3.org/2000/svg";
 
 function el(name, attrs = {}, parent = null) {
@@ -22,11 +23,6 @@ function text(parent, x, y, cls, content, anchor = "start") {
 
 function title(parent, content) {
   el("title", {}, parent).textContent = content;
-}
-
-function padTooltip(pad) {
-  const extra = [pad.direction, pad.presence, pad.ghost ? "ghost" : null];
-  return `${pad.name} (${extra.filter(Boolean).join(", ")})`;
 }
 
 function walk(node, fn) {
@@ -65,13 +61,16 @@ export class GraphView {
       this.svg.setPointerCapture(e.pointerId);
     });
     this.svg.addEventListener("pointermove", (e) => {
-      if (!drag)
+      if (!drag) {
+        this.hover(e);
         return;
+      }
       const dx = e.clientX - drag.x;
       const dy = e.clientY - drag.y;
       if (!drag.moved && Math.hypot(dx, dy) < 4)
         return;
       drag.moved = true;
+      this.handlers.hover(null);
       this.svg.classList.add("panning");
       this.transform.x = drag.tx + dx;
       this.transform.y = drag.ty + dy;
@@ -84,12 +83,26 @@ export class GraphView {
       drag = null;
       this.svg.classList.remove("panning");
     });
+    this.svg.addEventListener("pointerleave", () => this.handlers.hover(null));
     this.svg.addEventListener("wheel", (e) => {
       e.preventDefault();
       const r = this.svg.getBoundingClientRect();
       this.zoomAt(Math.exp(-e.deltaY * 0.002), e.clientX - r.left,
         e.clientY - r.top);
     }, { passive: false });
+  }
+
+  // Reports the pad or link under the pointer: {port} or {src, sink}.
+  hover(e) {
+    const target = e.target.closest("[data-port], [data-edge]");
+    if (!target) {
+      this.handlers.hover(null);
+    } else if (target.dataset.port) {
+      this.handlers.hover({ port: target.dataset.port }, e.clientX, e.clientY);
+    } else {
+      const [src, sink] = target.dataset.edge.split(" ");
+      this.handlers.hover({ src, sink }, e.clientX, e.clientY);
+    }
   }
 
   // Any interaction stops auto-fit, so nothing moves under the cursor.
@@ -157,9 +170,10 @@ export class GraphView {
     const bins = el("g");
     const edges = el("g");
     const nodes = el("g");
+    const labels = el("g");
 
     for (const edge of layout.edges || [])
-      this.drawEdge(edges, edge, view);
+      this.drawEdge(edges, labels, edge, info, view);
 
     for (const child of layout.children || [])
       walk(child, (node) => {
@@ -170,7 +184,7 @@ export class GraphView {
           this.drawNode(nodes, node, meta, info, view);
       });
 
-    this.viewport.replaceChildren(bins, edges, nodes);
+    this.viewport.replaceChildren(bins, edges, nodes, labels);
     this.bounds = { width: layout.width, height: layout.height };
     if (this.autoFit)
       this.fit();
@@ -266,7 +280,7 @@ export class GraphView {
         shape = el("rect", { x: port.x, y: port.y, width: port.width,
           height: port.height, rx: 1 }, g);
       shape.setAttribute("class", cls.join(" ").trim());
-      title(shape, padTooltip(p.pad));
+      shape.dataset.port = port.id;
       if (p.labelled) {
         if (p.west)
           text(g, port.x + port.width + 4, cy + 4, "padlabel", p.pad.name);
@@ -276,13 +290,28 @@ export class GraphView {
     }
   }
 
-  drawEdge(parent, edge, view) {
+  drawEdge(parent, labels, edge, info, view) {
+    const selected = view.selectedPads.has(edge.sources[0]) ||
+      view.selectedPads.has(edge.targets[0]);
+
     for (const s of edge.sections || []) {
       const pts = [s.startPoint, ...(s.bendPoints || []), s.endPoint];
       const d = pts.map((p, i) => `${i ? "L" : "M"}${p.x},${p.y}`).join(" ");
-      const cls = view.selectedPads.has(edge.sources[0]) ||
-        view.selectedPads.has(edge.targets[0]) ? "edge selected" : "edge";
-      el("path", { d, class: cls, "marker-end": "url(#arrow)" }, parent);
+      el("path", { d, class: selected ? "edge selected" : "edge",
+        "marker-end": "url(#arrow)" }, parent);
+      // Wider and invisible, so the thin line is easy to hover.
+      el("path", { d, class: "edge-hit",
+        "data-edge": `${edge.sources[0]} ${edge.targets[0]}` }, parent);
+    }
+
+    // Only with the "caps" switch: ELK has made room for the label.
+    const placed = edge.labels?.[0];
+    if (placed && placed.x !== undefined) {
+      const g = el("g", { class: "edge-label",
+        "data-edge": `${edge.sources[0]} ${edge.targets[0]}` }, labels);
+      el("rect", { x: placed.x, y: placed.y, width: placed.width,
+        height: placed.height, rx: 3 }, g);
+      text(g, placed.x + 4, placed.y + 10.5, "", placed.text);
     }
   }
 }

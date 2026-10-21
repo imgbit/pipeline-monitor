@@ -161,11 +161,16 @@ class Browser:
             raise RuntimeError(result["exceptionDetails"])
         return result["result"].get("value")
 
+    # Errors count as "not yet": right after a reload the page may not have
+    # its elements.
     def wait(self, expression, timeout=10):
         end = time.time() + timeout
         while time.time() < end:
-            if self.eval(expression):
-                return True
+            try:
+                if self.eval(expression):
+                    return True
+            except RuntimeError:
+                pass
             time.sleep(0.1)
         return False
 
@@ -186,6 +191,16 @@ class Browser:
             if self.wait(condition, timeout=3):
                 return True
         return False
+
+    # Moves the mouse to the middle of the element an expression returns.
+    def hover(self, expression):
+        point = self.eval(
+            f"(() => {{ const n = {expression}; if (!n) return null;"
+            " const r = n.getBoundingClientRect();"
+            " return [r.x + r.width / 2, r.y + r.height / 2]; })()")
+        assert point, f"nothing to hover: {expression}"
+        self.call("Input.dispatchMouseEvent", type="mouseMoved", x=point[0],
+                  y=point[1])
 
     def screenshot(self, path):
         data = self.call("Page.captureScreenshot")["data"]
@@ -278,6 +293,7 @@ def check(browser, url):
     assert len(counts) > 1, f"graph did not update live: {counts}"
 
     check_log(browser)
+    check_caps(browser)
 
     browser.call("Emulation.setDeviceMetricsOverride", width=390, height=760,
                  deviceScaleFactor=1, mobile=True)
@@ -332,6 +348,86 @@ def check_log(browser):
         "new warnings did not appear after clear"
     assert browser.eval("document.querySelector('#log-rows .log-count')"
                         ".textContent") == "", "count did not restart at clear"
+
+
+CAPS_SUMMARIES = [
+    ("video/x-raw, format=(string)I420, width=(int)1280, height=(int)720, "
+     "framerate=(fraction)30/1", "video/x-raw I420 1280×720 30/1"),
+    ("audio/x-raw, format=(string)S16LE, layout=(string)interleaved, "
+     "rate=(int)44100, channels=(int)2", "audio/x-raw S16LE 44100 Hz 2 ch"),
+    ("video/x-h264, stream-format=(string)avc, alignment=(string)au, "
+     "width=(int)640, height=(int)480", "video/x-h264 avc au 640×480"),
+    ("video/x-raw(memory:GLMemory), format=(string)RGBA, width=(int)1920, "
+     "height=(int)1080, framerate=(fraction)0/1",
+     "video/x-raw(GLMemory) RGBA 1920×1080"),
+    ("video/x-raw(memory:SystemMemory), format=(string)NV12, width=(int)2, "
+     "height=(int)2", "video/x-raw NV12 2×2"),
+    ("image/jpeg", "image/jpeg"),
+    ("", ""),
+]
+
+# parseCaps: commas inside lists, arrays and quotes stay in the value.
+CAPS_FIELDS = [
+    ('video/x-raw, format=(string){ I420, NV12 }, width=(int)2',
+     [["format", "{ I420, NV12 }"], ["width", "2"]]),
+    ('audio/x-opus, streamheader=(buffer)< 4f70, 4f71 >, name=(string)"a, b"',
+     [["streamheader", "< 4f70, 4f71 >"], ["name", "a, b"]]),
+]
+
+
+def check_caps(browser):
+    labels = "document.querySelectorAll('#graph .edge-label').length"
+    switch = "document.getElementById('caps-labels').getAttribute('aria-pressed')"
+
+    got = browser.eval("import('./caps.js').then(m => " +
+                       json.dumps([c for c, _ in CAPS_SUMMARIES]) +
+                       ".map(m.summarizeCaps))")
+    assert got == [s for _, s in CAPS_SUMMARIES], f"caps summaries: {got}"
+    got = browser.eval("import('./caps.js').then(m => " +
+                       json.dumps([c for c, _ in CAPS_FIELDS]) +
+                       ".map((c) => m.parseCaps(c).fields))")
+    assert got == [f for _, f in CAPS_FIELDS], f"caps fields: {got}"
+
+    tee = element_selector("t")
+    tee_id = browser.eval(f"{tee}?.dataset.id")
+    assert browser.click_until(
+        f'#graph .node[data-id="{tee_id}"] > rect.box',
+        "document.querySelector('#details h2')?.textContent === 't'"), \
+        "could not select the tee"
+    assert browser.wait("document.querySelector('#details .caps-toggle')"
+                        "?.textContent.startsWith('video/x-raw')"), \
+        "no caps in the details panel"
+    full = "document.querySelector('#details tr.caps-full')"
+    browser.click("#details .caps-toggle")
+    assert browser.wait(f"{full}?.textContent.includes('width')"), \
+        "full caps did not open"
+    browser.click("#details .caps-toggle")
+    assert browser.wait(f"!{full}"), "full caps did not close"
+
+    tip = "document.querySelector('.tooltip')"
+    pad = (f"{tee}?.querySelector('.pad[data-port]')")
+    browser.hover(pad)
+    assert browser.wait(f"!{tip}.hidden && {tip}.textContent.includes('t:sink')"
+                        f" && {tip}.querySelector('.caps-media')"
+                        "?.textContent.startsWith('video/x-raw')"), \
+        "no pad tooltip with caps"
+    browser.hover("[...document.querySelectorAll('#graph .edge-hit')]"
+                  ".find(p => p.dataset.edge)")
+    assert browser.wait(f"!{tip}.hidden && {tip}.textContent.includes('→')"), \
+        "no link tooltip"
+    browser.call("Input.dispatchMouseEvent", type="mouseMoved", x=2, y=2)
+    assert browser.wait(f"{tip}.hidden"), "tooltip did not hide"
+
+    assert browser.eval(labels) == 0, "caps labels shown with the switch off"
+    browser.click("#caps-labels")
+    assert browser.wait(f"{switch} === 'true' && {labels} > 0"), \
+        "caps switch did not show labels"
+    browser.call("Page.reload")
+    assert browser.wait(f"{switch} === 'true' && {labels} > 0"), \
+        "caps switch not remembered after reload"
+    browser.click("#caps-labels")
+    assert browser.wait(f"{switch} === 'false' && {labels} === 0"), \
+        "caps switch did not hide labels"
 
 
 def screenshot(browser, url, path):

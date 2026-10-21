@@ -5,9 +5,12 @@ import { buildElkGraph, elementPath } from "./layout.js";
 import { GraphView, countElements } from "./render.js";
 import { showDetails } from "./panel.js";
 import { LogView } from "./log.js";
+import { Tooltip } from "./tooltip.js";
+import { linkCaps } from "./caps.js";
 
 const $ = (id) => document.getElementById(id);
 const COLLAPSED_KEY = "pipeline-monitor.collapsed";
+const CAPS_LABELS_KEY = "pipeline-monitor.caps-labels";
 
 const elk = new ELK({ workerUrl: "vendor/elkjs/elk-worker.min.js" });
 
@@ -16,10 +19,52 @@ const state = {
   pipelineId: null,
   selected: null,
   collapsed: loadCollapsed(),
+  capsLabels: loadFlag(CAPS_LABELS_KEY),
   known: new Map(),
 };
 
+const tooltip = new Tooltip();
+// The pads of the current layout and lookups over the graph, for tooltips.
+let shown = { info: null, index: null };
+
+function padRows(p, index) {
+  const pad = p.pad;
+  const rows = [["direction", pad.direction]];
+  if (pad.presence)
+    rows.push(["presence", pad.presence]);
+  if (pad.ghost)
+    rows.push(["ghost", "yes"]);
+  const peers = index.peers.get(pad.id) || [];
+  rows.push(["linked to", peers.length
+    ? peers.map((id) => index.padName(id)).join(", ") : "—"]);
+  return rows;
+}
+
+function showTooltip(target, x, y) {
+  const { info, index } = shown;
+  if (!target || !info) {
+    tooltip.hide();
+    return;
+  }
+  if (target.port) {
+    const p = info.ports.get(target.port);
+    if (!p)
+      return tooltip.hide();
+    tooltip.show(x, y, `${p.element.name}:${p.pad.name}`, padRows(p, index),
+      p.pad.caps || "");
+  } else {
+    const src = info.ports.get(target.src);
+    const sink = info.ports.get(target.sink);
+    if (!src || !sink)
+      return tooltip.hide();
+    tooltip.show(x, y, `${src.element.name}:${src.pad.name} → ` +
+      `${sink.element.name}:${sink.pad.name}`, [],
+      linkCaps(info, target.src, target.sink));
+  }
+}
+
 const view = new GraphView($("graph"), {
+  hover: showTooltip,
   select(id) {
     state.selected = id;
     update();
@@ -67,6 +112,22 @@ function elementCounts(graph) {
   };
   graph.pipelines.forEach(visit);
   return counts;
+}
+
+function loadFlag(key) {
+  try {
+    return localStorage.getItem(key) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function saveFlag(key, value) {
+  try {
+    localStorage.setItem(key, String(value));
+  } catch {
+    // Storage may be unavailable; the setting still works for this session.
+  }
 }
 
 function loadCollapsed() {
@@ -196,7 +257,7 @@ async function layoutAndRender() {
     state.selected = null;
 
   const { graph, info } = buildElkGraph(pipeline, state.graph.links,
-    state.collapsed);
+    state.collapsed, state.capsLabels);
   const layout = await elk.layout(graph);
   const selectedPads = new Set(selection
     ? selection.element.pads.map((p) => `p${p.id}`) : []);
@@ -207,6 +268,7 @@ async function layoutAndRender() {
       badges.set(id, badge);
   }
 
+  shown = { info, index };
   view.render(layout, info, {
     selected: state.selected,
     selectedPads,
@@ -259,6 +321,13 @@ $("pipeline-select").addEventListener("change", (e) => {
 $("zoom-in").addEventListener("click", () => view.zoomCenter(1.25));
 $("zoom-out").addEventListener("click", () => view.zoomCenter(0.8));
 $("auto-fit").addEventListener("click", () => view.setAutoFit(!view.autoFit));
+$("caps-labels").setAttribute("aria-pressed", String(state.capsLabels));
+$("caps-labels").addEventListener("click", () => {
+  state.capsLabels = !state.capsLabels;
+  saveFlag(CAPS_LABELS_KEY, state.capsLabels);
+  $("caps-labels").setAttribute("aria-pressed", String(state.capsLabels));
+  update();
+});
 window.addEventListener("resize", () => {
   if (view.autoFit)
     view.fit();

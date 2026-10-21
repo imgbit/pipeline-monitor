@@ -4,6 +4,11 @@
 // Details panel for the selected element.
 
 import { countElements } from "./render.js";
+import { summarizeCaps } from "./caps.js";
+import { capsList } from "./tooltip.js";
+
+// Pads whose full caps are open in the panel, kept across updates.
+const expanded = new Set();
 
 function add(parent, tag, content, cls) {
   const node = document.createElement(tag);
@@ -71,7 +76,7 @@ export function showDetails(aside, selection, index, onClose, log) {
 function showPads(aside, element, index) {
   const table = add(aside, "table");
   const head = add(table, "tr");
-  for (const h of ["pad", "dir", "presence", "linked to"])
+  for (const h of ["pad", "dir", "presence", "linked to", "caps"])
     add(head, "th", h);
   for (const pad of element.pads) {
     const tr = add(table, "tr");
@@ -79,7 +84,40 @@ function showPads(aside, element, index) {
     add(tr, "td", pad.direction);
     add(tr, "td", pad.presence || "—");
     const peers = index.peers.get(pad.id) || [];
-    add(tr, "td", peers.length
-      ? peers.map((id) => index.padName(id)).join(", ") : "—");
+    const linked = add(tr, "td", peers.length ? undefined : "—");
+    peers.forEach((id, i) => {
+      // Lets a long "element:pad" wrap after the colon.
+      const [element, padName] = index.padName(id).split(/:(?=[^:]*$)/);
+      if (i > 0)
+        linked.append(", ");
+      linked.append(`${element}:`, document.createElement("wbr"), padName);
+    });
+    const cell = add(tr, "td", undefined, "caps");
+    if (!pad.caps) {
+      cell.textContent = "—";
+      continue;
+    }
+    const toggle = add(cell, "button", summarizeCaps(pad.caps), "caps-toggle");
+    toggle.title = "Show the full caps";
+    const full = document.createElement("tr");
+    full.className = "caps-full";
+    const td = add(full, "td");
+    td.colSpan = 5;
+    td.appendChild(capsList(pad.caps));
+    const set = (open) => {
+      toggle.setAttribute("aria-expanded", String(open));
+      if (open)
+        tr.after(full);
+      else
+        full.remove();
+    };
+    toggle.addEventListener("click", () => {
+      if (expanded.has(pad.id))
+        expanded.delete(pad.id);
+      else
+        expanded.add(pad.id);
+      set(expanded.has(pad.id));
+    });
+    set(expanded.has(pad.id));
   }
 }

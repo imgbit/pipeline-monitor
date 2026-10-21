@@ -161,7 +161,7 @@ main {
   position: absolute;
   top: 16px;
   right: 16px;
-  width: min(320px, calc(100% - 32px));
+  width: min(420px, calc(100% - 32px));
   max-height: calc(100% - 32px);
   overflow: auto;
   padding: 12px 14px;
@@ -197,7 +197,8 @@ main {
   color: var(--muted);
   border-bottom: 1px solid var(--border);
 }
-#details td { padding: 2px 6px 2px 0; vertical-align: top; word-break: break-all; }
+#details td { padding: 2px 6px 2px 0; vertical-align: top; overflow-wrap: anywhere; }
+#details td:nth-child(-n+3), #details th { white-space: nowrap; }
 
 #details .close {
   float: right;
@@ -261,6 +262,18 @@ main {
 .edge.selected { stroke: var(--accent); stroke-width: 2; }
 
 #arrow path { fill: var(--edge); }
+
+.edge-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 10;
+  pointer-events: stroke;
+}
+
+.edge-label rect { fill: var(--panel); stroke: var(--border); }
+.edge-label text { font-size: 10px; fill: var(--muted); }
+
+#details td.caps { color: var(--muted); }
 
 /* Errors and warnings */
 
@@ -352,3 +365,49 @@ main {
 #details .log-list .error { color: var(--error); }
 #details .log-list .warning { color: var(--warning); }
 #details .mute-toggle { margin-top: 8px; }
+
+/* Tooltip for pads and links */
+
+.tooltip {
+  position: fixed;
+  z-index: 10;
+  max-width: min(460px, calc(100vw - 8px));
+  padding: 8px 10px;
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+  font-size: 12px;
+  pointer-events: none;
+}
+
+.tooltip-heading { font-weight: 600; margin-bottom: 4px; word-break: break-all; }
+
+.tooltip dl, .caps-list dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 1px 10px;
+  margin: 0;
+}
+
+.tooltip dt, .caps-list dt { color: var(--muted); }
+.tooltip dd, .caps-list dd { margin: 0; word-break: break-all; }
+
+.caps-list { margin-top: 6px; }
+.caps-media { font-weight: 600; margin-bottom: 2px; word-break: break-all; }
+.caps-list .muted { color: var(--muted); }
+
+#details .caps-toggle {
+  border: none;
+  background: none;
+  padding: 0;
+  min-width: 0;
+  text-align: left;
+  color: var(--accent);
+  font-size: inherit;
+}
+#details .caps-toggle:hover { text-decoration: underline; }
+#details tr.caps-full td { padding: 2px 0 8px; user-select: text; }
+/* Width 0 so long values don't widen the table; then fill the row. */
+#details tr.caps-full .caps-list { margin-top: 0; width: 0; min-width: 100%; }

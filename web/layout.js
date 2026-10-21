@@ -4,6 +4,7 @@
 // Converts one pipeline from the graph message into an ELK graph.
 
 import { countElements } from "./render.js";
+import { linkCaps, summarizeCaps } from "./caps.js";
 
 const HEADER = 38;
 const ROW = 18;
@@ -115,17 +116,26 @@ function buildNode(element, info, parents, collapsed) {
   return node;
 }
 
-export function buildElkGraph(pipeline, links, collapsed) {
+// capsLabels: give every link a caps label, laid out by ELK.
+export function buildElkGraph(pipeline, links, collapsed, capsLabels) {
   const info = { nodes: new Map(), ports: new Map() };
   const children = pipeline.children.map((c) =>
     buildNode(c, info, [pipeline.name], collapsed));
   const edges = links
     .filter((l) => info.ports.has(`p${l.src}`) && info.ports.has(`p${l.sink}`))
-    .map((l) => ({
-      id: `l${l.src}-${l.sink}`,
-      sources: [`p${l.src}`],
-      targets: [`p${l.sink}`],
-    }));
+    .map((l) => {
+      const edge = {
+        id: `l${l.src}-${l.sink}`,
+        sources: [`p${l.src}`],
+        targets: [`p${l.sink}`],
+      };
+      const summary = capsLabels &&
+        summarizeCaps(linkCaps(info, `p${l.src}`, `p${l.sink}`));
+      if (summary)
+        edge.labels = [{ text: summary, width: textWidth(summary, 10) + 8,
+          height: 14 }];
+      return edge;
+    });
 
   const graph = {
     id: "root",
@@ -141,6 +151,7 @@ export function buildElkGraph(pipeline, links, collapsed) {
       "elk.padding": "[top=24,left=24,bottom=24,right=24]",
       "elk.json.shapeCoords": "ROOT",
       "elk.json.edgeCoords": "ROOT",
+      "elk.edgeLabels.placement": "CENTER",
     },
     children,
     edges,
