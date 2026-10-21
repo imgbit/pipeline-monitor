@@ -2,13 +2,18 @@
 
 See a running GStreamer pipeline live in your browser.
 
-![pipeline-monitor showing a pipeline with decodebin3 and a tee](.github/screenshot.png)
+![pipeline-monitor showing a pipeline with decodebin3, the caps of a pad and the errors and warnings panel](.github/screenshot.png)
 
 pipeline-monitor is a GStreamer tracer plugin. Enable it with one environment
 variable, without changing your application, and open http://127.0.0.1:8765/.
 
 - Elements, pads and links as a graph, including nested bins and ghost pads
 - Updates live as elements, pads, links and states change
+- Errors and warnings from the pipeline: a counter, a log panel and badges on
+  the elements that posted them; repeats are collapsed and noisy elements
+  can be muted
+- Negotiated caps on every pad and link: hover a pad or link, open the full
+  caps in the element details, or show labels on all links
 - Element details, collapsible bins, light and dark theme
 - Local only: listens on 127.0.0.1 and loads nothing from the internet
 
@@ -73,19 +78,23 @@ Then open the address it prints, by default http://127.0.0.1:8765/.
   environment or with `setenv()` before `gst_init()`.
 - Choose the port with `GST_TRACERS="pipeline-monitor(port=9000)"`. If the
   port is taken, the next free one is used.
+- Errors and warnings are collected by default; turn that off with
+  `GST_TRACERS="pipeline-monitor(log=false)"`. Options can be combined, e.g.
+  `pipeline-monitor(port=9000,log=false)`.
 - Try the example, which adds and removes a branch every two seconds:
-  `./examples/run-example.sh --serve` (on Windows, run
-  `build\examples\serve.exe` with `GST_PLUGIN_PATH` set as above)
+  `./examples/run-example.sh --serve`; add `--warnings` to also see warnings
+  (on Windows, run `build\examples\serve.exe` with `GST_PLUGIN_PATH` set as
+  above)
 
 The server has no authentication. It only accepts connections from the same
 machine and only from its own page.
 
 ## Status
 
-Version 0.1 shows the pipeline graph. It is tested on macOS (Apple Silicon)
-with GStreamer 1.28.8, and in CI on Ubuntu 24.04 (GStreamer 1.24), Debian 12
-(GStreamer 1.22), macOS (Homebrew) and Windows (official GStreamer 1.28.8,
-MSVC).
+Version 0.2 shows the pipeline graph, errors and warnings, and the negotiated
+caps. It is tested on macOS (Apple Silicon) with GStreamer 1.28.8, and in CI
+on Ubuntu 24.04 (GStreamer 1.24), Debian 12 (GStreamer 1.22), macOS
+(Homebrew) and Windows (official GStreamer 1.28.8, MSVC).
 
 ## License
 
