@@ -11,6 +11,7 @@ add_project_arguments(cc.get_supported_arguments(['-Wno-unused-parameter']),
 gst_req = '>= 1.22'
 gst_dep = dependency('gstreamer-1.0', version : gst_req)
 soup_dep = dependency('libsoup-3.0', version : '>= 3.0')
+json_glib_dep = dependency('json-glib-1.0')
 
 gnome = import('gnome')
 

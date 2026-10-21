@@ -12,31 +12,29 @@ test('load', test_load,
   depends : [gstpipelinemonitor],
   timeout : 120)
 
-json_glib_dep = dependency('json-glib-1.0', required : false)
-if json_glib_dep.found()
-  test_model = executable('test_model', 'test_model.c',
-    c_args : ['-DGST_USE_UNSTABLE_API'],
-    dependencies : [gst_dep, json_glib_dep, soup_dep])
+test_model = executable('test_model', 'test_model.c',
+  c_args : ['-DGST_USE_UNSTABLE_API'],
+  dependencies : [gst_dep, json_glib_dep, soup_dep])
 
-  test('model', test_model,
-    env : test_env,
-    depends : [gstpipelinemonitor],
-    timeout : 120)
+test('model', test_model,
+  env : test_env,
+  depends : [gstpipelinemonitor],
+  timeout : 120)
 
-  test_core = executable('test_core',
-    'test_core.c', '../src/core/pmmodel.c',
-    include_directories : include_directories('../src/core'),
-    dependencies : [gst_dep, json_glib_dep])
+test_core = executable('test_core',
+  'test_core.c', '../src/core/pmmodel.c',
+  include_directories : include_directories('../src/core'),
+  dependencies : [gst_dep, json_glib_dep])
 
-  test('core', test_core, timeout : 60)
-endif
+test('core', test_core, timeout : 60)
 
 test_server = executable('test_server',
-  'test_server.c', '../src/core/pmmodel.c', '../src/server/pmserver.c',
+  'test_server.c', '../src/core/pmmodel.c', '../src/core/pmmonitor.c',
+  '../src/server/pmserver.c',
   ui_resources,
   c_args : ['-DGST_USE_UNSTABLE_API'],
   include_directories : include_directories('../src/core', '../src/server'),
-  dependencies : [gst_dep, soup_dep])
+  dependencies : [gst_dep, soup_dep, json_glib_dep])
 
 test('server', test_server,
   env : test_env,

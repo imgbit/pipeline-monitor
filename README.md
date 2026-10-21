@@ -19,7 +19,7 @@ variable, without changing your application, and open http://127.0.0.1:8765/.
 
 ## Build
 
-Requires GStreamer 1.22 or newer, libsoup 3 and Meson.
+Requires GStreamer 1.22 or newer, libsoup 3, json-glib and Meson.
 
 On Ubuntu 24.04 or Debian 12:
 

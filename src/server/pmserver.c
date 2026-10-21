@@ -1,18 +1,23 @@
 /* SPDX-FileCopyrightText: 2026 Łukasz Huńczak */
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #include "pmserver.h"
+#include "pmmonitor.h"
 #include "pmui.h"
 
+#include <json-glib/json-glib.h>
 #include <libsoup/soup.h>
 #include <string.h>
 
 #define PORT_ATTEMPTS 10
 #define UPDATE_INTERVAL_MS 100
+#define STATS_INTERVAL_MS 250
+#define MAX_COMMAND_SIZE 4096
 #define UI_RESOURCE_PATH "/pipeline-monitor/ui/"
 
 struct _PmServer
 {
   PmModel *model;
+  PmMonitor *monitor;
   gchar *ui_dir;
   guint requested_port;
   guint port;
@@ -193,6 +198,16 @@ handle_graph (SoupServer * soup, SoupServerMessage * msg, const char *path,
 }
 
 static void
+handle_monitors (SoupServer * soup, SoupServerMessage * msg,
+    const char *path, GHashTable * query, gpointer user_data)
+{
+  PmServer *self = user_data;
+
+  if (check_request (self, msg))
+    set_json_response (msg, pm_monitor_list_json (self->monitor));
+}
+
+static void
 handle_log (SoupServer * soup, SoupServerMessage * msg, const char *path,
     GHashTable * query, gpointer user_data)
 {
@@ -230,11 +245,97 @@ send_text (SoupWebsocketConnection * conn, const gchar * text)
 }
 
 static void
+on_ws_message (SoupWebsocketConnection * conn, gint type, GBytes * message,
+    PmServer * self);
+
+static void
+forget_client (PmServer * self, SoupWebsocketConnection * conn)
+{
+  g_signal_handlers_disconnect_by_data (conn, self);
+  pm_monitor_remove_client (self->monitor, conn);
+}
+
+static void
 on_ws_closed (SoupWebsocketConnection * conn, PmServer * self)
 {
-  g_signal_handlers_disconnect_by_func (conn, on_ws_closed, self);
+  forget_client (self, conn);
   if (g_ptr_array_remove (self->clients, conn))
     g_object_unref (conn);
+}
+
+static void
+send_stats (SoupWebsocketConnection * conn, const gchar * stats)
+{
+  gchar *text = g_strdup_printf ("{\"type\":\"pad-stats\",\"stats\":%s}",
+      stats);
+
+  send_text (conn, text);
+  g_free (text);
+}
+
+/* Commands from the page: {"type":"monitor","pad":12} starts watching a
+ * pad, {"type":"unmonitor","pad":12} stops. Anything else is ignored. */
+static void
+on_ws_message (SoupWebsocketConnection * conn, gint type, GBytes * message,
+    PmServer * self)
+{
+  JsonParser *parser;
+  JsonNode *root, *pad_node;
+  JsonObject *object;
+  const gchar *command;
+  gint64 pad;
+  gsize size;
+  const gchar *data = g_bytes_get_data (message, &size);
+
+  if (type != SOUP_WEBSOCKET_DATA_TEXT || size > MAX_COMMAND_SIZE)
+    return;
+
+  parser = json_parser_new ();
+  if (!json_parser_load_from_data (parser, data, size, NULL))
+    goto done;
+  root = json_parser_get_root (parser);
+  if (!JSON_NODE_HOLDS_OBJECT (root))
+    goto done;
+  object = json_node_get_object (root);
+  command = json_object_get_string_member_with_default (object, "type", "");
+  pad_node = json_object_get_member (object, "pad");
+  if (pad_node == NULL || !JSON_NODE_HOLDS_VALUE (pad_node) ||
+      json_node_get_value_type (pad_node) != G_TYPE_INT64)
+    goto done;
+  pad = json_node_get_int (pad_node);
+  if (pad <= 0)
+    goto done;
+
+  if (g_strcmp0 (command, "monitor") == 0) {
+    if (!pm_monitor_add (self->monitor, conn, pad)) {
+      gchar *gone = g_strdup_printf ("{\"pads\":[{\"pad\":%" G_GINT64_FORMAT
+          ",\"gone\":true}]}", pad);
+      send_stats (conn, gone);
+      g_free (gone);
+    }
+  } else if (g_strcmp0 (command, "unmonitor") == 0) {
+    pm_monitor_remove (self->monitor, conn, pad);
+  }
+
+done:
+  g_object_unref (parser);
+}
+
+static gboolean
+send_all_stats (gpointer user_data)
+{
+  PmServer *self = user_data;
+  guint i;
+
+  for (i = 0; i < self->clients->len; i++) {
+    SoupWebsocketConnection *conn = g_ptr_array_index (self->clients, i);
+    gchar *stats = pm_monitor_stats_json (self->monitor, conn);
+
+    if (stats != NULL)
+      send_stats (conn, stats);
+    g_free (stats);
+  }
+  return G_SOURCE_CONTINUE;
 }
 
 static void
@@ -248,6 +349,7 @@ handle_ws (SoupServer * soup, SoupServerMessage * msg, const char *path,
 
   g_ptr_array_add (self->clients, g_object_ref (conn));
   g_signal_connect (conn, "closed", G_CALLBACK (on_ws_closed), self);
+  g_signal_connect (conn, "message", G_CALLBACK (on_ws_message), self);
 
   /* The whole log once; later updates may repeat some of it, which the
    * page handles by entry id. */
@@ -360,6 +462,7 @@ server_thread (gpointer user_data)
 {
   PmServer *self = user_data;
   GError *error = NULL;
+  GSource *stats_timer;
 
   g_main_context_push_thread_default (self->context);
 
@@ -367,6 +470,8 @@ server_thread (gpointer user_data)
   soup_server_add_handler (self->soup, NULL, handle_ui, self, NULL);
   soup_server_add_handler (self->soup, "/api/graph", handle_graph, self, NULL);
   soup_server_add_handler (self->soup, "/api/log", handle_log, self, NULL);
+  soup_server_add_handler (self->soup, "/api/monitors", handle_monitors, self,
+      NULL);
   soup_server_add_handler (self->soup, "/ws", handle_ws_request, self, NULL);
   soup_server_add_websocket_handler (self->soup, "/ws", NULL, NULL,
       handle_ws, self, NULL);
@@ -377,13 +482,18 @@ server_thread (gpointer user_data)
   }
   signal_started (self, NULL);
 
+  stats_timer = g_timeout_source_new (STATS_INTERVAL_MS);
+  g_source_set_callback (stats_timer, send_all_stats, self, NULL);
+  g_source_attach (stats_timer, self->context);
   g_main_loop_run (self->loop);
+  g_source_destroy (stats_timer);
+  g_source_unref (stats_timer);
 
 done:
   while (self->clients->len > 0) {
     SoupWebsocketConnection *conn = g_ptr_array_steal_index (self->clients, 0);
 
-    g_signal_handlers_disconnect_by_func (conn, on_ws_closed, self);
+    forget_client (self, conn);
     g_object_unref (conn);
   }
   soup_server_disconnect (self->soup);
@@ -407,6 +517,7 @@ pm_server_new (PmModel * model, guint port, const gchar * ui_dir,
   PmServer *self = g_new0 (PmServer, 1);
 
   self->model = model;
+  self->monitor = pm_monitor_new (model);
   self->ui_dir = g_strdup (ui_dir);
   self->requested_port = port;
   self->context = g_main_context_new ();
@@ -443,6 +554,7 @@ pm_server_free (PmServer * self)
   g_thread_join (self->thread);
 
   g_ptr_array_unref (self->clients);
+  pm_monitor_free (self->monitor);
   g_main_loop_unref (self->loop);
   g_main_context_unref (self->context);
   g_mutex_clear (&self->lock);

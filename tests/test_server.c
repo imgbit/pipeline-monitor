@@ -3,6 +3,7 @@
 #include <gst/gst.h>
 #include <gst/gsttracer.h>
 #include <glib/gstdio.h>
+#include <json-glib/json-glib.h>
 #include <libsoup/soup.h>
 #include <stdlib.h>
 #include <string.h>
@@ -546,6 +547,235 @@ test_shutdown_with_client (void)
   g_object_unref (session);
 }
 
+/* Pad monitoring */
+
+static JsonNode *
+parse (const gchar * text)
+{
+  JsonParser *parser = json_parser_new ();
+  JsonNode *root;
+
+  g_assert_true (json_parser_load_from_data (parser, text, -1, NULL));
+  root = json_node_copy (json_parser_get_root (parser));
+  g_object_unref (parser);
+  return root;
+}
+
+static gint64
+find_pad (JsonObject * element, const gchar * name, const gchar * pad)
+{
+  JsonArray *list = json_object_get_array_member (element, "pads");
+  guint i;
+
+  if (g_strcmp0 (json_object_get_string_member (element, "name"), name) == 0)
+    for (i = 0; i < json_array_get_length (list); i++) {
+      JsonObject *p = json_array_get_object_element (list, i);
+      if (g_strcmp0 (json_object_get_string_member (p, "name"), pad) == 0)
+        return json_object_get_int_member (p, "id");
+    }
+  list = json_object_get_array_member (element, "children");
+  for (i = 0; i < json_array_get_length (list); i++) {
+    gint64 id = find_pad (json_array_get_object_element (list, i), name, pad);
+    if (id > 0)
+      return id;
+  }
+  return 0;
+}
+
+/* The id the page would use for element:pad. */
+static gint64
+pad_id (const gchar * name, const gchar * pad)
+{
+  gchar *graph;
+  JsonNode *root;
+  JsonArray *pipelines;
+  gint64 id = 0;
+  guint i;
+
+  get_status ("api/graph", "GET", NULL, &graph, NULL);
+  root = parse (graph);
+  pipelines = json_object_get_array_member (json_node_get_object (root),
+      "pipelines");
+  for (i = 0; i < json_array_get_length (pipelines) && id == 0; i++)
+    id = find_pad (json_array_get_object_element (pipelines, i), name, pad);
+  json_node_unref (root);
+  g_free (graph);
+  g_assert_cmpint (id, >, 0);
+  return id;
+}
+
+static void
+ws_send (WsClient * client, const gchar * format, ...)
+{
+  va_list args;
+  gchar *text;
+
+  va_start (args, format);
+  text = g_strdup_vprintf (format, args);
+  va_end (args);
+  soup_websocket_connection_send_text (client->conn, text);
+  g_free (text);
+}
+
+/* The next pad-stats entry for pad: buffers, or -1 if it is gone. */
+static gint64
+next_stats (WsClient * client, gint64 pad)
+{
+  while (TRUE) {
+    gchar *message = ws_next (client, "pad-stats");
+    JsonNode *root = parse (message);
+    JsonArray *pads = json_object_get_array_member (json_object_get_object_member
+        (json_node_get_object (root), "stats"), "pads");
+    gint64 result = -2;
+    guint i;
+
+    for (i = 0; i < json_array_get_length (pads); i++) {
+      JsonObject *p = json_array_get_object_element (pads, i);
+      if (json_object_get_int_member (p, "pad") != pad)
+        continue;
+      result = json_object_get_boolean_member_with_default (p, "gone", FALSE)
+          ? -1 : json_object_get_int_member (p, "buffers");
+    }
+    json_node_unref (root);
+    g_free (message);
+    if (result != -2)
+      return result;
+  }
+}
+
+/* Number of viewers of pad according to /api/monitors, 0 if not watched. */
+static gint64
+viewers (gint64 pad)
+{
+  gchar *text;
+  JsonNode *root;
+  JsonArray *pads;
+  gint64 n = 0;
+  guint i;
+
+  get_status ("api/monitors", "GET", NULL, &text, NULL);
+  root = parse (text);
+  pads = json_object_get_array_member (json_node_get_object (root), "pads");
+  for (i = 0; i < json_array_get_length (pads); i++) {
+    JsonObject *p = json_array_get_object_element (pads, i);
+    if (json_object_get_int_member (p, "pad") == pad)
+      n = json_object_get_int_member (p, "viewers");
+  }
+  json_node_unref (root);
+  g_free (text);
+  return n;
+}
+
+/* Waits up to 2 s for pad to have the given number of viewers. */
+static gboolean
+wait_viewers (gint64 pad, gint64 expected)
+{
+  gint tries;
+
+  for (tries = 0; tries < 200; tries++) {
+    if (viewers (pad) == expected)
+      return TRUE;
+    g_main_context_iteration (NULL, FALSE);
+    g_usleep (10 * G_TIME_SPAN_MILLISECOND);
+  }
+  return FALSE;
+}
+
+static void
+test_monitor (void)
+{
+  SoupSession *session = soup_session_new ();
+  gchar *url = server_url ("ws");
+  GstElement *pipeline = start_pipeline ("videotestsrc is-live=true ! "
+      "fakesink name=mon-sink");
+  gint64 pad = pad_id ("mon-sink", "sink");
+  WsClient a, b;
+  gint64 first, second;
+
+  ws_connect (&a, session, url, NULL);
+  ws_connect (&b, session, url, NULL);
+
+  ws_send (&a, "{\"type\":\"monitor\",\"pad\":%" G_GINT64_FORMAT "}", pad);
+  first = next_stats (&a, pad);
+  second = next_stats (&a, pad);
+  g_assert_cmpint (first, >=, 0);
+  g_assert_cmpint (second, >, first);
+  g_assert_true (wait_viewers (pad, 1));
+
+  /* A second viewer shares the probe. */
+  ws_send (&b, "{\"type\":\"monitor\",\"pad\":%" G_GINT64_FORMAT "}", pad);
+  g_assert_cmpint (next_stats (&b, pad), >=, 0);
+  g_assert_true (wait_viewers (pad, 2));
+
+  ws_send (&a, "{\"type\":\"unmonitor\",\"pad\":%" G_GINT64_FORMAT "}",
+      pad);
+  g_assert_true (wait_viewers (pad, 1));
+  g_assert_cmpint (next_stats (&b, pad), >, 0);
+
+  /* Closing the page drops its pads. */
+  ws_disconnect (&b);
+  g_assert_true (wait_viewers (pad, 0));
+
+  ws_disconnect (&a);
+  stop_pipeline (pipeline);
+  g_free (url);
+  g_object_unref (session);
+}
+
+static void
+test_monitor_bad_commands (void)
+{
+  SoupSession *session = soup_session_new ();
+  gchar *url = server_url ("ws");
+  GstElement *pipeline = start_pipeline ("videotestsrc is-live=true ! "
+      "fakesink name=bad-sink");
+  gint64 pad = pad_id ("bad-sink", "sink");
+  WsClient client;
+
+  ws_connect (&client, session, url, NULL);
+  ws_send (&client, "not json");
+  ws_send (&client, "[1, 2]");
+  ws_send (&client, "{\"type\":\"monitor\",\"pad\":\"%" G_GINT64_FORMAT
+      "\"}", pad);
+  ws_send (&client, "{\"type\":\"monitor\",\"pad\":-1}");
+  ws_send (&client, "{\"type\":\"explode\",\"pad\":%" G_GINT64_FORMAT "}",
+      pad);
+  /* Unknown pads are answered with "gone". */
+  ws_send (&client, "{\"type\":\"monitor\",\"pad\":999999999}");
+  g_assert_cmpint (next_stats (&client, 999999999), ==, -1);
+  g_assert_cmpint (viewers (pad), ==, 0);
+
+  ws_disconnect (&client);
+  stop_pipeline (pipeline);
+  g_free (url);
+  g_object_unref (session);
+}
+
+/* A watched pad that goes away is reported once, then dropped. */
+static void
+test_monitor_pad_gone (void)
+{
+  SoupSession *session = soup_session_new ();
+  gchar *url = server_url ("ws");
+  GstElement *pipeline = start_pipeline ("videotestsrc is-live=true ! "
+      "fakesink name=gone-sink");
+  gint64 pad = pad_id ("gone-sink", "sink");
+  WsClient client;
+
+  ws_connect (&client, session, url, NULL);
+  ws_send (&client, "{\"type\":\"monitor\",\"pad\":%" G_GINT64_FORMAT "}",
+      pad);
+  g_assert_cmpint (next_stats (&client, pad), >=, 0);
+
+  stop_pipeline (pipeline);
+  g_assert_cmpint (next_stats (&client, pad), ==, -1);
+  g_assert_true (wait_viewers (pad, 0));
+
+  ws_disconnect (&client);
+  g_free (url);
+  g_object_unref (session);
+}
+
 int
 main (int argc, char **argv)
 {
@@ -559,6 +789,9 @@ main (int argc, char **argv)
   g_test_add_func ("/server/host-check", test_host_check);
   g_test_add_func ("/server/websocket", test_websocket);
   g_test_add_func ("/server/websocket-log", test_websocket_log);
+  g_test_add_func ("/server/monitor", test_monitor);
+  g_test_add_func ("/server/monitor-bad-commands", test_monitor_bad_commands);
+  g_test_add_func ("/server/monitor-pad-gone", test_monitor_pad_gone);
   g_test_add_func ("/server/origin-check", test_origin_check);
   g_test_add_func ("/server/port-fallback", test_port_fallback);
   g_test_add_func ("/server/no-free-port", test_no_free_port);
