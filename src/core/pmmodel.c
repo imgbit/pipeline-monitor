@@ -32,6 +32,8 @@ struct _PmPad
   gchar *caps;
   gboolean is_ghost;
   PmElement *element;
+  /* Gives the pad back while it exists, without keeping it alive. */
+  GWeakRef ref;
 };
 
 typedef struct _PmLink PmLink;
@@ -116,6 +118,7 @@ pm_pad_free (PmPad * pad)
   g_free (pad->name);
   g_free (pad->presence);
   g_free (pad->caps);
+  g_weak_ref_clear (&pad->ref);
   g_free (pad);
 }
 
@@ -336,6 +339,7 @@ pm_model_add_pad (PmModel * model, gpointer element_object, gpointer object,
   if (pad == NULL) {
     pad = g_new0 (PmPad, 1);
     pad->id = model->next_id++;
+    g_weak_ref_init (&pad->ref, object);
     g_hash_table_insert (model->pads, object, pad);
   } else {
     g_ptr_array_remove (pad->element->pads, object);
@@ -350,6 +354,30 @@ pm_model_add_pad (PmModel * model, gpointer element_object, gpointer object,
 
 done:
   g_mutex_unlock (&model->lock);
+}
+
+/* Returns a new reference to the pad with this id, or NULL if the model
+ * doesn't know it or it no longer exists. Only used when the page pins a
+ * pad, so a linear search is fine. */
+GstPad *
+pm_model_get_pad (PmModel * model, guint64 id)
+{
+  GHashTableIter iter;
+  gpointer value;
+  GstPad *object = NULL;
+
+  g_mutex_lock (&model->lock);
+  g_hash_table_iter_init (&iter, model->pads);
+  while (g_hash_table_iter_next (&iter, NULL, &value)) {
+    PmPad *pad = value;
+
+    if (pad->id == id) {
+      object = g_weak_ref_get (&pad->ref);
+      break;
+    }
+  }
+  g_mutex_unlock (&model->lock);
+  return object;
 }
 
 /* caps is the pad's current caps as text, or NULL when it has none. */

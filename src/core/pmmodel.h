@@ -30,6 +30,7 @@ void pm_model_add_pad (PmModel * model, gpointer element, gpointer pad,
     gboolean is_ghost);
 void pm_model_remove_pad (PmModel * model, gpointer pad);
 void pm_model_set_caps (PmModel * model, gpointer pad, const gchar * caps);
+GstPad *pm_model_get_pad (PmModel * model, guint64 id);
 
 void pm_model_link (PmModel * model, gpointer src, gpointer sink);
 void pm_model_unlink (PmModel * model, gpointer src, gpointer sink);

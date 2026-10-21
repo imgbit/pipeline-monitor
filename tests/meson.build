@@ -22,6 +22,13 @@ if json_glib_dep.found()
     env : test_env,
     depends : [gstpipelinemonitor],
     timeout : 120)
+
+  test_core = executable('test_core',
+    'test_core.c', '../src/core/pmmodel.c',
+    include_directories : include_directories('../src/core'),
+    dependencies : [gst_dep, json_glib_dep])
+
+  test('core', test_core, timeout : 60)
 endif
 
 test_server = executable('test_server',
