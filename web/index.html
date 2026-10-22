@@ -25,6 +25,8 @@
 </header>
 <main>
   <svg id="graph" role="img" aria-label="Pipeline graph"></svg>
+  <svg id="pin-lines" aria-hidden="true"></svg>
+  <div id="pins"></div>
   <div id="empty" class="empty" hidden>Waiting for a pipeline…</div>
   <div class="toolbar">
     <button id="zoom-in" title="Zoom in">+</button>
@@ -33,6 +35,7 @@
       aria-pressed="true">auto-fit</button>
     <button id="caps-labels" title="Show the caps on all links"
       aria-pressed="false">caps</button>
+    <button id="time-unit" title="Unit of times in pinned pads: auto, ns, ms or s">time: auto</button>
   </div>
   <aside id="details" hidden></aside>
 </main>

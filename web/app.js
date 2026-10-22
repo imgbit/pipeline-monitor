@@ -7,10 +7,13 @@ import { showDetails } from "./panel.js";
 import { LogView } from "./log.js";
 import { Tooltip } from "./tooltip.js";
 import { linkCaps } from "./caps.js";
+import { Pins } from "./pins.js";
+import { TIME_UNITS, formatSpan } from "./units.js";
 
 const $ = (id) => document.getElementById(id);
 const COLLAPSED_KEY = "pipeline-monitor.collapsed";
 const CAPS_LABELS_KEY = "pipeline-monitor.caps-labels";
+const TIME_UNIT_KEY = "pipeline-monitor.time-unit";
 
 const elk = new ELK({ workerUrl: "vendor/elkjs/elk-worker.min.js" });
 
@@ -37,6 +40,13 @@ function padRows(p, index) {
   const peers = index.peers.get(pad.id) || [];
   rows.push(["linked to", peers.length
     ? peers.map((id) => index.padName(id)).join(", ") : "—"]);
+  const stats = pins.statsFor(pad.id);
+  if (stats?.window)
+    rows.push(["buffers/s", stats.window.buffers_per_s.toFixed(1)]);
+  if (stats?.last && stats.last.delay !== null)
+    rows.push(["delay", formatSpan(stats.last.delay, pins.unit)]);
+  rows.push(["pinned", pins.has(index.padPath(pad.id))
+    ? "yes, click to unpin" : "no, click to pin"]);
   return rows;
 }
 
@@ -80,7 +90,32 @@ const view = new GraphView($("graph"), {
   autoFit(on) {
     $("auto-fit").setAttribute("aria-pressed", String(on));
   },
+  pin(port) {
+    const path = shown.index?.padPath(Number(port.slice(1)));
+    if (path)
+      pins.toggle(path);
+  },
+  moved() {
+    pins.place();
+  },
 });
+
+let socket = null;
+const pins = new Pins($("pins"), $("pin-lines"), {
+  send(command) {
+    if (socket?.readyState === WebSocket.OPEN)
+      socket.send(JSON.stringify(command));
+  },
+  portPoint: (port) => view.portPoint(port),
+  highlight: (port) => view.highlight(port),
+  reveal: (port) => view.reveal(port),
+  changed() {
+    pins.sync(buildIndex(state.graph).padPaths);
+    update();
+  },
+});
+pins.setUnit(TIME_UNITS.includes(loadString(TIME_UNIT_KEY))
+  ? loadString(TIME_UNIT_KEY) : "auto");
 
 const log = new LogView({
   counter: $("log-counter"),
@@ -122,6 +157,14 @@ function loadFlag(key) {
   }
 }
 
+function loadString(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
 function saveFlag(key, value) {
   try {
     localStorage.setItem(key, String(value));
@@ -154,12 +197,16 @@ function currentPipeline() {
 // Lookups over the whole graph for the details panel and edge highlighting.
 function buildIndex(graph) {
   const pads = new Map();
+  const padPaths = new Map();
   const elements = new Map();
   const peers = new Map();
   const visit = (element, parents) => {
-    elements.set(element.id, { element, path: elementPath(element, parents) });
-    for (const pad of element.pads)
-      pads.set(pad.id, { pad, element });
+    const path = elementPath(element, parents);
+    elements.set(element.id, { element, path });
+    for (const pad of element.pads) {
+      pads.set(pad.id, { pad, element, path: `${path}:${pad.name}` });
+      padPaths.set(`${path}:${pad.name}`, { id: pad.id, caps: pad.caps });
+    }
     for (const child of element.children)
       visit(child, [...parents, element.name]);
   };
@@ -175,6 +222,8 @@ function buildIndex(graph) {
   return {
     elements,
     peers,
+    padPaths,
+    padPath: (id) => pads.get(id)?.path,
     padName(id) {
       const p = pads.get(id);
       return p ? `${p.element.name}:${p.pad.name}` : `#${id}`;
@@ -244,6 +293,7 @@ async function layoutAndRender() {
   updateHeader(pipeline);
   if (!pipeline) {
     view.clear();
+    pins.place();
     showDetails($("details"), null);
     return;
   }
@@ -274,6 +324,7 @@ async function layoutAndRender() {
     selectedPads,
     appeared: appearedIds(pipeline, index),
     badges,
+    pinned: pins.ports(),
   });
   const details = selection && log.enabled ? {
     entries: log.entriesFor(selection.element.id),
@@ -288,18 +339,23 @@ async function layoutAndRender() {
 function connect(delay = 1000) {
   const ws = new WebSocket(`ws://${location.host}/ws`);
   const status = $("connection");
+  socket = ws;
 
   ws.onopen = () => {
     status.textContent = "connected";
     status.className = "connection connected";
     delay = 1000;
     log.reset();
+    pins.connected();
   };
   ws.onmessage = (event) => {
     const message = JSON.parse(event.data);
     if (message.type === "graph") {
       state.graph = message.graph;
+      pins.sync(buildIndex(state.graph).padPaths);
       update();
+    } else if (message.type === "pad-stats") {
+      pins.apply(message.stats);
     } else if (message.type === "log") {
       log.apply(message.log);
       if (state.selected !== null)
@@ -328,9 +384,18 @@ $("caps-labels").addEventListener("click", () => {
   $("caps-labels").setAttribute("aria-pressed", String(state.capsLabels));
   update();
 });
+$("time-unit").textContent = `time: ${pins.unit}`;
+$("time-unit").addEventListener("click", () => {
+  const unit = TIME_UNITS[(TIME_UNITS.indexOf(pins.unit) + 1) %
+    TIME_UNITS.length];
+  pins.setUnit(unit);
+  saveFlag(TIME_UNIT_KEY, unit);
+  $("time-unit").textContent = `time: ${unit}`;
+});
 window.addEventListener("resize", () => {
   if (view.autoFit)
     view.fit();
+  pins.place();
 });
 
 connect();

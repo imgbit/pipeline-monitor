@@ -122,6 +122,11 @@ export class GraphView {
       this.handlers.toggle(toggle.dataset.path);
       return;
     }
+    const port = target.closest("[data-port]");
+    if (port) {
+      this.handlers.pin(port.dataset.port);
+      return;
+    }
     const node = target.closest(".node");
     this.handlers.select(node ? Number(node.dataset.id) : null);
   }
@@ -129,6 +134,37 @@ export class GraphView {
   apply() {
     const { x, y, k } = this.transform;
     this.viewport.setAttribute("transform", `translate(${x},${y}) scale(${k})`);
+    this.handlers.moved();
+  }
+
+  // Middle of a drawn pad, relative to the SVG, or null if not drawn.
+  portPoint(port) {
+    const node = this.viewport.querySelector(`[data-port="${port}"]`);
+    if (!node)
+      return null;
+    const r = node.getBoundingClientRect();
+    const s = this.svg.getBoundingClientRect();
+    return { x: r.x + r.width / 2 - s.x, y: r.y + r.height / 2 - s.y };
+  }
+
+  // Pans so that a pad is in the middle.
+  reveal(port) {
+    const point = this.portPoint(port);
+    if (!point)
+      return;
+    const r = this.svg.getBoundingClientRect();
+    this.setAutoFit(false);
+    this.transform.x += r.width / 2 - point.x;
+    this.transform.y += r.height / 2 - point.y;
+    this.apply();
+  }
+
+  highlight(port) {
+    for (const node of this.viewport.querySelectorAll(".pad.highlight"))
+      node.classList.remove("highlight");
+    if (port)
+      this.viewport.querySelector(`[data-port="${port}"]`)
+        ?.classList.add("highlight");
   }
 
   zoomAt(factor, cx, cy) {
@@ -188,6 +224,8 @@ export class GraphView {
     this.bounds = { width: layout.width, height: layout.height };
     if (this.autoFit)
       this.fit();
+    else
+      this.handlers.moved();
   }
 
   nodeGroup(parent, node, meta, view, cls) {
@@ -249,7 +287,7 @@ export class GraphView {
       meta.element.type);
     this.drawToggle(g, node, meta.path, true);
     this.drawBadge(g, node, view.badges.get(meta.element.id), true);
-    this.drawPorts(g, node, info);
+    this.drawPorts(g, node, info, view);
   }
 
   drawNode(parent, node, meta, info, view) {
@@ -264,13 +302,14 @@ export class GraphView {
     if (collapsed)
       this.drawToggle(g, node, meta.path, false);
     this.drawBadge(g, node, view.badges.get(e.id), collapsed);
-    this.drawPorts(g, node, info);
+    this.drawPorts(g, node, info, view);
   }
 
-  drawPorts(g, node, info) {
+  drawPorts(g, node, info, view) {
     for (const port of node.ports || []) {
       const p = info.ports.get(port.id);
-      const cls = ["pad", p.pad.presence || "", p.pad.ghost ? "ghost" : ""];
+      const cls = ["pad", p.pad.presence || "", p.pad.ghost ? "ghost" : "",
+        view.pinned.has(port.id) ? "pinned" : ""];
       const cx = port.x + port.width / 2;
       const cy = port.y + port.height / 2;
       let shape;
@@ -279,7 +318,7 @@ export class GraphView {
       else
         shape = el("rect", { x: port.x, y: port.y, width: port.width,
           height: port.height, rx: 1 }, g);
-      shape.setAttribute("class", cls.join(" ").trim());
+      shape.setAttribute("class", cls.filter(Boolean).join(" "));
       shape.dataset.port = port.id;
       if (p.labelled) {
         if (p.west)

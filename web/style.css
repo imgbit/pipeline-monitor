@@ -411,3 +411,97 @@ main {
 #details tr.caps-full td { padding: 2px 0 8px; user-select: text; }
 /* Width 0 so long values don't widen the table; then fill the row. */
 #details tr.caps-full .caps-list { margin-top: 0; width: 0; min-width: 100%; }
+
+/* Pinned pads */
+
+.pad { cursor: pointer; }
+.pad.pinned { fill: var(--accent); stroke: var(--accent); }
+.pad.highlight { stroke: var(--accent); stroke-width: 4; }
+
+#pin-lines {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.pin-line { stroke: var(--accent); stroke-width: 1; opacity: 0.7; }
+.pin-line.dashed { stroke-dasharray: 4 3; opacity: 1; }
+
+#pins {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.pin-card {
+  position: absolute;
+  width: 260px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.14);
+  font-size: 12px;
+  pointer-events: auto;
+}
+
+.pin-card.detached { box-shadow: 0 6px 20px rgba(0, 0, 0, 0.22); }
+.pin-card.gone { border-left-color: var(--ready); }
+.pin-card.folded { width: auto; max-width: 320px; }
+
+.pin-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 4px 4px 8px;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+
+.pin-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pin-summary { flex: 1; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.pin-head button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  min-width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--muted);
+}
+.pin-head svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.pin-card.folded .pin-fold svg { transform: rotate(-90deg); }
+.pin-head button:hover { color: var(--accent); }
+.pin-card:not(.detached) .pin-anchor { display: none; }
+
+.pin-note { padding: 0 8px 4px; color: var(--muted); }
+
+.pin-rows {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 1px 10px;
+  margin: 0;
+  padding: 0 8px 6px;
+}
+
+.pin-rows dt { color: var(--muted); white-space: nowrap; }
+.pin-rows dd { margin: 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.pin-rows .group { margin-top: 3px; padding-top: 3px; border-top: 1px solid var(--border); }
+.pin-card.folded .pin-rows, .pin-card.folded .pin-note { display: none; }
+
+#time-unit { min-width: 76px; }

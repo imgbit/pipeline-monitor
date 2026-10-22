@@ -10,6 +10,8 @@
     <file>log.js</file>
     <file>caps.js</file>
     <file>tooltip.js</file>
+    <file>pins.js</file>
+    <file>units.js</file>
     <file>vendor/elkjs/elk-api.js</file>
     <file compressed="true">vendor/elkjs/elk-worker.min.js</file>
   </gresource>

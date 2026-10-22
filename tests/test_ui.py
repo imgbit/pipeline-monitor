@@ -192,6 +192,34 @@ class Browser:
                 return True
         return False
 
+    # Clicks the element an expression returns, at once (it may not last).
+    def click_point(self, expression):
+        point = self.eval(
+            f"(() => {{ const n = {expression}; if (!n) return null;"
+            " const r = n.getBoundingClientRect();"
+            " return [r.x + r.width / 2, r.y + r.height / 2]; })()")
+        assert point, f"nothing to click: {expression}"
+        for kind in ("mousePressed", "mouseReleased"):
+            self.call("Input.dispatchMouseEvent", type=kind, x=point[0],
+                      y=point[1], button="left", clickCount=1)
+
+    # Drags the element a selector matches by (dx, dy) in small steps.
+    def drag(self, selector, dx, dy):
+        point = self.eval(
+            f"(() => {{ const n = document.querySelector({json.dumps(selector)});"
+            " if (!n) return null; const r = n.getBoundingClientRect();"
+            " return [r.x + 20, r.y + r.height / 2]; })()")
+        assert point, f"nothing matches {selector}"
+        x, y = point
+        self.call("Input.dispatchMouseEvent", type="mousePressed", x=x, y=y,
+                  button="left", clickCount=1)
+        for i in range(1, 11):
+            self.call("Input.dispatchMouseEvent", type="mouseMoved",
+                      x=x + dx * i / 10, y=y + dy * i / 10, button="left",
+                      buttons=1)
+        self.call("Input.dispatchMouseEvent", type="mouseReleased",
+                  x=x + dx, y=y + dy, button="left", clickCount=1)
+
     # Moves the mouse to the middle of the element an expression returns.
     def hover(self, expression):
         point = self.eval(
@@ -294,6 +322,8 @@ def check(browser, url):
 
     check_log(browser)
     check_caps(browser)
+    check_units(browser)
+    check_pins(browser)
 
     browser.call("Emulation.setDeviceMetricsOverride", width=390, height=760,
                  deviceScaleFactor=1, mobile=True)
@@ -428,6 +458,110 @@ def check_caps(browser):
     browser.click("#caps-labels")
     assert browser.wait(f"{switch} === 'false' && {labels} === 0"), \
         "caps switch did not hide labels"
+
+
+UNITS = [
+    ("formatStamp", 4802684583, "auto", "0:00:04.802684583"),
+    ("formatStamp", 3723000000001, "auto", "1:02:03.000000001"),
+    ("formatStamp", 4802684583, "ms", "4802.685 ms"),
+    ("formatStamp", None, "auto", "—"),
+    ("formatSpan", 850, "auto", "850 ns"),
+    ("formatSpan", 850000, "auto", "850.0 µs"),
+    ("formatSpan", 33333333, "auto", "33.3 ms"),
+    ("formatSpan", -12400000, "auto", "-12.4 ms"),
+    ("formatSpan", 2500000000, "auto", "2.500 s"),
+    ("formatSpan", 33333333, "ns", "33333333 ns"),
+    ("formatSpan", 33333333, "s", "0.033333 s"),
+    ("formatBytes", 115200, None, "112.5 KiB"),
+]
+
+
+def check_units(browser):
+    got = browser.eval("import('./units.js').then(m => " +
+                       json.dumps([[f, v, u] for f, v, u, _ in UNITS]) +
+                       ".map(([f, v, u]) => m[f](v, u)))")
+    assert got == [s for *_, s in UNITS], f"units: {got}"
+
+
+def pin_row(name):
+    return ("[...document.querySelectorAll('.pin-card dt')].find(d => "
+            f"d.textContent === {json.dumps(name)})?.nextElementSibling"
+            ".textContent")
+
+
+def watched():
+    return ("fetch('/api/monitors').then(r => r.json())"
+            ".then(j => j.pads.length)")
+
+
+def check_pins(browser):
+    cards = "document.querySelectorAll('.pin-card').length"
+    card = "document.querySelector('.pin-card')"
+    src = browser.eval(f"{element_selector('videotestsrc0')}?.dataset.id")
+    pad = f'#graph .node[data-id="{src}"] .pad[data-port]'
+
+    assert browser.click_until(pad, f"{cards} === 1"), "click did not pin"
+    assert browser.eval(f"{card}.querySelector('.pin-title').textContent") \
+        == "videotestsrc0:src"
+    assert browser.wait(f"!!document.querySelector('{pad}.pinned')"), \
+        "pad not marked as pinned"
+    assert browser.wait(f"/^[1-9][0-9.]* ≈ fps$/.test({pin_row('buffers/s')})"), \
+        "no live rate"
+    assert browser.wait(f"{watched()}.then(n => n === 1)"), "no probe"
+    assert browser.wait(f"/^0:00:/.test({pin_row('PTS')})")
+
+    browser.click("#time-unit")
+    assert browser.wait(f"{pin_row('duration')}?.endsWith(' ns')"), \
+        "time unit did not change"
+    for _ in range(3):
+        browser.click("#time-unit")
+    assert browser.wait(f"{pin_row('duration')} === '33.3 ms'"), \
+        "time unit did not return to auto"
+
+    browser.hover(f"{card}.querySelector('.pin-rows')")
+    assert browser.wait("!!document.querySelector('#graph .pad.highlight')"), \
+        "hovering a card did not highlight its pad"
+
+    browser.drag(".pin-card .pin-head", 220, 160)
+    assert browser.wait(f"{card}.classList.contains('detached')"), \
+        "dragging far did not detach"
+    browser.call("Page.reload")
+    assert browser.wait(f"{cards} === 1 && "
+                        f"{card}.classList.contains('detached')"), \
+        "pin not remembered after reload"
+    assert browser.wait(f"/^[1-9]/.test({pin_row('buffers/s')})"), \
+        "no live values after reload"
+
+    browser.click(".pin-card .pin-anchor")
+    assert browser.wait(f"!{card}.classList.contains('detached')"), \
+        "anchor did not bring the card back"
+    # Anchored again, the card moves when the graph changes.
+    assert browser.click_until(".pin-card .pin-fold",
+                               f"{card}.classList.contains('folded')"), \
+        "no fold"
+    assert browser.click_until(".pin-card .pin-fold",
+                               f"!{card}.classList.contains('folded')"), \
+        "no unfold"
+    assert browser.click_until(".pin-card .pin-close", f"{cards} === 0"), \
+        "card not removed"
+    assert browser.wait(f"{watched()}.then(n => n === 0)"), \
+        "probe not removed after unpin"
+
+    # The example adds and removes a branch with "extra-sink" every 2 s.
+    extra = f"{element_selector('extra-sink')}?.querySelector('.pad[data-port]')"
+    assert browser.wait(f"!!{extra}", timeout=6), "no extra branch"
+    browser.click_point(extra)
+    assert browser.wait(f"{cards} === 1"), "could not pin the extra branch"
+    assert browser.wait(f"{card}.classList.contains('gone') && !{card}.hidden"
+                        " && document.querySelector('.pin-note')"
+                        ".textContent.startsWith('pad is gone')",
+                        timeout=6), "card did not say the pad is gone"
+    assert browser.wait(f"!{card}.classList.contains('gone') && "
+                        f"/^[0-9]/.test({pin_row('buffers/s')})", timeout=6), \
+        "pin did not follow the pad when it came back"
+    # The card moves with the graph; clicking × was checked above.
+    browser.eval("document.querySelector('.pin-card .pin-close').click()")
+    assert browser.wait(f"{cards} === 0")
 
 
 def screenshot(browser, url, path):
