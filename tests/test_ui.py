@@ -25,7 +25,9 @@ PIPELINE = ("videotestsrc is-live=true ! jpegenc ! decodebin3 ! queue ! "
 # Static branches for the README screenshot ("t" would be toggled).
 SHOT_PIPELINE = ("videotestsrc is-live=true ! jpegenc ! decodebin3 ! queue ! "
                  "tee name=split ! queue ! videoconvert ! fakesink "
-                 "split. ! queue ! fakesink")
+                 "split. ! queue ! fakesink "
+                 "audiotestsrc is-live=true ! opusenc ! decodebin3 ! "
+                 "audioconvert ! queue ! fakesink")
 TRANSFORM = "document.querySelector('#graph > g').getAttribute('transform')"
 AUTO_FIT = "document.getElementById('auto-fit').getAttribute('aria-pressed')"
 NODES = "document.querySelectorAll('#graph .node').length"
@@ -603,17 +605,37 @@ def check_pins(browser):
 
 
 def screenshot(browser, url, path):
-    browser.call("Emulation.setDeviceMetricsOverride", width=1280, height=560,
+    browser.call("Emulation.setDeviceMetricsOverride", width=1280, height=660,
                  deviceScaleFactor=2, mobile=False)
     browser.call("Emulation.setEmulatedMedia", features=[
         {"name": "prefers-color-scheme", "value": "light"}])
     browser.call("Page.navigate", url=url)
     assert browser.wait(f"{NODES} > 0")
-    mq = browser.eval(f"{element_selector('multiqueue0')}?.dataset.id")
-    browser.click(f'#graph .node[data-id="{mq}"] > rect.box')
-    browser.wait("!!document.querySelector('#details h2')")
-    time.sleep(2.5)
+    time.sleep(1)
+    # Video folded to one line, decoded audio in full below its row.
+    for element, pad in (("queue0", "src"), ("audioconvert0", "src")):
+        port = browser.eval(pad_id_expression(element, pad))
+        browser.click_point(f"document.querySelector('#graph "
+                            f"[data-port=\"p{port}\"]')")
+        time.sleep(0.3)
+    browser.click(".pin-card .pin-fold")
+    # Above its pad, still anchored; then the graph up, so the audio card
+    # fits below.
+    browser.drag(".pin-card .pin-head", 0, -90)
+    for kind, y in (("mousePressed", 220), ("mouseMoved", 160),
+                    ("mouseMoved", 90), ("mouseReleased", 90)):
+        browser.call("Input.dispatchMouseEvent", type=kind, x=640, y=y,
+                     button="left", buttons=1, clickCount=1)
+    time.sleep(3)
     browser.screenshot(path)
+
+
+def pad_id_expression(element, pad):
+    return ("fetch('/api/graph').then(r => r.json()).then(g => { "
+            "let id = null; const v = (e) => { if (e.name === "
+            f"{json.dumps(element)}) for (const p of e.pads) if (p.name === "
+            f"{json.dumps(pad)}) id = p.id; e.children.forEach(v); }}; "
+            "g.pipelines.forEach(v); return id; })")
 
 
 def main():

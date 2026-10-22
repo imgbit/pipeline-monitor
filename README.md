@@ -2,7 +2,7 @@
 
 See a running GStreamer pipeline live in your browser.
 
-![pipeline-monitor showing a pipeline with decodebin3, the caps of a pad and the errors and warnings panel](.github/screenshot.png)
+![pipeline-monitor showing a video and an audio branch, with live values of two pinned pads](.github/screenshot.png)
 
 pipeline-monitor is a GStreamer tracer plugin. Enable it with one environment
 variable, without changing your application, and open http://127.0.0.1:8765/.
@@ -14,6 +14,10 @@ variable, without changing your application, and open http://127.0.0.1:8765/.
   can be muted
 - Negotiated caps on every pad and link: hover a pad or link, open the full
   caps in the element details, or show labels on all links
+- Live values of any pad: click a pad to pin a card with buffers/s (≈ fps for
+  video), bytes/s, gaps between buffers, delay against the clock, timestamps,
+  flags and segment; cards follow their pad or can be dragged off and kept
+  on screen. Probes run only on pinned pads
 - Element details, collapsible bins, light and dark theme
 - Local only: listens on 127.0.0.1 and loads nothing from the internet
 
@@ -82,20 +86,24 @@ Then open the address it prints, by default http://127.0.0.1:8765/.
   `GST_TRACERS="pipeline-monitor(log=false)"` turns that off (your application
   still receives them as usual). Options can be combined, e.g.
   `pipeline-monitor(port=9000,log=false)`.
-- Try the example, which adds and removes a branch every two seconds:
-  `./examples/run-example.sh --serve`; add `--warnings` to also see warnings
-  (on Windows, run `build\examples\serve.exe` with `GST_PLUGIN_PATH` set as
-  above)
+- Click a pad to pin it, click it again (or ×) to unpin. Pins are
+  remembered in the browser. The "time" button switches how times are shown
+  (auto, ns, ms, s); hover a value for the exact nanoseconds.
+- Try the example, with video, audio and subtitles and a branch added and
+  removed every two seconds: `./examples/run-example.sh --serve`; add
+  `--warnings` to also see warnings (on Windows, run
+  `build\examples\serve.exe` with `GST_PLUGIN_PATH` set as above)
 
 The server has no authentication. It only accepts connections from the same
 machine and only from its own page.
 
 ## Status
 
-Version 0.2 shows the pipeline graph, errors and warnings, and the negotiated
-caps. It is tested on macOS (Apple Silicon) with GStreamer 1.28.8, and in CI
-on Ubuntu 24.04 (GStreamer 1.24), Debian 12 (GStreamer 1.22), macOS
-(Homebrew) and Windows (official GStreamer 1.28.8, MSVC).
+Version 0.3 shows the pipeline graph, errors and warnings, negotiated caps
+and live values of pinned pads. It is tested on macOS (Apple Silicon) with
+GStreamer 1.28.8, and in CI on Ubuntu 24.04 (GStreamer 1.24), Debian 12
+(GStreamer 1.22), macOS (Homebrew) and Windows (official GStreamer 1.28.8,
+MSVC).
 
 ## License
 
