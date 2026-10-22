@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [default, sanitizers]
+        variant: [default, sanitizers, threads]
     steps:
       - uses: actions/checkout@v4
       - name: Install dependencies
@@ -24,20 +24,32 @@ jobs:
             libgstreamer1.0-dev gstreamer1.0-plugins-base \
             gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
             libsoup-3.0-dev libjson-glib-dev python3
+      # ThreadSanitizer cannot map its memory with the high address
+      # randomization of Ubuntu 24.04 runners.
+      - name: Lower address randomization
+        if: matrix.variant == 'threads'
+        run: sudo sysctl vm.mmap_rnd_bits=28
       - name: Build
         run: |
-          if [ "${{ matrix.variant }}" = sanitizers ]; then
-            meson setup build -Db_sanitize=address,undefined -Db_lundef=false
-          else
-            meson setup build
-          fi
+          case "${{ matrix.variant }}" in
+            sanitizers)
+              meson setup build -Db_sanitize=address,undefined -Db_lundef=false ;;
+            threads)
+              meson setup build -Db_sanitize=thread -Db_lundef=false ;;
+            *)
+              meson setup build ;;
+          esac
           meson compile -C build
       - name: Test
         env:
-          GST_REGISTRY_FORK: ${{ matrix.variant == 'sanitizers' && 'no' || '' }}
+          GST_REGISTRY_FORK: ${{ matrix.variant != 'default' && 'no' || '' }}
           ASAN_OPTIONS: detect_leaks=0
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
-        run: meson test -C build --print-errorlogs --verbose
+          TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
+        # ThreadSanitizer makes the tests several times slower.
+        run: >-
+          meson test -C build --print-errorlogs --verbose
+          ${{ matrix.variant == 'threads' && '--timeout-multiplier 3' || '' }}
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
