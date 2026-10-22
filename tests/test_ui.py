@@ -616,6 +616,8 @@ def watched():
 def check_pins(browser):
     cards = "document.querySelectorAll('.pin-card').length"
     card = "document.querySelector('.pin-card')"
+    # The page may just have been reloaded.
+    assert browser.wait(f"!!{element_selector('videotestsrc0')}")
     src = browser.eval(f"{element_selector('videotestsrc0')}?.dataset.id")
     pad = f'#graph .node[data-id="{src}"] .pad[data-port]'
 
