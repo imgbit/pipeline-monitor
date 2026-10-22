@@ -3,7 +3,8 @@
 
 import { buildElkGraph, elementPath, keepPlaces } from "./layout.js";
 import { GraphView, countElements } from "./render.js";
-import { showDetails, updateQueueDetails } from "./panel.js";
+import { showDetails, updateProperties, updateQueueDetails }
+  from "./panel.js";
 import { LogView } from "./log.js";
 import { Tooltip } from "./tooltip.js";
 import { linkCaps } from "./caps.js";
@@ -363,6 +364,37 @@ async function layoutAndRender() {
   } : null;
   showDetails($("details"), selection, index, () => view.handlers.select(null),
     details, queueDetails(selection, index));
+  // The panel was rebuilt: refill it from the last answer, or ask now for a
+  // newly selected element.
+  if (selection && propsLast.id === selection.element.id)
+    updateProperties($("details"), propsLast.id, propsLast.data);
+  else if (selection)
+    refreshProperties();
+}
+
+// Properties of the selected element, read once per second while the
+// details panel is open.
+let propsTimer = null;
+// The last answer, to fill a rebuilt panel at once: {id, data}.
+let propsLast = { id: null, data: null };
+
+async function refreshProperties() {
+  clearTimeout(propsTimer);
+  const id = state.selected;
+  if (id !== null) {
+    let data = null;
+    try {
+      const r = await fetch(`/api/properties?element=${id}`);
+      data = r.ok ? await r.json() : null;
+    } catch {
+      // Disconnected; the next round tries again.
+    }
+    if (state.selected === id) {
+      propsLast = { id, data };
+      updateProperties($("details"), id, data);
+    }
+  }
+  propsTimer = setTimeout(refreshProperties, 1000);
 }
 
 // The selected element's queue rows for the details panel, or null.
@@ -448,3 +480,4 @@ window.addEventListener("resize", () => {
 });
 
 connect();
+refreshProperties();

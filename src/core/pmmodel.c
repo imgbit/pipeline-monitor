@@ -732,6 +732,29 @@ pm_model_find_elements (PmModel * model, PmElementFilter filter)
   return found;
 }
 
+/* A new reference to the element with this id, or NULL if the model does
+ * not know it or it is gone. */
+GstElement *
+pm_model_get_element (PmModel * model, guint64 id)
+{
+  GHashTableIter iter;
+  gpointer value;
+  GstElement *object = NULL;
+
+  g_mutex_lock (&model->lock);
+  g_hash_table_iter_init (&iter, model->elements);
+  while (g_hash_table_iter_next (&iter, NULL, &value)) {
+    PmElement *element = value;
+
+    if (element->id == id) {
+      object = g_weak_ref_get (&element->ref);
+      break;
+    }
+  }
+  g_mutex_unlock (&model->lock);
+  return object;
+}
+
 /* The model's id of a pad, or 0 if it is not known. */
 guint64
 pm_model_pad_id (PmModel * model, gpointer object)

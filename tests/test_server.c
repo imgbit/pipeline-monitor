@@ -988,6 +988,184 @@ test_levels_websocket (void)
   g_object_unref (session);
 }
 
+/* Element properties */
+
+/* The id the page would use for an element with this name. */
+static gint64
+element_id (const gchar * name)
+{
+  gchar *graph;
+  gchar *needle = g_strdup_printf ("\"name\":\"%s\"", name);
+  gchar *at;
+  gint64 id = 0;
+
+  get_status ("api/graph", "GET", NULL, &graph, NULL);
+  /* Elements are written as {"id":N,"name":"...",...}. */
+  at = strstr (graph, needle);
+  if (at != NULL) {
+    while (at > graph && !g_str_has_prefix (at, "{\"id\":"))
+      at--;
+    id = g_ascii_strtoll (at + strlen ("{\"id\":"), NULL, 10);
+  }
+  g_free (needle);
+  g_free (graph);
+  g_assert_cmpint (id, >, 0);
+  return id;
+}
+
+static JsonObject *
+property (JsonNode * root, const gchar * name)
+{
+  JsonArray *props = json_object_get_array_member (json_node_get_object
+      (root), "properties");
+  guint i;
+
+  for (i = 0; i < json_array_get_length (props); i++) {
+    JsonObject *p = json_array_get_object_element (props, i);
+
+    if (g_strcmp0 (json_object_get_string_member (p, "name"), name) == 0)
+      return p;
+  }
+  return NULL;
+}
+
+static JsonNode *
+get_properties (gint64 id)
+{
+  gchar *path = g_strdup_printf ("api/properties?element=%" G_GINT64_FORMAT,
+      id);
+  gchar *text;
+  JsonNode *root;
+
+  g_assert_cmpuint (get_status (path, "GET", NULL, &text, NULL), ==, 200);
+  root = parse (text);
+  g_free (text);
+  g_free (path);
+  return root;
+}
+
+static void
+test_properties (void)
+{
+  GstElement *pipeline = start_pipeline ("videotestsrc is-live=true ! "
+      "queue name=props-queue max-size-buffers=7 leaky=upstream ! "
+      "fakesink name=props-sink async=false");
+  JsonNode *root;
+  JsonObject *p;
+
+  root = get_properties (element_id ("props-queue"));
+  p = property (root, "max-size-buffers");
+  g_assert_cmpint (json_object_get_int_member (p, "value"), ==, 7);
+  g_assert_cmpint (json_object_get_int_member (p, "default"), ==, 200);
+  g_assert_true (json_object_get_boolean_member (p, "changed"));
+  g_assert_true (json_object_has_member (p, "min"));
+  p = property (root, "leaky");
+  g_assert_cmpstr (json_object_get_string_member
+      (json_object_get_object_member (p, "value"), "nick"), ==, "upstream");
+  g_assert_cmpuint (json_array_get_length (json_object_get_array_member (p,
+              "choices")), ==, 3);
+  json_node_unref (root);
+
+  /* basesink "stats" is a structure with counters. */
+  root = get_properties (element_id ("props-sink"));
+  p = json_object_get_object_member (property (root, "stats"), "value");
+  g_assert_cmpstr (json_object_get_string_member (p, "structure"), ==,
+      "application/x-gst-base-sink-stats");
+  g_assert_true (json_object_has_member (json_object_get_object_member (p,
+              "fields"), "rendered"));
+  json_node_unref (root);
+
+  g_assert_cmpuint (get_status ("api/properties?element=999999", "GET", NULL,
+          NULL, NULL), ==, 404);
+  g_assert_cmpuint (get_status ("api/properties?element=x", "GET", NULL,
+          NULL, NULL), ==, 404);
+  g_assert_cmpuint (get_status ("api/properties", "GET", NULL, NULL, NULL),
+      ==, 404);
+  stop_pipeline (pipeline);
+}
+
+/* An element whose "slow" property blocks until the test releases it. */
+typedef struct
+{
+  GstElement parent;
+} SlowElement;
+
+typedef struct
+{
+  GstElementClass parent_class;
+} SlowElementClass;
+
+G_DEFINE_TYPE (SlowElement, slow_element, GST_TYPE_ELEMENT);
+
+static GMutex slow_lock;
+static GCond slow_cond;
+static gboolean slow_released;
+
+static void
+slow_element_get_property (GObject * object, guint id, GValue * value,
+    GParamSpec * pspec)
+{
+  if (id == 1) {
+    g_mutex_lock (&slow_lock);
+    while (!slow_released)
+      g_cond_wait (&slow_cond, &slow_lock);
+    g_mutex_unlock (&slow_lock);
+  }
+  g_value_set_int (value, id == 1 ? 1 : 7);
+}
+
+static void
+slow_element_class_init (SlowElementClass * klass)
+{
+  GObjectClass *object_class = G_OBJECT_CLASS (klass);
+
+  object_class->get_property = slow_element_get_property;
+  g_object_class_install_property (object_class, 1, g_param_spec_int ("slow",
+          "slow", "blocks", 0, 10, 0, G_PARAM_READABLE));
+  g_object_class_install_property (object_class, 2, g_param_spec_int ("quick",
+          "quick", "answers", 0, 10, 0, G_PARAM_READABLE));
+}
+
+static void
+slow_element_init (SlowElement * self)
+{
+}
+
+/* A getter that blocks makes the request answer in time, says which
+ * property did not answer, and the property is skipped from then on. */
+static void
+test_properties_not_answering (void)
+{
+  GstElement *pipeline = gst_pipeline_new ("slow-pipeline");
+  GstElement *slow = g_object_new (slow_element_get_type (), "name",
+      "slow-element", NULL);
+  gint64 id, start;
+  JsonNode *root;
+
+  gst_bin_add (GST_BIN (pipeline), slow);
+  id = element_id ("slow-element");
+
+  start = g_get_monotonic_time ();
+  root = get_properties (id);
+  g_assert_cmpint (g_get_monotonic_time () - start, <, 3 * G_USEC_PER_SEC);
+  g_assert_cmpstr (json_object_get_string_member (json_node_get_object (root),
+          "not_answering"), ==, "slow");
+  json_node_unref (root);
+
+  root = get_properties (id);
+  g_assert_true (json_object_get_boolean_member (property (root, "slow"),
+          "not_answering"));
+  g_assert_cmpint (json_object_get_int_member (property (root, "quick"),
+          "value"), ==, 7);
+  json_node_unref (root);
+
+  g_mutex_lock (&slow_lock);
+  slow_released = TRUE;
+  g_cond_broadcast (&slow_cond);
+  g_mutex_unlock (&slow_lock);
+  gst_object_unref (pipeline);
+}
+
 /* A watched pad that goes away is reported once, then dropped. */
 static void
 test_monitor_pad_gone (void)
@@ -1033,6 +1211,9 @@ main (int argc, char **argv)
   g_test_add_func ("/server/levels", test_levels);
   g_test_add_func ("/server/levels-multiqueue", test_levels_multiqueue);
   g_test_add_func ("/server/levels-websocket", test_levels_websocket);
+  g_test_add_func ("/server/properties", test_properties);
+  g_test_add_func ("/server/properties-not-answering",
+      test_properties_not_answering);
   g_test_add_func ("/server/origin-check", test_origin_check);
   g_test_add_func ("/server/port-fallback", test_port_fallback);
   g_test_add_func ("/server/no-free-port", test_no_free_port);

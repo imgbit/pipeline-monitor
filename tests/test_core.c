@@ -2,9 +2,11 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #include <gst/gst.h>
 #include <json-glib/json-glib.h>
+#include <math.h>
 
 #include "pmmodel.h"
 #include "pmmonitor.h"
+#include "pmprops.h"
 
 /* Model tests without a pipeline: objects are created and destroyed by the
  * test itself, in orders the tracer hooks can't easily produce. */
@@ -427,6 +429,139 @@ test_monitor_overhead (Fixture * f, gconstpointer data)
 #endif
 }
 
+/* Element properties */
+
+static gchar *
+value_json (const GValue * value)
+{
+  GString *json = g_string_new (NULL);
+
+  pm_props_append_value (json, value);
+  return g_string_free (json, FALSE);
+}
+
+static void
+check_value (GValue * value, const gchar * expected)
+{
+  gchar *json = value_json (value);
+
+  g_assert_cmpstr (json, ==, expected);
+  g_free (json);
+  g_value_unset (value);
+}
+
+static void
+test_props_values (void)
+{
+  GValue v = G_VALUE_INIT;
+  GstStructure *s;
+  GstCaps *caps;
+  GstElement *element;
+  const gchar *strv[] = { "a", "b\"c", NULL };
+
+  g_value_init (&v, G_TYPE_BOOLEAN);
+  g_value_set_boolean (&v, TRUE);
+  check_value (&v, "true");
+  g_value_init (&v, G_TYPE_INT64);
+  g_value_set_int64 (&v, -5);
+  check_value (&v, "-5");
+  g_value_init (&v, G_TYPE_UINT64);
+  g_value_set_uint64 (&v, G_MAXUINT64);
+  check_value (&v, "18446744073709551615");
+  g_value_init (&v, G_TYPE_DOUBLE);
+  g_value_set_double (&v, NAN);
+  check_value (&v, "null");
+  g_value_init (&v, G_TYPE_STRING);
+  check_value (&v, "null");
+  g_value_init (&v, G_TYPE_STRING);
+  g_value_set_string (&v, "a\"b\n");
+  check_value (&v, "\"a\\\"b\\u000a\"");
+  g_value_init (&v, GST_TYPE_STATE);
+  g_value_set_enum (&v, GST_STATE_PAUSED);
+  check_value (&v, "{\"nick\":\"paused\",\"value\":3}");
+  g_value_init (&v, GST_TYPE_BUFFER_FLAGS);
+  g_value_set_flags (&v, GST_BUFFER_FLAG_DISCONT | GST_BUFFER_FLAG_GAP);
+  check_value (&v, "{\"flags\":[\"discont\",\"gap\"]}");
+  g_value_init (&v, G_TYPE_STRV);
+  g_value_set_boxed (&v, strv);
+  check_value (&v, "[\"a\",\"b\\\"c\"]");
+
+  caps = gst_caps_from_string ("video/x-raw, width=(int)2");
+  g_value_init (&v, GST_TYPE_CAPS);
+  gst_value_set_caps (&v, caps);
+  check_value (&v, "{\"caps\":\"video/x-raw, width=(int)2\"}");
+  gst_caps_unref (caps);
+
+  /* Nested structures, fractions and arrays come out as JSON too. */
+  s = gst_structure_from_string ("stats, rendered=(guint64)3, "
+      "rate=(fraction)30/1, inner=(structure)\"in, x=(int)1;\", "
+      "list=(int)< 1, 2 >", NULL);
+  g_assert_nonnull (s);
+  g_value_init (&v, GST_TYPE_STRUCTURE);
+  gst_value_set_structure (&v, s);
+  check_value (&v, "{\"structure\":\"stats\",\"fields\":{"
+      "\"rendered\":3,\"rate\":\"30/1\",\"inner\":{\"structure\":\"in\","
+      "\"fields\":{\"x\":1}},\"list\":[1,2]}}");
+  gst_structure_free (s);
+
+  element = gst_object_ref_sink (gst_bin_new ("named"));
+  g_value_init (&v, GST_TYPE_ELEMENT);
+  g_value_set_object (&v, element);
+  check_value (&v, "{\"object\":\"named\",\"type\":\"GstBin\"}");
+  gst_object_unref (element);
+}
+
+static JsonObject *
+find_property (JsonArray * props, const gchar * name)
+{
+  guint i;
+
+  for (i = 0; i < json_array_get_length (props); i++) {
+    JsonObject *p = json_array_get_object_element (props, i);
+
+    if (g_strcmp0 (json_object_get_string_member (p, "name"), name) == 0)
+      return p;
+  }
+  return NULL;
+}
+
+/* Reads a bin's properties: "changed" follows the default, name and
+ * parent are not compared, only the names asked for are read. */
+static void
+test_props_read (void)
+{
+  GstElement *bin = gst_object_ref_sink (gst_bin_new ("props-bin"));
+  const gchar *only[] = { "async-handling", NULL };
+  JsonParser *parser = json_parser_new ();
+  JsonArray *props;
+  JsonObject *p;
+  gchar *json;
+
+  g_object_set (bin, "async-handling", TRUE, NULL);
+  json = pm_props_read (bin, NULL, G_USEC_PER_SEC);
+  g_assert_true (json_parser_load_from_data (parser, json, -1, NULL));
+  props = json_object_get_array_member (json_node_get_object
+      (json_parser_get_root (parser)), "properties");
+  p = find_property (props, "async-handling");
+  g_assert_true (json_object_get_boolean_member (p, "value"));
+  g_assert_true (json_object_get_boolean_member (p, "changed"));
+  p = find_property (props, "message-forward");
+  g_assert_false (json_object_get_boolean_member (p, "changed"));
+  g_assert_false (json_object_has_member (find_property (props, "name"),
+          "changed"));
+  g_free (json);
+
+  json = pm_props_read (bin, only, G_USEC_PER_SEC);
+  g_assert_true (json_parser_load_from_data (parser, json, -1, NULL));
+  props = json_object_get_array_member (json_node_get_object
+      (json_parser_get_root (parser)), "properties");
+  g_assert_cmpuint (json_array_get_length (props), ==, 1);
+  g_free (json);
+
+  g_object_unref (parser);
+  gst_object_unref (bin);
+}
+
 int
 main (int argc, char **argv)
 {
@@ -451,6 +586,8 @@ main (int argc, char **argv)
       test_monitor_window, fixture_teardown);
   g_test_add ("/core/monitor-sparse", Fixture, NULL, fixture_setup,
       test_monitor_sparse, fixture_teardown);
+  g_test_add_func ("/core/props-values", test_props_values);
+  g_test_add_func ("/core/props-read", test_props_read);
   g_test_add ("/core/monitor-overhead", Fixture, NULL, fixture_setup,
       test_monitor_overhead, fixture_teardown);
 

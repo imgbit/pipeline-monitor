@@ -58,6 +58,7 @@ void pm_model_set_buffering (PmModel * model, gpointer element, gint percent);
 GPtrArray *pm_model_find_elements (PmModel * model, PmElementFilter filter);
 void pm_element_ref_free (PmElementRef * ref);
 guint64 pm_model_pad_id (PmModel * model, gpointer pad);
+GstElement *pm_model_get_element (PmModel * model, guint64 id);
 gchar *pm_model_element_path (PmModel * model, gpointer element);
 
 typedef enum

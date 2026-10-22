@@ -331,6 +331,7 @@ def check(browser, url):
     check_units(browser)
     check_places(browser)
     check_levels(browser)
+    check_properties(browser)
     check_pins(browser)
 
     browser.call("Emulation.setDeviceMetricsOverride", width=390, height=760,
@@ -547,6 +548,28 @@ def check_levels(browser):
         f'#graph .node[data-id="{qid}"] > rect.box',
         "document.querySelector('#details .queue-levels')"
         "?.textContent.includes('underruns')"), "no queue details"
+
+
+def check_properties(browser):
+    # The open panel covers the right side, where the sink is.
+    browser.click("#details .close")
+    assert browser.wait("document.getElementById('details').hidden")
+    sink = browser.eval(f"{element_selector('fakesink0')}?.dataset.id")
+    rows = "[...document.querySelectorAll('#details table.props tr')]"
+    assert browser.click_until(
+        f'#graph .node[data-id="{sink}"] > rect.box',
+        f"{rows}.some(r => r.cells[0].textContent === 'sync')"), \
+        "no properties in the details panel"
+    stats = (f"{rows}.find(r => r.cells[0].textContent === 'stats')"
+             "?.querySelector('button')")
+    assert browser.wait(f"!!{stats}"), "no stats structure"
+    browser.eval(f"{stats}.click()")
+    assert browser.wait("document.querySelector('#details dl.fields')"
+                        "?.textContent.includes('rendered')"), \
+        "structure did not open"
+    # Stays open across refreshes.
+    time.sleep(1.5)
+    assert browser.eval("!!document.querySelector('#details dl.fields')")
 
 
 def pin_row(name):

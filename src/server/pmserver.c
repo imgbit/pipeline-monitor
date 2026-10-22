@@ -2,6 +2,7 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #include "pmserver.h"
 #include "pmlevels.h"
+#include "pmprops.h"
 #include "pmmonitor.h"
 #include "pmui.h"
 
@@ -220,6 +221,34 @@ handle_levels (SoupServer * soup, SoupServerMessage * msg,
   if (check_request (self, msg))
     set_json_response (msg, self->last_levels ? g_strdup (self->last_levels) :
         pm_levels_to_json (self->model));
+}
+
+/* How long a request waits for an element's property getters. */
+#define PROPERTIES_TIMEOUT_US (300 * G_TIME_SPAN_MILLISECOND)
+
+/* GET /api/properties?element=<id>: all readable properties of an element. */
+static void
+handle_properties (SoupServer * soup, SoupServerMessage * msg,
+    const char *path, GHashTable * query, gpointer user_data)
+{
+  PmServer *self = user_data;
+  const gchar *id = query ? g_hash_table_lookup (query, "element") : NULL;
+  guint64 element_id = 0;
+  GstElement *element = NULL;
+
+  if (!check_request (self, msg))
+    return;
+  if (id != NULL)
+    g_ascii_string_to_unsigned (id, 10, 1, G_MAXUINT64, &element_id, NULL);
+  if (element_id != 0)
+    element = pm_model_get_element (self->model, element_id);
+  if (element == NULL) {
+    soup_server_message_set_status (msg, SOUP_STATUS_NOT_FOUND, NULL);
+    return;
+  }
+  set_json_response (msg, pm_props_read (element, NULL,
+          PROPERTIES_TIMEOUT_US));
+  gst_object_unref (element);
 }
 
 static void
@@ -496,6 +525,8 @@ server_thread (gpointer user_data)
   soup_server_add_handler (self->soup, "/api/log", handle_log, self, NULL);
   soup_server_add_handler (self->soup, "/api/levels", handle_levels, self,
       NULL);
+  soup_server_add_handler (self->soup, "/api/properties", handle_properties,
+      self, NULL);
   soup_server_add_handler (self->soup, "/api/monitors", handle_monitors, self,
       NULL);
   soup_server_add_handler (self->soup, "/ws", handle_ws_request, self, NULL);

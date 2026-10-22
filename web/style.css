@@ -521,3 +521,15 @@ main {
 
 #details h3 { margin: 12px 0 4px; font-size: 13px; }
 #details .queue-levels dl { margin: 0; }
+
+/* Element properties in the details panel */
+
+#details table.props { width: 100%; table-layout: fixed; }
+#details table.props td:first-child { width: 42%; color: var(--muted); }
+#details table.props td.changed { color: var(--fg); font-weight: 600; }
+#details table.props td.changed::before { content: "• "; color: var(--accent); }
+#details table.props td { white-space: normal; overflow-wrap: anywhere; }
+#details .props .muted { color: var(--muted); font-style: italic; }
+#details dl.fields { margin: 2px 0 0 8px; gap: 1px 8px; font-size: 12px; }
+#details .flash { animation: flash 0.8s ease-out; }
+@keyframes flash { from { background: var(--appeared); } to { background: transparent; } }
