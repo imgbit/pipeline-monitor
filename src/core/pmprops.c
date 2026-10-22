@@ -356,12 +356,14 @@ append_range (GString * json, GParamSpec * pspec)
   }
 }
 
-/* Only plain types can be compared with their default; name and parent
- * (from GstObject) always differ and say nothing. */
+/* Only settings of plain types are compared with their default: name and
+ * parent (from GstObject) always differ, and read-only values (levels,
+ * counters) are not settings. */
 static gboolean
 comparable (GParamSpec * pspec)
 {
-  if (pspec->owner_type == GST_TYPE_OBJECT)
+  if (pspec->owner_type == GST_TYPE_OBJECT ||
+      !(pspec->flags & G_PARAM_WRITABLE))
     return FALSE;
   switch (G_TYPE_FUNDAMENTAL (pspec->value_type)) {
     case G_TYPE_OBJECT:
