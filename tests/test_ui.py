@@ -333,7 +333,9 @@ def check(browser, url):
     check_levels(browser)
     check_properties(browser)
     check_element_pins(browser)
+    check_latency(browser)
     check_pins(browser)
+    check_paths(browser)
 
     browser.call("Emulation.setDeviceMetricsOverride", width=390, height=760,
                  deviceScaleFactor=1, mobile=True)
@@ -601,6 +603,82 @@ def check_element_pins(browser):
         "element pin not remembered after reload"
     browser.eval(f"{card}.querySelector('.pin-close').click()")
     assert browser.wait(f"!{card}"), "element card not removed"
+
+
+def check_latency(browser):
+    labels = "document.querySelectorAll('#graph .latency-text').length"
+    button = "document.getElementById('measure-all')"
+    assert browser.wait(f"!!{element_selector('queue0')}")
+    browser.click("#measure-all")
+    assert browser.wait(f"{button}.textContent.includes('buf/s')"), \
+        "measure all did not start"
+    assert browser.wait(f"{labels} >= 3", timeout=6), "no latency labels"
+
+    queue = browser.eval(f"{element_selector('queue0')}?.dataset.id")
+    section = "document.querySelector('#details .latency-section')"
+    assert browser.click_until(
+        f'#graph .node[data-id="{queue}"] > rect.box',
+        f"{section}?.textContent.includes('measured')"), "no latency section"
+    assert browser.wait(f"/[0-9.]+ (ns|µs|ms) avg/.test({section}.textContent)"),\
+        "no measured latency in the panel"
+    browser.eval(f"{section}.querySelector('.measure-toggle').click()")
+    assert browser.wait(f"{section}.textContent.includes('Stop measuring')")
+
+    # Stopping "measure all" keeps the element measured by this page.
+    browser.click("#measure-all")
+    assert browser.wait(f"{button}.textContent === 'latency'")
+    assert browser.wait(f"{labels} === 1", timeout=4), \
+        "measure all labels did not go away"
+    browser.eval(f"{section}.querySelector('.measure-toggle').click()")
+    assert browser.wait(f"{labels} === 0", timeout=4)
+    browser.click("#details .close")
+
+
+def check_paths(browser):
+    def pin(element, pad):
+        port = browser.eval(pad_id_expression(element, pad))
+        browser.click_point(f"document.querySelector('#graph "
+                            f"[data-port=\"p{port}\"]')")
+        return port
+
+    def card(name):
+        return ("[...document.querySelectorAll('.pin-card')].find(c => "
+                "c.querySelector('.pin-title').textContent === "
+                f"{json.dumps(name)})")
+
+    def row(name, label_start):
+        return (f"[...{card(name)}.querySelectorAll('dt')].find(d => "
+                f"!d.hidden && d.textContent.startsWith("
+                f"{json.dumps(label_start)}))")
+
+    assert browser.wait(f"!!{element_selector('queue0')}")
+    pin("queue0", "sink")
+    assert browser.wait(f"!!{card('queue0:sink')}")
+    pin("fakesink0", "sink")
+    assert browser.wait(f"!!{card('fakesink0:sink')}")
+    auto = row("fakesink0:sink", "from queue0:sink")
+    assert browser.wait(f"/[0-9.]+ (ns|µs|ms) \\(/.test("
+                        f"{auto}?.nextElementSibling.textContent)", timeout=6), \
+        "no time from the upstream pinned pad"
+
+    # Choose another pad by hand; Esc cancels choosing.
+    hint = "document.getElementById('pick-hint')"
+    browser.eval(f"{card('fakesink0:sink')}.querySelector('.pin-from').click()")
+    assert browser.wait(f"!{hint}.hidden")
+    browser.call("Input.dispatchKeyEvent", type="keyDown", key="Escape")
+    assert browser.wait(f"{hint}.hidden"), "Esc did not cancel"
+    browser.eval(f"{card('fakesink0:sink')}.querySelector('.pin-from').click()")
+    port = browser.eval(pad_id_expression("videotestsrc0", "src"))
+    browser.click_point(f"document.querySelector('#graph "
+                        f"[data-port=\"p{port}\"]')")
+    assert browser.wait(f"!!{row('fakesink0:sink', 'from videotestsrc0:src')}"),\
+        "chosen pad not used"
+    assert not browser.eval(f"!!{card('videotestsrc0:src')}"), \
+        "choosing a pad pinned it"
+
+    for name in ("fakesink0:sink", "queue0:sink"):
+        browser.eval(f"{card(name)}.querySelector('.pin-close').click()")
+    assert browser.wait("document.querySelectorAll('.pin-card').length === 0")
 
 
 def pin_row(name):

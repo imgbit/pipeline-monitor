@@ -24,6 +24,9 @@ const ROWS = [
   ["age", "last buffer", "How long ago the last buffer passed the pad"],
   ["delay", "delay", "Clock time when the buffer passed the pad, against " +
     "its running time"],
+  // Shown only when they apply (see extraRows in the handlers).
+  ["path", "from"],
+  ["av", "A/V"],
   [],
   ["pts", "PTS"],
   ["dts", "DTS"],
@@ -64,6 +67,7 @@ const ICONS = {
   fold: '<path d="M3 4.5 6 7.5 9 4.5"/>',
   back: '<path d="M10 6H2.5M5.5 3 2.5 6 5.5 9"/>',
   close: '<path d="M3 3 9 9M9 3 3 9"/>',
+  from: '<path d="M1 6h6M4.5 3.5 7 6 4.5 8.5M10 2.5v7"/>',
 };
 
 function button(parent, cls, icon, title) {
@@ -131,8 +135,8 @@ export class Pins {
 
   // What is remembered of a pin.
   saved(pin) {
-    const { path, detached, x, y, dx, dy, folded } = pin;
-    return { path, detached, x, y, dx, dy, folded };
+    const { path, detached, x, y, dx, dy, folded, from } = pin;
+    return { path, detached, x, y, dx, dy, folded, from };
   }
 
   save() {
@@ -261,6 +265,11 @@ export class Pins {
       `${pin.path}\nClick to show the ${this.noun}, drag to move`;
     pin.summary = add(head, "span", "pin-summary");
     const fold = button(head, "pin-fold", "fold", "Fold");
+    if (this.handlers.pickFrom) {
+      const from = button(head, "pin-from", "from",
+        "Measure from…: click another pad");
+      from.addEventListener("click", () => this.handlers.pickFrom(pin));
+    }
     const anchor = button(head, "pin-anchor", "back",
       `Back to its ${this.noun}`);
     const close = button(head, "pin-close", "close", "Unpin");
@@ -289,6 +298,7 @@ export class Pins {
 
   buildRows(pin, dl) {
     pin.cells = {};
+    pin.labels = {};
     let group = false;
     for (const [key, label, title] of ROWS) {
       if (!key) {
@@ -298,8 +308,24 @@ export class Pins {
       const dt = add(dl, "dt", group ? "group" : undefined, label);
       if (title)
         dt.title = title;
+      pin.labels[key] = dt;
       pin.cells[key] = add(dl, "dd", group ? "group" : undefined);
       group = false;
+    }
+  }
+
+  // Rows that depend on other pins: time from another pad, A/V sync.
+  fillExtra(pin) {
+    const extra = this.handlers.extraRows?.(pin) || {};
+    for (const key of ["path", "av"]) {
+      const row = extra[key];
+      pin.labels[key].hidden = pin.cells[key].hidden = !row;
+      if (!row)
+        continue;
+      pin.labels[key].textContent = row.label;
+      pin.labels[key].title = row.labelTitle || "";
+      pin.cells[key].textContent = row.text;
+      pin.cells[key].title = row.title || "";
     }
   }
 
@@ -417,6 +443,7 @@ export class Pins {
       `${s.bytes} bytes`);
     set("lists", s.lists ? `${s.lists}, ~${(s.list_buffers / s.lists)
       .toFixed(1)} buffers each` : "—");
+    this.fillExtra(pin);
     const events = Object.entries(s.events).filter(([, n]) => n > 0)
       .map(([name, n]) => `${name} ${n}`);
     set("events", events.length ? events.join(", ") : "—");

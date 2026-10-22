@@ -209,6 +209,23 @@ export class GraphView {
     }
   }
 
+  // Latency labels under measured elements; labels: Map element id ->
+  // {text, cls, title}. Redrawn on every "latency" message.
+  setLatency(labels) {
+    if (!this.latencyLayer)
+      return;
+    this.latencyLayer.replaceChildren();
+    for (const [id, label] of labels) {
+      const node = this.boxes?.get(id)?.node;
+      if (!node)
+        continue;
+      const t = text(this.latencyLayer, node.x + node.width / 2,
+        node.y + node.height + 11, `latency-text ${label.cls}`, label.text,
+        "middle");
+      title(t, label.title);
+    }
+  }
+
   highlight(target) {
     for (const node of this.viewport.querySelectorAll(".highlight"))
       node.classList.remove("highlight");
@@ -271,7 +288,9 @@ export class GraphView {
       });
 
     this.levelLayer = el("g");
-    this.viewport.replaceChildren(bins, edges, nodes, labels, this.levelLayer);
+    this.latencyLayer = el("g");
+    this.viewport.replaceChildren(bins, edges, nodes, labels, this.levelLayer,
+      this.latencyLayer);
     this.bounds = { width: layout.width, height: layout.height };
     if (this.autoFit)
       this.fit();

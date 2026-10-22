@@ -3,14 +3,15 @@
 
 import { buildElkGraph, elementPath, keepPlaces } from "./layout.js";
 import { GraphView, countElements } from "./render.js";
-import { isTimeProperty, propertyText, showDetails, updateProperties,
-  updateQueueDetails, valueText } from "./panel.js";
+import { isTimeProperty, propertyText, showDetails, updateLatencyDetails,
+  updateProperties, updateQueueDetails, valueText } from "./panel.js";
 import { LogView } from "./log.js";
 import { Tooltip } from "./tooltip.js";
 import { linkCaps } from "./caps.js";
 import { ElementPins, Pins } from "./pins.js";
 import { TIME_UNITS, formatSpan } from "./units.js";
 import { pipelineTimes, queueRows } from "./levels.js";
+import { cannotMeasure, latencyLabel, latencyRows } from "./latency.js";
 
 const $ = (id) => document.getElementById(id);
 const COLLAPSED_KEY = "pipeline-monitor.collapsed";
@@ -26,6 +27,17 @@ const state = {
   collapsed: loadCollapsed(),
   capsLabels: loadFlag(CAPS_LABELS_KEY),
   known: new Map(),
+  // From the "latency" message: entries by element id, and "measure all".
+  latency: new Map(),
+  latencyAll: { on: false, buffers_per_s: 0, stopped_at: null },
+  // Elements this page asked to measure, and whether it wants all.
+  measuring: new Set(),
+  measureAll: false,
+  // Pad to pad: "from>to" -> measured, and the keys sent to the server.
+  pathLatency: new Map(),
+  pathsSent: new Set(),
+  // The pad card choosing its "measure from" pad, or null.
+  picking: null,
   // From the "levels" message: queues and pipelines by element id.
   queues: new Map(),
   pipelineTimes: new Map(),
@@ -107,8 +119,17 @@ const view = new GraphView($("graph"), {
   },
   pin(port) {
     const path = shown.index?.padPath(Number(port.slice(1)));
-    if (path)
-      pins.toggle(path);
+    if (!path)
+      return;
+    if (state.picking) {
+      if (path !== state.picking.path)
+        state.picking.from = path;
+      stopPicking();
+      pins.save();
+      updatePaths();
+      return;
+    }
+    pins.toggle(path);
   },
   moved() {
     pins.place();
@@ -127,8 +148,21 @@ const pins = new Pins($("pins"), $("pin-lines"), {
   reveal: (port) => view.reveal(port),
   changed() {
     pins.sync(buildIndex(state.graph).padPaths);
+    updatePaths();
     update();
   },
+  pickFrom(pin) {
+    // A second click goes back to automatic.
+    if (pin.from) {
+      delete pin.from;
+      pins.save();
+      updatePaths();
+      return;
+    }
+    state.picking = pin;
+    $("pick-hint").hidden = false;
+  },
+  extraRows: (pin) => extraRows(pin),
 });
 const elementPins = new ElementPins($("pins"), $("pin-lines"), {
   send(command) {
@@ -231,6 +265,7 @@ function buildIndex(graph) {
   const elementPaths = new Map();
   const elements = new Map();
   const peers = new Map();
+  const linksInto = new Map();
   const visit = (element, parents) => {
     const path = elementPath(element, parents);
     elements.set(element.id, { element, path });
@@ -244,6 +279,9 @@ function buildIndex(graph) {
   };
   graph.pipelines.forEach((p) => visit(p, []));
   for (const { src, sink } of graph.links) {
+    if (!linksInto.has(sink))
+      linksInto.set(sink, []);
+    linksInto.get(sink).push(src);
     if (!peers.has(src))
       peers.set(src, []);
     if (!peers.has(sink))
@@ -256,6 +294,8 @@ function buildIndex(graph) {
     peers,
     padPaths,
     elementPaths,
+    pads,
+    linksInto,
     padPath: (id) => pads.get(id)?.path,
     padName(id) {
       const p = pads.get(id);
@@ -374,6 +414,7 @@ async function layoutAndRender() {
     pinned: new Set([...pins.ports(), ...elementPins.ports()]),
   });
   view.setLevels(state.queues);
+  showLatencyLabels();
   const details = selection && log.enabled ? {
     entries: log.entriesFor(selection.element.id),
     muted: log.isMuted(selection.path),
@@ -382,6 +423,7 @@ async function layoutAndRender() {
   } : null;
   showDetails($("details"), selection, index, () => view.handlers.select(null),
     details, queueDetails(selection, index));
+  updateLatencyDetails($("details"), latencyDetails(selection));
   // The panel was rebuilt: refill it from the last answer, or ask now for a
   // newly selected element.
   if (selection && propsLast.id === selection.element.id)
@@ -432,6 +474,215 @@ function queueDetails(selection, index) {
     (id) => index.padName(id).split(":").pop()) : null;
 }
 
+function send(command) {
+  if (socket?.readyState === WebSocket.OPEN)
+    socket.send(JSON.stringify(command));
+}
+
+function showLatencyLabels() {
+  const labels = new Map();
+  for (const [id, entry] of state.latency) {
+    const label = latencyLabel(entry, pins.unit);
+    if (label)
+      labels.set(id, label);
+  }
+  view.setLatency(labels);
+}
+
+function latencyDetails(selection) {
+  if (!selection)
+    return null;
+  const id = selection.element.id;
+  return {
+    on: state.measuring.has(id),
+    toggle() {
+      const on = !state.measuring.has(id);
+      if (on)
+        state.measuring.add(id);
+      else
+        state.measuring.delete(id);
+      send({ type: on ? "measure-latency" : "unmeasure-latency", element: id });
+      updateLatencyDetails($("details"), latencyDetails(selection));
+    },
+    rows: latencyRows(state.latency.get(id), pins.unit,
+      selection.element.pads),
+    // A source still has a reported latency; a sink has nothing at all.
+    measurable: selection.element.pads.some((p) => p.direction === "src"),
+  };
+}
+
+function showMeasureAll() {
+  const button = $("measure-all");
+  const all = state.latencyAll;
+  button.setAttribute("aria-pressed", String(state.measureAll));
+  if (state.measureAll && all.on) {
+    button.textContent = `latency · ${all.buffers_per_s.toLocaleString()} ` +
+      "buf/s";
+    button.title = "Measuring every element; click to stop";
+  } else if (all.stopped_at) {
+    button.textContent = "latency stopped: too busy";
+    button.title = `Stopped by itself at ${all.stopped_at.toLocaleString()} ` +
+      "buffers/s, to protect the pipeline. Measure single elements from " +
+      "their details instead.";
+  } else {
+    button.textContent = "latency";
+    button.title = "Measure how long data takes through every element";
+  }
+}
+
+function stopPicking() {
+  state.picking = null;
+  $("pick-hint").hidden = true;
+}
+
+// The pads data comes from into pad: those linked into it, else (for an
+// element's src pad) the element's sink pads.
+function upstreamOf(index, id) {
+  const into = index.linksInto.get(id);
+  if (into?.length)
+    return into;
+  const p = index.pads.get(id);
+  return p?.pad.direction === "src"
+    ? p.element.pads.filter((x) => x.direction === "sink").map((x) => x.id)
+    : [];
+}
+
+// Walks upstream from pad id; returns the first pad for which found(pad)
+// is true, nearest first, or null.
+function searchUpstream(index, id, found) {
+  const seen = new Set([id]);
+  let level = [id];
+  while (level.length) {
+    const next = [];
+    for (const pad of level)
+      for (const up of upstreamOf(index, pad)) {
+        if (seen.has(up))
+          continue;
+        if (found(up))
+          return up;
+        seen.add(up);
+        next.push(up);
+      }
+    level = next;
+  }
+  return null;
+}
+
+// Which pad each pad card measures from: its own choice, else the nearest
+// pinned pad upstream. Asks the server for the paths needed; pads on
+// different branches are measured both ways.
+function updatePaths() {
+  const index = buildIndex(state.graph);
+  const pinned = new Set([...pins.pins.values()].filter((p) => p.id !== null)
+    .map((p) => p.id));
+  const wanted = new Set();
+  for (const pin of pins.pins.values()) {
+    pin.source = null;
+    if (pin.id === null)
+      continue;
+    const chosen = pin.from ? index.padPaths.get(pin.from)?.id : null;
+    const from = chosen ?? searchUpstream(index, pin.id, (p) => pinned.has(p));
+    if (from === null || from === undefined || from === pin.id)
+      continue;
+    const upstream = from === chosen
+      ? searchUpstream(index, pin.id, (p) => p === from) !== null : true;
+    pin.source = { id: from, name: index.padName(from), upstream };
+    wanted.add(`${from}>${pin.id}`);
+    if (!upstream)
+      wanted.add(`${pin.id}>${from}`);
+  }
+  for (const key of wanted)
+    if (!state.pathsSent.has(key)) {
+      const [from, to] = key.split(">").map(Number);
+      send({ type: "measure-path", from, to });
+    }
+  for (const key of state.pathsSent)
+    if (!wanted.has(key)) {
+      const [from, to] = key.split(">").map(Number);
+      send({ type: "unmeasure-path", from, to });
+    }
+  state.pathsSent = wanted;
+}
+
+const AV_SAME = 5e6;
+
+// Extra rows of a pad card: time from its source pad, and A/V sync with
+// another pinned sink pad of the other kind.
+function extraRows(pin) {
+  const rows = {};
+  const src = pin.source;
+  if (src) {
+    const there = state.pathLatency.get(`${src.id}>${pin.id}`);
+    const back = state.pathLatency.get(`${pin.id}>${src.id}`);
+    const span = (m) => `${formatSpan(m.avg, pins.unit)} (` +
+      `${formatSpan(m.min, pins.unit)} – ${formatSpan(m.max, pins.unit)})`;
+    const short = src.name.split("/").pop();
+    if (src.upstream) {
+      rows.path = { label: `from ${short}`, labelTitle:
+        `Time from ${src.name} to this pad, last second (avg, min – max)`,
+      text: !there ? "waiting…" : cannotMeasure(there)
+        ? "cannot measure: timestamps change"
+        : there.avg === null ? "waiting…" : span(there) };
+    } else {
+      const label = `vs ${short}`;
+      const labelTitle = `${src.name} is on another branch: when the same ` +
+        "moment of the stream arrives here compared to there";
+      if (there?.avg != null)
+        rows.path = { label, labelTitle, text:
+          `${formatSpan(there.avg, pins.unit)} later` };
+      else if (back?.avg != null)
+        rows.path = { label, labelTitle, text:
+          `${formatSpan(back.avg, pins.unit)} earlier` };
+      else
+        rows.path = { label, labelTitle, text: "waiting…" };
+    }
+  }
+
+  const kind = sinkKind(pin);
+  const other = kind && [...pins.pins.values()].find((p) => p !== pin &&
+    sinkKind(p) === (kind === "audio" ? "video" : "audio"));
+  const mine = pin.stats?.last?.delay;
+  const theirs = other?.stats?.last?.delay;
+  if (other && mine != null && theirs != null) {
+    const audio = kind === "audio" ? mine : theirs;
+    const video = kind === "audio" ? theirs : mine;
+    const diff = Math.max(video, 0) - Math.max(audio, 0);
+    rows.av = { label: "A/V", labelTitle: "From the delays of the audio and " +
+      "video sink pads: a sink that is late plays behind the other",
+    text: Math.abs(diff) < AV_SAME ? "in sync"
+      : `${diff > 0 ? "video" : "audio"} ${formatSpan(Math.abs(diff),
+        pins.unit)} behind ${diff > 0 ? "audio" : "video"}` };
+  }
+  return rows;
+}
+
+// "audio" or "video" for a pinned pad of a sink element, else null.
+function sinkKind(pin) {
+  if (pin.id === null)
+    return null;
+  const p = (shown.index ?? buildIndex(state.graph)).pads.get(pin.id);
+  if (!p || p.pad.direction !== "sink" ||
+      p.element.pads.some((x) => x.direction === "src"))
+    return null;
+  const caps = p.pad.caps || "";
+  return caps.startsWith("audio/") ? "audio"
+    : caps.startsWith("video/") ? "video" : null;
+}
+
+function applyLatency(latency) {
+  state.latency = new Map(latency.elements.map((e) => [e.element, e]));
+  state.pathLatency = new Map(latency.paths.map((p) => [`${p.from}>${p.to}`,
+    p.measured]));
+  state.latencyAll = latency.all;
+  if (state.measureAll && !latency.all.on && latency.all.stopped_at)
+    state.measureAll = false;
+  showLatencyLabels();
+  showMeasureAll();
+  const index = buildIndex(state.graph);
+  updateLatencyDetails($("details"), latencyDetails(
+    index.elements.get(state.selected)));
+}
+
 function applyLevels(levels) {
   state.queues = new Map(levels.queues.map((q) => [q.id, q]));
   state.pipelineTimes = new Map(levels.pipelines.map((p) => [p.id, p]));
@@ -454,6 +705,12 @@ function connect(delay = 1000) {
     log.reset();
     pins.connected();
     elementPins.connected();
+    // A new connection knows nothing of what this page measures.
+    for (const id of state.measuring)
+      send({ type: "measure-latency", element: id });
+    if (state.measureAll)
+      send({ type: "measure-all" });
+    state.pathsSent = new Set();
   };
   ws.onmessage = (event) => {
     const message = JSON.parse(event.data);
@@ -462,7 +719,10 @@ function connect(delay = 1000) {
       const index = buildIndex(state.graph);
       pins.sync(index.padPaths);
       elementPins.sync(index.elementPaths);
+      updatePaths();
       update();
+    } else if (message.type === "latency") {
+      applyLatency(message.latency);
     } else if (message.type === "levels") {
       applyLevels(message.levels);
     } else if (message.type === "properties") {
@@ -497,6 +757,16 @@ $("caps-labels").addEventListener("click", () => {
   $("caps-labels").setAttribute("aria-pressed", String(state.capsLabels));
   state.places = { tops: new Map() };
   update();
+});
+window.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && state.picking)
+    stopPicking();
+});
+$("measure-all").addEventListener("click", () => {
+  state.measureAll = !state.measureAll;
+  state.latencyAll.stopped_at = null;
+  send({ type: state.measureAll ? "measure-all" : "unmeasure-all" });
+  showMeasureAll();
 });
 $("time-unit").textContent = `time: ${pins.unit}`;
 $("time-unit").addEventListener("click", () => {

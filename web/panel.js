@@ -55,6 +55,52 @@ export function updateQueueDetails(aside, rows) {
   section.replaceChildren(dl);
 }
 
+// Runs fn when the button is pressed. Parts of the panel are rebuilt
+// several times per second; a click (press and release on the same
+// button) would be lost when the button is replaced in between.
+function onPress(button, fn) {
+  button.addEventListener("pointerdown", (e) => {
+    if (e.button === 0) {
+      e.preventDefault();
+      fn();
+    }
+  });
+  // Keyboard (Enter, Space) still clicks.
+  button.addEventListener("click", (e) => {
+    if (e.detail === 0)
+      fn();
+  });
+}
+
+// The latency section: a measure switch and the rows of latencyRows.
+// latency: {on, toggle(), rows, measurable} for the element shown. The
+// button is kept between updates (4 per second) and only changes its text.
+export function updateLatencyDetails(aside, latency) {
+  const section = aside.querySelector(".latency-section");
+  if (!section || !latency)
+    return;
+  let button = section.querySelector(".measure-toggle");
+  if (!button) {
+    button = document.createElement("button");
+    button.className = "measure-toggle";
+    onPress(button, () => button.toggle());
+    section.appendChild(button);
+  }
+  button.toggle = latency.toggle;
+  button.hidden = !latency.measurable;
+  button.textContent = latency.on ? "Stop measuring" : "Measure";
+  button.title = latency.on ? "Remove the probes again"
+    : "Time how long data takes through this element (adds pad probes)";
+  button.setAttribute("aria-pressed", String(latency.on));
+  const dl = document.createElement("dl");
+  for (const [k, v] of latency.rows) {
+    add(dl, "dt", k);
+    add(dl, "dd", v);
+  }
+  section.querySelector("dl")?.remove();
+  section.appendChild(dl);
+}
+
 // log: { entries, muted, toggleMute } for the selected element, or null;
 // queue: rows of its levels if it is a queue, or null.
 export function showDetails(aside, selection, index, onClose, log, queue) {
@@ -95,6 +141,9 @@ export function showDetails(aside, selection, index, onClose, log, queue) {
     showPads(aside, element, index);
   if (log)
     showLog(aside, log);
+  add(aside, "h3", "Latency");
+  const lat = add(aside, "div", undefined, "latency-section");
+  lat.dataset.element = element.id;
   add(aside, "h3", "Properties");
   const props = add(aside, "div", "loading…", "properties");
   props.dataset.element = element.id;
@@ -201,7 +250,7 @@ export function updateProperties(aside, id, data, pinning) {
       const on = pinning.has(p.name);
       pin.classList.toggle("on", on);
       pin.title = on ? "Unpin" : "Pin: show it live next to the element";
-      pin.addEventListener("click", () => {
+      onPress(pin, () => {
         pinning.toggle(p.name);
         updateProperties(aside, id, data, pinning);
       });
@@ -222,7 +271,7 @@ export function updateProperties(aside, id, data, pinning) {
     if (isStruct) {
       const toggle = add(cell, "button", text, "caps-toggle");
       toggle.setAttribute("aria-expanded", String(openProps.has(key)));
-      toggle.addEventListener("click", () => {
+      onPress(toggle, () => {
         if (openProps.has(key))
           openProps.delete(key);
         else

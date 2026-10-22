@@ -29,6 +29,7 @@
   <svg id="pin-lines" aria-hidden="true"></svg>
   <div id="pins"></div>
   <div id="empty" class="empty" hidden>Waiting for a pipeline…</div>
+  <div id="pick-hint" class="pick-hint" hidden>Click the pad to measure from · Esc to cancel</div>
   <div class="toolbar">
     <button id="zoom-in" title="Zoom in">+</button>
     <button id="zoom-out" title="Zoom out">−</button>
@@ -36,6 +37,8 @@
       aria-pressed="true">auto-fit</button>
     <button id="caps-labels" title="Show the caps on all links"
       aria-pressed="false">caps</button>
+    <button id="measure-all" aria-pressed="false"
+      title="Measure how long data takes through every element">latency</button>
     <button id="time-unit" title="Unit of times in pinned pads: auto, ns, ms or s">time: auto</button>
   </div>
   <aside id="details" hidden></aside>

@@ -548,3 +548,26 @@ main {
 #details tr:hover .pin-prop { color: var(--muted); }
 #details .pin-prop.on { color: var(--accent); }
 #details .pin-prop svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+
+/* Latency */
+
+.latency-text { font-size: 10px; font-variant-numeric: tabular-nums; }
+.latency-text.low { fill: var(--muted); }
+.latency-text.some { fill: var(--fg); }
+.latency-text.high { fill: var(--warning); font-weight: 600; }
+.latency-text.unknown { fill: var(--muted); font-style: italic; }
+#details .measure-toggle { margin: 0 0 6px; }
+#details .latency-section dl { margin-bottom: 4px; }
+
+.pick-hint {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 6px 12px;
+  background: var(--accent);
+  color: #fff;
+  border-radius: 6px;
+  font-size: 12px;
+  pointer-events: none;
+}
