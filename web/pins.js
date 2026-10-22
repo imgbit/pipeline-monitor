@@ -16,9 +16,12 @@ const DETACH = 100;
 
 // [key, label, title]; an empty entry starts a new group.
 const ROWS = [
-  ["rate", "buffers/s", "Over the last second"],
-  ["bytes", "bytes/s", "Over the last second"],
-  ["gaps", "gaps", "Time between buffers, min / avg / max, last second"],
+  ["rate", "buffers/s", "Over the last second, or longer (up to 10 s) " +
+    "until two buffers are in it"],
+  ["bytes", "bytes/s", "Over the same time as buffers/s"],
+  ["gaps", "gaps", "Time between buffers, min / avg / max, over the same " +
+    "time as buffers/s"],
+  ["age", "last buffer", "How long ago the last buffer passed the pad"],
   ["delay", "delay", "Clock time when the buffer passed the pad, against " +
     "its running time"],
   [],
@@ -347,13 +350,17 @@ export class Pins {
     };
     const w = s.window;
     const l = s.last;
-    const rate = w ? `${w.buffers_per_s.toFixed(1)}${pin.video ? " ≈ fps" : ""}`
-      : "—";
+    // The window grows for sparse streams; say over how long.
+    const over = w && w.seconds > 1.5 ? ` (${Math.round(w.seconds)} s)` : "";
+    const rate = w ? `${w.buffers_per_s.toFixed(1)}${pin.video ? " ≈ fps" : ""}` +
+      over : "—";
     set("rate", rate);
     set("bytes", w ? `${formatBytes(w.bytes_per_s)}/s` : "—");
     const gaps = w ? [w.gap_min, w.gap_avg, w.gap_max] : [];
     set("gaps", w && w.gap_avg !== null ? spans(gaps, unit) : "—",
       gaps.map(rawNs).join(" / "));
+    set("age", l ? `${formatSpan(l.age, unit)} ago` : "—",
+      l ? rawNs(l.age) : "");
     set("delay", l ? late(l.delay, unit) : "—", l ? rawNs(l.delay) : "");
     set("pts", l ? formatStamp(l.pts, unit) : "—", l ? rawNs(l.pts) : "");
     set("dts", l ? formatStamp(l.dts, unit) : "—", l ? rawNs(l.dts) : "");

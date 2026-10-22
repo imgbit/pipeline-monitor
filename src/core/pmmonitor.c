@@ -5,8 +5,10 @@
 #include <string.h>
 
 /* The window for rates and gaps: the last WINDOW_SLOTS ticks of the
- * server (250 ms each). */
+ * server (250 ms each), about 1 s. For sparse streams (subtitles) it grows
+ * until it holds two buffers, up to HISTORY_SLOTS (10 s). */
 #define WINDOW_SLOTS 4
+#define HISTORY_SLOTS 40
 /* How often the probe reads the element's clock and base time again. */
 #define CLOCK_REFRESH (100 * GST_MSECOND)
 
@@ -44,6 +46,7 @@ typedef struct
   gsize size;
   guint64 offset, offset_end;
   GstBufferFlags flags;
+  GstClockTime arrival;
   gboolean have_segment;
   GstSegment segment;
   guint64 events[N_EVENTS];
@@ -74,7 +77,7 @@ struct _PmEntry
   gulong probe;
   PmPadStats *stats;
   GHashTable *clients;
-  PmSlot window[WINDOW_SLOTS];
+  PmSlot window[HISTORY_SLOTS];
   guint64 ticks;
 };
 
@@ -215,6 +218,7 @@ on_probe (GstPad * pad, GstPadProbeInfo * info, gpointer user_data)
 
   arrival = gst_util_get_timestamp ();
   g_mutex_lock (&stats->lock);
+  stats->values.arrival = arrival;
   if (!GST_CLOCK_TIME_IS_VALID (stats->refreshed) ||
       arrival - stats->refreshed >= CLOCK_REFRESH)
     refresh_clock (stats, pad, arrival);
@@ -418,7 +422,7 @@ pm_monitor_tick (PmMonitor * monitor)
   g_hash_table_iter_init (&iter, monitor->entries);
   while (g_hash_table_iter_next (&iter, NULL, &value)) {
     PmEntry *entry = value;
-    PmSlot *slot = &entry->window[entry->ticks++ % WINDOW_SLOTS];
+    PmSlot *slot = &entry->window[entry->ticks++ % HISTORY_SLOTS];
 
     g_mutex_lock (&entry->stats->lock);
     *slot = entry->stats->slot;
@@ -483,7 +487,7 @@ append_flags (GString * json, GstBufferFlags flags)
 }
 
 static void
-append_last (GString * json, const PmValues * v)
+append_last (GString * json, const PmValues * v, GstClockTime now)
 {
   if (!v->have_buffer) {
     g_string_append (json, "\"last\":null,");
@@ -503,6 +507,8 @@ append_last (GString * json, const PmValues * v)
   append_value (json, "offset", v->offset);
   append_value (json, "offset_end", v->offset_end);
   append_flags (json, v->flags);
+  /* How long ago it passed. */
+  append_value (json, "age", now - v->arrival);
   close_object (json);
   g_string_append_c (json, ',');
 }
@@ -526,23 +532,27 @@ append_segment (GString * json, const PmValues * v)
   g_string_append_c (json, ',');
 }
 
-/* Rates and gaps over the closed slots of the window. */
+static const PmSlot *
+slot_back (PmEntry * entry, guint back)
+{
+  return &entry->window[(entry->ticks - 1 - back) % HISTORY_SLOTS];
+}
+
+/* Rates and gaps over the newest closed slots: at least WINDOW_SLOTS, more
+ * until there are two buffers. */
 static void
 append_window (GString * json, PmEntry * entry)
 {
-  guint n = MIN (entry->ticks, WINDOW_SLOTS), i;
-  const PmSlot *oldest, *newest;
+  guint available = MIN (entry->ticks, HISTORY_SLOTS), n = 0;
   PmSlot sum = { 0, };
   gdouble seconds;
 
-  if (n == 0) {
+  if (available == 0) {
     g_string_append (json, "\"window\":null,");
     return;
   }
-  oldest = &entry->window[(entry->ticks - n) % WINDOW_SLOTS];
-  newest = &entry->window[(entry->ticks - 1) % WINDOW_SLOTS];
-  for (i = 0; i < n; i++) {
-    const PmSlot *slot = &entry->window[(entry->ticks - n + i) % WINDOW_SLOTS];
+  while (n < available && (n < WINDOW_SLOTS || sum.buffers < 2)) {
+    const PmSlot *slot = slot_back (entry, n++);
 
     sum.buffers += slot->buffers;
     sum.bytes += slot->bytes;
@@ -554,7 +564,8 @@ append_window (GString * json, PmEntry * entry)
       sum.gaps += slot->gaps;
     }
   }
-  seconds = (gdouble) (newest->end - oldest->begin) / GST_SECOND;
+  seconds = (gdouble) (slot_back (entry, 0)->end -
+      slot_back (entry, n - 1)->begin) / GST_SECOND;
 
   g_string_append (json, "\"window\":{");
   append_double (json, "seconds", seconds);
@@ -570,7 +581,7 @@ append_window (GString * json, PmEntry * entry)
 }
 
 static void
-append_entry (GString * json, PmEntry * entry)
+append_entry (GString * json, PmEntry * entry, GstClockTime now)
 {
   PmValues v;
   guint i;
@@ -583,7 +594,7 @@ append_entry (GString * json, PmEntry * entry)
   append_value (json, "pad", entry->pad_id);
   append_value (json, "buffers", v.buffers);
   append_value (json, "bytes", v.bytes);
-  append_last (json, &v);
+  append_last (json, &v, now);
   append_segment (json, &v);
   append_window (json, entry);
   g_string_append (json, "\"events\":{");
@@ -598,6 +609,7 @@ append_entry (GString * json, PmEntry * entry)
 gchar *
 pm_monitor_stats_json (PmMonitor * monitor, gpointer client)
 {
+  GstClockTime now = gst_util_get_timestamp ();
   GString *json;
   GPtrArray *entries;
   guint i;
@@ -624,7 +636,7 @@ pm_monitor_stats_json (PmMonitor * monitor, gpointer client)
       remove_client_from (monitor, entry, client);
       continue;
     }
-    append_entry (json, entry);
+    append_entry (json, entry, now);
     gst_object_unref (pad);
   }
   g_string_append (json, "]}");

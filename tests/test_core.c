@@ -336,18 +336,52 @@ test_monitor_window (Fixture * f, gconstpointer data)
   g_assert_cmpint (gap_avg, <=, gap_max);
   json_node_unref (root);
 
-  /* Quiet slots keep the earlier ones in the window until they drop out. */
-  for (i = 0; i < 3; i++)
+  /* After quiet slots the window reaches back to the buffers... */
+  for (i = 0; i < 4; i++)
     pm_monitor_tick (f->monitor);
   window = json_object_get_object_member (stats_of (f, &root), "window");
   g_assert_cmpfloat (json_object_get_double_member (window, "buffers_per_s"),
       >, 0);
   json_node_unref (root);
-  pm_monitor_tick (f->monitor);
+
+  /* ... but not further than the history. */
+  for (i = 0; i < 40; i++)
+    pm_monitor_tick (f->monitor);
   window = json_object_get_object_member (stats_of (f, &root), "window");
   g_assert_cmpfloat (json_object_get_double_member (window, "buffers_per_s"),
       ==, 0);
   g_assert_true (json_object_get_null_member (window, "gap_avg"));
+  json_node_unref (root);
+}
+
+/* A sparse stream (subtitles): the window grows until it holds two
+ * buffers, so the gap between them is shown. */
+static void
+test_monitor_sparse (Fixture * f, gconstpointer data)
+{
+  JsonNode *root;
+  JsonObject *stats, *window;
+  gint i;
+
+  link_sink (f);
+  g_assert_true (pm_monitor_add (f->monitor, CLIENT, pad_id (f->model)));
+  push_start (f, 0);
+  g_assert_cmpint (gst_pad_push (f->pad, new_buffer (5, 0)), ==, GST_FLOW_OK);
+  for (i = 0; i < 6; i++)
+    pm_monitor_tick (f->monitor);
+  g_usleep (50 * G_TIME_SPAN_MILLISECOND);
+  g_assert_cmpint (gst_pad_push (f->pad, new_buffer (5, GST_SECOND)), ==,
+      GST_FLOW_OK);
+  pm_monitor_tick (f->monitor);
+
+  stats = stats_of (f, &root);
+  window = json_object_get_object_member (stats, "window");
+  g_assert_cmpfloat (json_object_get_double_member (window, "buffers_per_s"),
+      >, 0);
+  g_assert_cmpint (json_object_get_int_member (window, "gap_min"), >=,
+      50 * GST_MSECOND);
+  g_assert_cmpint (json_object_get_int_member (json_object_get_object_member
+          (stats, "last"), "age"), <, GST_SECOND);
   json_node_unref (root);
 }
 
@@ -413,6 +447,8 @@ main (int argc, char **argv)
       test_monitor_delay, fixture_teardown);
   g_test_add ("/core/monitor-window", Fixture, NULL, fixture_setup,
       test_monitor_window, fixture_teardown);
+  g_test_add ("/core/monitor-sparse", Fixture, NULL, fixture_setup,
+      test_monitor_sparse, fixture_teardown);
   g_test_add ("/core/monitor-overhead", Fixture, NULL, fixture_setup,
       test_monitor_overhead, fixture_teardown);
 
