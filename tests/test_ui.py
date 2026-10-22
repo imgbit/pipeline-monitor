@@ -332,6 +332,7 @@ def check(browser, url):
     check_places(browser)
     check_levels(browser)
     check_properties(browser)
+    check_element_pins(browser)
     check_pins(browser)
 
     browser.call("Emulation.setDeviceMetricsOverride", width=390, height=760,
@@ -558,10 +559,10 @@ def check_properties(browser):
     rows = "[...document.querySelectorAll('#details table.props tr')]"
     assert browser.click_until(
         f'#graph .node[data-id="{sink}"] > rect.box',
-        f"{rows}.some(r => r.cells[0].textContent === 'sync')"), \
+        f"{rows}.some(r => r.cells[1]?.textContent === 'sync')"), \
         "no properties in the details panel"
-    stats = (f"{rows}.find(r => r.cells[0].textContent === 'stats')"
-             "?.querySelector('button')")
+    stats = (f"{rows}.find(r => r.cells[1]?.textContent === 'stats')"
+             "?.querySelector('button.caps-toggle')")
     assert browser.wait(f"!!{stats}"), "no stats structure"
     browser.eval(f"{stats}.click()")
     assert browser.wait("document.querySelector('#details dl.fields')"
@@ -570,6 +571,35 @@ def check_properties(browser):
     # Stays open across refreshes.
     time.sleep(1.5)
     assert browser.eval("!!document.querySelector('#details dl.fields')")
+
+
+def check_element_pins(browser):
+    # The panel is open on fakesink0 (check_properties).
+    rows = "[...document.querySelectorAll('#details table.props tr')]"
+    deadline = (f"{rows}.find(r => r.cells[1]?.textContent === "
+                "'processing-deadline')?.cells[2].textContent")
+    assert browser.wait(f"{deadline} === '20.0 ms'"), "time not readable"
+
+    card = ("[...document.querySelectorAll('.pin-card')].find(c => "
+            "c.querySelector('.pin-title').textContent === 'fakesink0')")
+    browser.eval(f"{rows}.find(r => r.cells[1]?.textContent === 'stats')"
+                 ".querySelector('.pin-prop').click()")
+    assert browser.wait(f"!!{card}"), "no element card"
+    rendered = (f"[...{card}.querySelectorAll('dt')].find(d => d.textContent "
+                "=== 'rendered')?.nextElementSibling.textContent")
+    assert browser.wait(f"/^[0-9]+ \\(\\+[0-9.]+\\/s\\)$/.test({rendered})",
+                        timeout=6), "no counter rate"
+    sink = browser.eval(f"{element_selector('fakesink0')}?.dataset.id")
+    assert browser.eval(f"document.querySelector('#graph .node[data-id="
+                        f"\"{sink}\"]').classList.contains('pinned')")
+    assert browser.eval(f"{rows}.find(r => r.cells[1]?.textContent === "
+                        "'stats').querySelector('.pin-prop.on') !== null")
+
+    browser.call("Page.reload")
+    assert browser.wait(f"!!{card} && /^[0-9]/.test({rendered})"), \
+        "element pin not remembered after reload"
+    browser.eval(f"{card}.querySelector('.pin-close').click()")
+    assert browser.wait(f"!{card}"), "element card not removed"
 
 
 def pin_row(name):

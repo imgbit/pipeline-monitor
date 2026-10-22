@@ -525,7 +525,7 @@ main {
 /* Element properties in the details panel */
 
 #details table.props { width: 100%; table-layout: fixed; }
-#details table.props td:first-child { width: 42%; color: var(--muted); }
+#details table.props td:nth-child(2) { width: 40%; color: var(--muted); }
 #details table.props td.changed { color: var(--fg); font-weight: 600; }
 #details table.props td.changed::before { content: "• "; color: var(--accent); }
 #details table.props td { white-space: normal; overflow-wrap: anywhere; }
@@ -533,3 +533,18 @@ main {
 #details dl.fields { margin: 2px 0 0 8px; gap: 1px 8px; font-size: 12px; }
 #details .flash { animation: flash 0.8s ease-out; }
 @keyframes flash { from { background: var(--appeared); } to { background: transparent; } }
+
+/* Pinned element properties */
+
+.node.pinned > rect.box { stroke: var(--accent); }
+.node.highlight > rect.box { stroke: var(--accent); stroke-width: 3; }
+.pin-rows dt.field, .pin-rows dd.field { font-size: 11px; }
+.pin-rows dt.field { padding-left: 10px; }
+.pin-prop-close { display: none; float: right; width: 14px; height: 14px; min-width: 0; padding: 0; border: none; background: none; color: var(--muted); }
+.pin-rows dt:hover .pin-prop-close { display: inline-flex; align-items: center; justify-content: center; }
+.pin-prop-close svg { width: 8px; height: 8px; fill: none; stroke: currentColor; stroke-width: 1.5; }
+#details td.pin-cell { width: 22px; padding: 0; }
+#details .pin-prop { display: flex; align-items: center; justify-content: center; width: 18px; height: 18px; min-width: 0; padding: 0; border: none; background: none; color: var(--border); }
+#details tr:hover .pin-prop { color: var(--muted); }
+#details .pin-prop.on { color: var(--accent); }
+#details .pin-prop svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }

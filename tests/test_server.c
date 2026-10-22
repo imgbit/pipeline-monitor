@@ -1166,6 +1166,99 @@ test_properties_not_answering (void)
   gst_object_unref (pipeline);
 }
 
+/* The next "properties" entry for element: rendered count of its stats,
+ * -1 if gone, or -2 when the message does not mention the element. */
+static gint64
+next_rendered (WsClient * client, gint64 element)
+{
+  gchar *message = ws_next (client, "properties");
+  JsonNode *root = parse (message);
+  JsonArray *elements = json_object_get_array_member (json_node_get_object
+      (root), "elements");
+  gint64 result = -2;
+  guint i;
+
+  for (i = 0; i < json_array_get_length (elements); i++) {
+    JsonObject *e = json_array_get_object_element (elements, i);
+    JsonArray *props;
+
+    if (json_object_get_int_member (e, "element") != element)
+      continue;
+    if (json_object_get_boolean_member_with_default (e, "gone", FALSE)) {
+      result = -1;
+      break;
+    }
+    props = json_object_get_array_member (json_object_get_object_member (e,
+            "values"), "properties");
+    g_assert_cmpuint (json_array_get_length (props), ==, 1);
+    result = json_object_get_int_member (json_object_get_object_member
+        (json_object_get_object_member (json_array_get_object_element (props,
+                    0), "value"), "fields"), "rendered");
+  }
+  json_node_unref (root);
+  g_free (message);
+  return result;
+}
+
+static void
+test_watch_property (void)
+{
+  SoupSession *session = soup_session_new ();
+  gchar *url = server_url ("ws");
+  GstElement *pipeline = start_pipeline ("videotestsrc is-live=true ! "
+      "fakesink name=watch-sink async=false");
+  gint64 id = element_id ("watch-sink");
+  WsClient client;
+  gint64 first, second;
+  gint tries;
+
+  ws_connect (&client, session, url, NULL);
+  /* Ignored: bad names and ids. */
+  ws_send (&client, "{\"type\":\"watch-property\",\"element\":%"
+      G_GINT64_FORMAT ",\"property\":\"a b\"}", id);
+  ws_send (&client, "{\"type\":\"watch-property\",\"element\":-1,"
+      "\"property\":\"stats\"}");
+  ws_send (&client, "{\"type\":\"watch-property\",\"element\":%"
+      G_GINT64_FORMAT ",\"property\":\"stats\"}", id);
+
+  first = next_rendered (&client, id);
+  second = next_rendered (&client, id);
+  g_assert_cmpint (first, >=, 0);
+  g_assert_cmpint (second, >=, first);
+
+  /* After unwatching, the element is no longer sent (the message may still
+   * come for one tick). */
+  ws_send (&client, "{\"type\":\"unwatch-property\",\"element\":%"
+      G_GINT64_FORMAT ",\"property\":\"stats\"}", id);
+  ws_send (&client, "{\"type\":\"watch-property\",\"element\":%"
+      G_GINT64_FORMAT ",\"property\":\"sync\"}", id);
+  for (tries = 0; tries < 3; tries++) {
+    gchar *message = ws_next (&client, "properties");
+    gboolean has_stats = strstr (message, "\"stats\"") != NULL;
+
+    g_free (message);
+    if (!has_stats)
+      break;
+  }
+  g_assert_cmpint (tries, <, 3);
+
+  /* An element that goes away is reported once. */
+  stop_pipeline (pipeline);
+  for (tries = 0; tries < 20; tries++) {
+    gchar *message = ws_next (&client, "properties");
+    gboolean gone = strstr (message, "\"gone\":true") != NULL;
+
+    g_free (message);
+    if (gone)
+      break;
+  }
+  g_assert_cmpint (tries, <, 20);
+
+  ws_disconnect (&client);
+  g_free (url);
+  g_object_unref (session);
+}
+
 /* A watched pad that goes away is reported once, then dropped. */
 static void
 test_monitor_pad_gone (void)
@@ -1214,6 +1307,7 @@ main (int argc, char **argv)
   g_test_add_func ("/server/properties", test_properties);
   g_test_add_func ("/server/properties-not-answering",
       test_properties_not_answering);
+  g_test_add_func ("/server/watch-property", test_watch_property);
   g_test_add_func ("/server/origin-check", test_origin_check);
   g_test_add_func ("/server/port-fallback", test_port_fallback);
   g_test_add_func ("/server/no-free-port", test_no_free_port);

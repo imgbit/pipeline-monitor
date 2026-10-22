@@ -143,13 +143,25 @@ export class GraphView {
     this.handlers.moved();
   }
 
-  // Middle of a drawn pad, relative to the SVG, or null if not drawn.
-  portPoint(port) {
-    const node = this.viewport.querySelector(`[data-port="${port}"]`);
+  // The drawn shape of a target: "p<id>" a pad, "e<id>" an element's box.
+  targetNode(target) {
+    if (target.startsWith("e"))
+      return this.boxes?.get(Number(target.slice(1)))?.g;
+    return this.viewport.querySelector(`[data-port="${target}"]`);
+  }
+
+  // Where a card's line ends, relative to the SVG, or null if not drawn:
+  // the middle of a pad, the top right corner of an element.
+  portPoint(target) {
+    const node = this.targetNode(target);
     if (!node)
       return null;
-    const r = node.getBoundingClientRect();
     const s = this.svg.getBoundingClientRect();
+    if (target.startsWith("e")) {
+      const r = node.querySelector(":scope > rect.box").getBoundingClientRect();
+      return { x: r.right - s.x, y: r.y + 10 - s.y };
+    }
+    const r = node.getBoundingClientRect();
     return { x: r.x + r.width / 2 - s.x, y: r.y + r.height / 2 - s.y };
   }
 
@@ -197,12 +209,11 @@ export class GraphView {
     }
   }
 
-  highlight(port) {
-    for (const node of this.viewport.querySelectorAll(".pad.highlight"))
+  highlight(target) {
+    for (const node of this.viewport.querySelectorAll(".highlight"))
       node.classList.remove("highlight");
-    if (port)
-      this.viewport.querySelector(`[data-port="${port}"]`)
-        ?.classList.add("highlight");
+    if (target)
+      this.targetNode(target)?.classList.add("highlight");
   }
 
   zoomAt(factor, cx, cy) {
@@ -277,6 +288,8 @@ export class GraphView {
       classes.push("selected");
     if (view.appeared.has(e.id))
       classes.push("appeared");
+    if (view.pinned.has(`e${e.id}`))
+      classes.push("pinned");
     const g = el("g", { class: classes.join(" "), "data-id": e.id }, parent);
     el("rect", { class: "box", x: node.x, y: node.y, width: node.width,
       height: node.height, rx: 5 }, g);

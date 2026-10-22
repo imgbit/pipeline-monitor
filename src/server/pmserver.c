@@ -42,6 +42,8 @@ struct _PmServer
   /* Queue levels and pipeline times, sampled every STATS_INTERVAL_MS even
    * without clients. */
   gchar *last_levels;
+  /* Watched properties: client -> set of "<element id>\n<property>". */
+  GHashTable *watches;
 
   gint update_scheduled;
 };
@@ -297,6 +299,42 @@ forget_client (PmServer * self, SoupWebsocketConnection * conn)
 {
   g_signal_handlers_disconnect_by_data (conn, self);
   pm_monitor_remove_client (self->monitor, conn);
+  g_hash_table_remove (self->watches, conn);
+}
+
+/* Property names are made of letters, digits, '-' and '_'. */
+static gboolean
+valid_property_name (const gchar * name)
+{
+  const gchar *p;
+
+  if (name == NULL || *name == '\0' || strlen (name) > 128)
+    return FALSE;
+  for (p = name; *p != '\0'; p++)
+    if (!g_ascii_isalnum (*p) && *p != '-' && *p != '_')
+      return FALSE;
+  return TRUE;
+}
+
+static void
+watch_property (PmServer * self, SoupWebsocketConnection * conn,
+    gint64 element, const gchar * property, gboolean watch)
+{
+  GHashTable *set = g_hash_table_lookup (self->watches, conn);
+  gchar *key = g_strdup_printf ("%" G_GINT64_FORMAT "\n%s", element,
+      property);
+
+  if (watch) {
+    if (set == NULL) {
+      set = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
+      g_hash_table_insert (self->watches, conn, set);
+    }
+    g_hash_table_add (set, key);
+  } else {
+    if (set != NULL)
+      g_hash_table_remove (set, key);
+    g_free (key);
+  }
 }
 
 static void
@@ -342,6 +380,22 @@ on_ws_message (SoupWebsocketConnection * conn, gint type, GBytes * message,
     goto done;
   object = json_node_get_object (root);
   command = json_object_get_string_member_with_default (object, "type", "");
+
+  /* {"type":"watch-property","element":12,"property":"stats"} */
+  if (g_strcmp0 (command, "watch-property") == 0 ||
+      g_strcmp0 (command, "unwatch-property") == 0) {
+    JsonNode *element = json_object_get_member (object, "element");
+    const gchar *property = json_object_get_string_member_with_default
+        (object, "property", NULL);
+
+    if (element != NULL && JSON_NODE_HOLDS_VALUE (element) &&
+        json_node_get_value_type (element) == G_TYPE_INT64 &&
+        json_node_get_int (element) > 0 && valid_property_name (property))
+      watch_property (self, conn, json_node_get_int (element), property,
+          command[0] == 'w');
+    goto done;
+  }
+
   pad_node = json_object_get_member (object, "pad");
   if (pad_node == NULL || !JSON_NODE_HOLDS_VALUE (pad_node) ||
       json_node_get_value_type (pad_node) != G_TYPE_INT64)
@@ -363,6 +417,109 @@ on_ws_message (SoupWebsocketConnection * conn, gint type, GBytes * message,
 
 done:
   g_object_unref (parser);
+}
+
+static void
+add_name (GHashTable * by_element, gint64 id, const gchar * name)
+{
+  GPtrArray *names = g_hash_table_lookup (by_element, &id);
+
+  if (names == NULL) {
+    gint64 *key = g_new (gint64, 1);
+
+    *key = id;
+    names = g_ptr_array_new_with_free_func (g_free);
+    g_hash_table_insert (by_element, key, names);
+  }
+  if (!g_ptr_array_find_with_equal_func (names, name, g_str_equal, NULL))
+    g_ptr_array_add (names, g_strdup (name));
+}
+
+/* Sends one page the elements it watches; results: element id -> JSON
+ * from pm_props_read, or NULL if the element is gone (its watches are then
+ * dropped). */
+static void
+send_watched (SoupWebsocketConnection * conn, GHashTable * set,
+    GHashTable * results)
+{
+  GHashTable *sent = g_hash_table_new (g_int64_hash, g_int64_equal);
+  GString *json = g_string_new ("{\"type\":\"properties\",\"elements\":[");
+  GHashTableIter iter;
+  gpointer watch;
+
+  g_hash_table_iter_init (&iter, set);
+  while (g_hash_table_iter_next (&iter, &watch, NULL)) {
+    gint64 id = g_ascii_strtoll (watch, NULL, 10);
+    gpointer id_key, result;
+
+    if (!g_hash_table_lookup_extended (results, &id, &id_key, &result))
+      continue;
+    if (!g_hash_table_contains (sent, id_key)) {
+      g_hash_table_add (sent, id_key);
+      if (json->str[json->len - 1] != '[')
+        g_string_append_c (json, ',');
+      if (result == NULL)
+        g_string_append_printf (json, "{\"element\":%" G_GINT64_FORMAT
+            ",\"gone\":true}", id);
+      else
+        g_string_append_printf (json, "{\"element\":%" G_GINT64_FORMAT
+            ",\"values\":%s}", id, (gchar *) result);
+    }
+    if (result == NULL)
+      g_hash_table_iter_remove (&iter);
+  }
+  g_string_append (json, "]}");
+  if (g_hash_table_size (sent) > 0)
+    send_text (conn, json->str);
+  g_string_free (json, TRUE);
+  g_hash_table_unref (sent);
+}
+
+/* Reads the watched properties, once per element however many pages watch
+ * it, and sends each page {"type":"properties","elements":[...]} with its
+ * elements; an element that is gone is reported once, then dropped. */
+static void
+send_properties (PmServer * self)
+{
+  GHashTable *by_element = g_hash_table_new_full (g_int64_hash,
+      g_int64_equal, g_free, (GDestroyNotify) g_ptr_array_unref);
+  GHashTable *results = g_hash_table_new_full (g_int64_hash, g_int64_equal,
+      NULL, g_free);
+  GHashTableIter iter, inner;
+  gpointer key, value;
+
+  g_hash_table_iter_init (&iter, self->watches);
+  while (g_hash_table_iter_next (&iter, NULL, &value)) {
+    g_hash_table_iter_init (&inner, value);
+    while (g_hash_table_iter_next (&inner, &key, NULL)) {
+      gchar **parts = g_strsplit (key, "\n", 2);
+
+      add_name (by_element, g_ascii_strtoll (parts[0], NULL, 10), parts[1]);
+      g_strfreev (parts);
+    }
+  }
+
+  g_hash_table_iter_init (&iter, by_element);
+  while (g_hash_table_iter_next (&iter, &key, &value)) {
+    GPtrArray *names = value;
+    GstElement *element = pm_model_get_element (self->model,
+        *(gint64 *) key);
+
+    if (element == NULL) {
+      g_hash_table_insert (results, key, NULL);
+      continue;
+    }
+    g_ptr_array_add (names, NULL);
+    g_hash_table_insert (results, key, pm_props_read (element,
+            (const gchar * const *) names->pdata, PROPERTIES_TIMEOUT_US));
+    gst_object_unref (element);
+  }
+
+  g_hash_table_iter_init (&iter, self->watches);
+  while (g_hash_table_iter_next (&iter, &key, &value))
+    send_watched (key, value, results);
+  g_hash_table_unref (results);
+  g_hash_table_unref (by_element);
 }
 
 static gboolean
@@ -388,6 +545,7 @@ send_all_stats (gpointer user_data)
     g_free (stats);
   }
   g_free (levels);
+  send_properties (self);
   return G_SOURCE_CONTINUE;
 }
 
@@ -580,6 +738,8 @@ pm_server_new (PmModel * model, guint port, const gchar * ui_dir,
   self->context = g_main_context_new ();
   self->loop = g_main_loop_new (self->context, FALSE);
   self->clients = g_ptr_array_new ();
+  self->watches = g_hash_table_new_full (NULL, NULL, NULL,
+      (GDestroyNotify) g_hash_table_unref);
   g_mutex_init (&self->lock);
   g_cond_init (&self->cond);
 
@@ -611,6 +771,7 @@ pm_server_free (PmServer * self)
   g_thread_join (self->thread);
 
   g_ptr_array_unref (self->clients);
+  g_hash_table_unref (self->watches);
   pm_monitor_free (self->monitor);
   g_main_loop_unref (self->loop);
   g_main_context_unref (self->context);

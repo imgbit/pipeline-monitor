@@ -75,9 +75,9 @@ function button(parent, cls, icon, title) {
   return b;
 }
 
-function load() {
+function load(key) {
   try {
-    return JSON.parse(localStorage.getItem(PINS_KEY)) || [];
+    return JSON.parse(localStorage.getItem(key)) || [];
   } catch {
     return [];
   }
@@ -98,25 +98,47 @@ function spans(values, unit) {
   return parts.join(" / ");
 }
 
+// Cards for pinned pads. Subclasses (ElementPins) change what a card is
+// bound to and what it shows; placing, dragging and folding are shared.
 export class Pins {
-  // handlers: send(command), portPoint(portId) -> {x, y} or null,
-  // highlight(portId or null), reveal(portId), changed().
-  constructor(layer, lines, handlers) {
+  // handlers: send(command), portPoint(target) -> {x, y} or null,
+  // highlight(target or null), reveal(target), changed(). A target is
+  // "p<id>" for a pad, "e<id>" for an element.
+  constructor(layer, lines, handlers, key = PINS_KEY, noun = "pad") {
     this.layer = layer;
     this.lines = lines;
     this.handlers = handlers;
+    this.key = key;
+    this.noun = noun;
     this.unit = "auto";
     this.hovered = null;
     this.pins = new Map();
-    for (const saved of load())
+    for (const saved of load(key))
       this.create(saved);
   }
 
+  target(pin) {
+    return `p${pin.id}`;
+  }
+
+  watch(pin) {
+    this.handlers.send({ type: "monitor", pad: pin.id });
+  }
+
+  unwatch(pin) {
+    this.handlers.send({ type: "unmonitor", pad: pin.id });
+  }
+
+  // What is remembered of a pin.
+  saved(pin) {
+    const { path, detached, x, y, dx, dy, folded } = pin;
+    return { path, detached, x, y, dx, dy, folded };
+  }
+
   save() {
-    const list = [...this.pins.values()].map(({ path, detached, x, y, dx, dy,
-      folded }) => ({ path, detached, x, y, dx, dy, folded }));
+    const list = [...this.pins.values()].map((pin) => this.saved(pin));
     try {
-      localStorage.setItem(PINS_KEY, JSON.stringify(list));
+      localStorage.setItem(this.key, JSON.stringify(list));
     } catch {
       // Storage may be unavailable; pins still work for this session.
     }
@@ -139,7 +161,7 @@ export class Pins {
   // Port ids ("p12") of pinned pads, for the graph.
   ports() {
     return new Set([...this.pins.values()].filter((p) => p.id !== null)
-      .map((p) => `p${p.id}`));
+      .map((p) => this.target(p)));
   }
 
   // The live values of a pinned pad, for its tooltip.
@@ -161,7 +183,7 @@ export class Pins {
 
   unpin(pin) {
     if (pin.sent && pin.id !== null)
-      this.handlers.send({ type: "unmonitor", pad: pin.id });
+      this.unwatch(pin);
     if (this.hovered === pin)
       this.hover(null);
     pin.card.remove();
@@ -176,24 +198,24 @@ export class Pins {
       pin.sent = false;
   }
 
-  // Matches pins to the pads of a new graph; pads: Map path -> {id, caps}.
-  sync(pads) {
+  // Matches pins to a new graph; found: Map path -> {id, caps}.
+  sync(found) {
     for (const pin of this.pins.values()) {
-      const pad = pads.get(pin.path);
-      if (!pad) {
+      const entry = found.get(pin.path);
+      if (!entry) {
         if (pin.id !== null)
           this.setGone(pin);
         continue;
       }
-      pin.video = (pad.caps || "").startsWith("video/");
-      if (pad.id !== pin.id) {
+      pin.video = (entry.caps || "").startsWith("video/");
+      if (entry.id !== pin.id) {
         if (pin.sent && pin.id !== null)
-          this.handlers.send({ type: "unmonitor", pad: pin.id });
-        pin.id = pad.id;
+          this.unwatch(pin);
+        pin.id = entry.id;
         pin.sent = false;
       }
       if (!pin.sent) {
-        this.handlers.send({ type: "monitor", pad: pin.id });
+        this.watch(pin);
         pin.sent = true;
       }
     }
@@ -236,26 +258,14 @@ export class Pins {
     const head = add(card, "div", "pin-head");
     const name = pin.path.split("/").pop();
     add(head, "span", "pin-title", name).title =
-      `${pin.path}\nClick to show the pad, drag to move`;
+      `${pin.path}\nClick to show the ${this.noun}, drag to move`;
     pin.summary = add(head, "span", "pin-summary");
     const fold = button(head, "pin-fold", "fold", "Fold");
-    const anchor = button(head, "pin-anchor", "back", "Back to its pad");
+    const anchor = button(head, "pin-anchor", "back",
+      `Back to its ${this.noun}`);
     const close = button(head, "pin-close", "close", "Unpin");
     pin.note = add(card, "div", "pin-note", "waiting for data…");
-    const dl = add(card, "dl", "pin-rows");
-    pin.cells = {};
-    let group = false;
-    for (const [key, label, title] of ROWS) {
-      if (!key) {
-        group = true;
-        continue;
-      }
-      const dt = add(dl, "dt", group ? "group" : undefined, label);
-      if (title)
-        dt.title = title;
-      pin.cells[key] = add(dl, "dd", group ? "group" : undefined);
-      group = false;
-    }
+    this.buildRows(pin, add(card, "dl", "pin-rows"));
 
     fold.addEventListener("click", () => {
       pin.folded = !pin.folded;
@@ -277,9 +287,25 @@ export class Pins {
     this.fill(pin);
   }
 
+  buildRows(pin, dl) {
+    pin.cells = {};
+    let group = false;
+    for (const [key, label, title] of ROWS) {
+      if (!key) {
+        group = true;
+        continue;
+      }
+      const dt = add(dl, "dt", group ? "group" : undefined, label);
+      if (title)
+        dt.title = title;
+      pin.cells[key] = add(dl, "dd", group ? "group" : undefined);
+      group = false;
+    }
+  }
+
   hover(pin) {
     this.hovered = pin;
-    this.handlers.highlight(pin && pin.id !== null ? `p${pin.id}` : null);
+    this.handlers.highlight(pin && pin.id !== null ? this.target(pin) : null);
     this.place();
   }
 
@@ -320,7 +346,7 @@ export class Pins {
     });
     head.addEventListener("pointerup", () => {
       if (drag && !drag.moved && pin.id !== null)
-        this.handlers.reveal(`p${pin.id}`);
+        this.handlers.reveal(this.target(pin));
       else if (drag)
         this.save();
       drag = null;
@@ -331,20 +357,25 @@ export class Pins {
   fill(pin) {
     const card = pin.card;
     const s = pin.stats;
-    const unit = this.unit;
-    const c = pin.cells;
     card.classList.toggle("detached", pin.detached);
     card.classList.toggle("folded", pin.folded);
     card.classList.toggle("gone", pin.gone);
     card.querySelector(".pin-fold").title = pin.folded ? "Unfold" : "Fold";
     pin.note.hidden = !pin.gone && Boolean(s);
     pin.note.textContent = pin.gone
-      ? (s ? "pad is gone, last values:" : "pad is gone")
+      ? (s ? `${this.noun} is gone, last values:` : `${this.noun} is gone`)
       : "waiting for data…";
     if (!s) {
       pin.summary.textContent = "";
       return;
     }
+    this.fillRows(pin);
+  }
+
+  fillRows(pin) {
+    const s = pin.stats;
+    const unit = this.unit;
+    const c = pin.cells;
 
     const set = (key, content, title = "") => {
       c[key].textContent = content;
@@ -402,7 +433,7 @@ export class Pins {
     this.lines.replaceChildren();
     for (const pin of this.pins.values()) {
       const card = pin.card;
-      const point = pin.id !== null ? this.handlers.portPoint(`p${pin.id}`)
+      const point = pin.id !== null ? this.handlers.portPoint(this.target(pin))
         : null;
       if (point)
         pin.lastPoint = point;
@@ -439,5 +470,173 @@ export class Pins {
     l.setAttribute("y2", y);
     l.setAttribute("class", dashed ? "pin-line dashed" : "pin-line");
     this.lines.appendChild(l);
+  }
+}
+
+const ELEMENT_PINS_KEY = "pipeline-monitor.element-pins";
+// Readings (4 per second) a number must only grow before it counts as a
+// counter and gets a rate.
+const COUNTER_SAMPLES = 8;
+
+function isStructure(v) {
+  return v !== null && typeof v === "object" && "structure" in v;
+}
+
+// Cards for pinned element properties: one card per element, one row per
+// property, the fields of a structure below it. Numbers that keep growing
+// (counters) also show how fast they grow.
+export class ElementPins extends Pins {
+  // texts: {valueText(value), propertyText(property), isTime(property)}.
+  constructor(layer, lines, handlers, texts) {
+    super(layer, lines, handlers, ELEMENT_PINS_KEY, "element");
+    this.texts = texts;
+  }
+
+  target(pin) {
+    return `e${pin.id}`;
+  }
+
+  watch(pin) {
+    for (const property of pin.props)
+      this.handlers.send({ type: "watch-property", element: pin.id, property });
+  }
+
+  unwatch(pin) {
+    for (const property of pin.props)
+      this.handlers.send({ type: "unwatch-property", element: pin.id,
+        property });
+  }
+
+  saved(pin) {
+    return { ...super.saved(pin), props: pin.props };
+  }
+
+  create(saved) {
+    return super.create({ props: [], ...saved });
+  }
+
+  hasProperty(path, property) {
+    return this.pins.get(path)?.props.includes(property) ?? false;
+  }
+
+  // Pins or unpins one property; the card goes with its last property.
+  toggleProperty(path, property) {
+    const pin = this.pins.get(path);
+    if (!pin) {
+      this.create({ path, props: [property] });
+    } else if (pin.props.includes(property)) {
+      if (pin.props.length === 1) {
+        this.unpin(pin);
+        return;
+      }
+      if (pin.sent && pin.id !== null)
+        this.handlers.send({ type: "unwatch-property", element: pin.id,
+          property });
+      pin.props = pin.props.filter((p) => p !== property);
+      this.fill(pin);
+    } else {
+      pin.props.push(property);
+      if (pin.sent && pin.id !== null)
+        this.handlers.send({ type: "watch-property", element: pin.id,
+          property });
+      this.fill(pin);
+    }
+    this.save();
+    this.handlers.changed();
+  }
+
+  // A "properties" message.
+  apply(message) {
+    for (const entry of message.elements) {
+      const pin = [...this.pins.values()].find((p) => p.id === entry.element);
+      if (!pin)
+        continue;
+      if (entry.gone) {
+        this.setGone(pin);
+        continue;
+      }
+      pin.gone = false;
+      pin.stats = entry.values;
+      this.fill(pin);
+    }
+    this.place();
+  }
+
+  buildRows(pin, dl) {
+    pin.dl = dl;
+    pin.rates = new Map();
+    pin.rowKeys = "";
+  }
+
+  // The value as text, with "+n/s" for a counter: a number that has only
+  // grown for COUNTER_SAMPLES readings (a level that goes up and down is
+  // not one).
+  withRate(pin, key, value, time, text = this.texts.valueText(value)) {
+    if (typeof value !== "number")
+      return text;
+    const prev = pin.rates.get(key);
+    const state = { v: value, t: time, counter: !prev || (prev.counter &&
+      value >= prev.v), samples: (prev?.samples ?? 0) + 1,
+    rate: prev?.rate ?? null };
+    if (prev && prev.counter && state.counter && time > prev.t &&
+        value > prev.v)
+      state.rate = (value - prev.v) / ((time - prev.t) / 1e6);
+    else if (prev && value === prev.v && prev.rate !== null)
+      state.rate = prev.rate * 0.5;
+    pin.rates.set(key, state);
+    return state.counter && state.samples >= COUNTER_SAMPLES &&
+      state.rate !== null && state.rate >= 0.05
+      ? `${text} (+${state.rate.toFixed(1)}/s)` : text;
+  }
+
+  fillRows(pin) {
+    const v = pin.stats;
+    const found = new Map((v.properties || []).map((p) => [p.name, p]));
+    const rows = [];
+    for (const name of pin.props) {
+      const p = found.get(name);
+      if (!p || p.not_answering || v.not_answering === name) {
+        rows.push({ key: name, label: name, prop: name,
+          text: p || v.not_answering === name ? "not answering" : "—" });
+        continue;
+      }
+      if (isStructure(p.value)) {
+        rows.push({ key: name, label: name, prop: name, text: "",
+          title: `${p.blurb}\n${p.value.structure}` });
+        for (const [field, fv] of Object.entries(p.value.fields))
+          rows.push({ key: `${name}.${field}`, label: field, field: true,
+            text: isStructure(fv) ? fv.structure
+              : this.withRate(pin, `${name}.${field}`, fv, v.time) });
+      } else if (this.texts.isTime(p)) {
+        rows.push({ key: name, label: name, prop: name, title: p.blurb,
+          text: this.texts.propertyText(p) });
+      } else {
+        rows.push({ key: name, label: name, prop: name, title: p.blurb,
+          text: this.withRate(pin, name, p.value, v.time) });
+      }
+    }
+
+    // Rebuilt only when the rows change, so hover texts stay.
+    const keys = rows.map((r) => r.key).join("\n");
+    if (keys !== pin.rowKeys) {
+      pin.rowKeys = keys;
+      pin.dl.replaceChildren();
+      pin.cells = {};
+      for (const r of rows) {
+        const dt = add(pin.dl, "dt", r.field ? "field" : undefined, r.label);
+        dt.title = r.title || "";
+        if (r.prop) {
+          const x = button(dt, "pin-prop-close", "close", "Unpin this property");
+          x.addEventListener("click", () => this.toggleProperty(pin.path,
+            r.prop));
+        }
+        pin.cells[r.key] = add(pin.dl, "dd", r.field ? "field" : undefined);
+      }
+    }
+    for (const r of rows)
+      pin.cells[r.key].textContent = r.text;
+    pin.summary.textContent = pin.folded && rows.length
+      ? `${rows[0].label}: ${rows.find((r) => r.field)?.text ?? rows[0].text}`
+      : "";
   }
 }

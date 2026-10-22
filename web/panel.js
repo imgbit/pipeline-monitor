@@ -6,6 +6,7 @@
 import { countElements } from "./render.js";
 import { summarizeCaps } from "./caps.js";
 import { capsList } from "./tooltip.js";
+import { formatSpan } from "./units.js";
 
 // Pads whose full caps are open in the panel, kept across updates.
 const expanded = new Set();
@@ -122,6 +123,26 @@ function valueText(v) {
   return `(${v.type})`;
 }
 
+export { valueText };
+
+// 64-bit integers named like a time hold nanoseconds (GstClockTime).
+const TIME_NAME = /(^|-)(time|latency|duration|delay|deadline)$|^ts-offset$/;
+
+export function isTimeProperty(p) {
+  return (p.type === "guint64" || p.type === "gint64") &&
+    TIME_NAME.test(p.name) && typeof p.value === "number";
+}
+
+// A property's value as text; times in a readable unit.
+export function propertyText(p) {
+  if (!isTimeProperty(p))
+    return valueText(p.value);
+  // -1 and the largest value both mean "none" (GST_CLOCK_TIME_NONE).
+  if (p.value === -1 || p.value >= 1.8e19)
+    return "none";
+  return formatSpan(p.value, "auto");
+}
+
 // The fields of a structure, one per line, nested ones indented.
 function fieldsList(fields) {
   const dl = document.createElement("dl");
@@ -149,9 +170,13 @@ function propertyTitle(p) {
   return lines.filter(Boolean).join("\n");
 }
 
+const PIN_ICON = '<svg viewBox="0 0 12 12" aria-hidden="true">' +
+  '<path d="M4.5 1.5h3M5 1.5v3.5L3 7h6L7 5V1.5M6 7v3.5"/></svg>';
+
 // Fills the properties section from a /api/properties answer for the
-// element shown; called every second while the panel is open.
-export function updateProperties(aside, id, data) {
+// element shown; called every second while the panel is open. pinning:
+// {has(name), toggle(name)} for pinning properties to a card.
+export function updateProperties(aside, id, data, pinning) {
   const section = aside.querySelector(".properties");
   if (!section || Number(section.dataset.element) !== id)
     return;
@@ -169,6 +194,18 @@ export function updateProperties(aside, id, data) {
   for (const p of data.properties) {
     const key = `${id}:${p.name}`;
     const tr = add(table, "tr");
+    const pinCell = add(tr, "td", undefined, "pin-cell");
+    if (pinning && !p.not_answering) {
+      const pin = add(pinCell, "button", undefined, "pin-prop");
+      pin.innerHTML = PIN_ICON;
+      const on = pinning.has(p.name);
+      pin.classList.toggle("on", on);
+      pin.title = on ? "Unpin" : "Pin: show it live next to the element";
+      pin.addEventListener("click", () => {
+        pinning.toggle(p.name);
+        updateProperties(aside, id, data, pinning);
+      });
+    }
     const name = add(tr, "td", p.name, p.changed ? "changed" : undefined);
     name.title = propertyTitle(p) + (p.changed ? "\nchanged from default"
       : "");
@@ -190,13 +227,15 @@ export function updateProperties(aside, id, data) {
           openProps.delete(key);
         else
           openProps.add(key);
-        updateProperties(aside, id, data);
+        updateProperties(aside, id, data, pinning);
       });
       if (openProps.has(key))
         cell.appendChild(fieldsList(p.value.fields));
     } else {
-      cell.textContent = text;
-      if (typeof p.value === "object" && p.value?.caps)
+      cell.textContent = propertyText(p);
+      if (isTimeProperty(p))
+        cell.title = `${p.value} ns`;
+      else if (typeof p.value === "object" && p.value?.caps)
         cell.title = p.value.caps;
     }
     // Flash what changed since the last refresh.

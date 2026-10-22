@@ -3,12 +3,12 @@
 
 import { buildElkGraph, elementPath, keepPlaces } from "./layout.js";
 import { GraphView, countElements } from "./render.js";
-import { showDetails, updateProperties, updateQueueDetails }
-  from "./panel.js";
+import { isTimeProperty, propertyText, showDetails, updateProperties,
+  updateQueueDetails, valueText } from "./panel.js";
 import { LogView } from "./log.js";
 import { Tooltip } from "./tooltip.js";
 import { linkCaps } from "./caps.js";
-import { Pins } from "./pins.js";
+import { ElementPins, Pins } from "./pins.js";
 import { TIME_UNITS, formatSpan } from "./units.js";
 import { pipelineTimes, queueRows } from "./levels.js";
 
@@ -112,6 +112,7 @@ const view = new GraphView($("graph"), {
   },
   moved() {
     pins.place();
+    elementPins.place();
   },
 });
 
@@ -129,6 +130,20 @@ const pins = new Pins($("pins"), $("pin-lines"), {
     update();
   },
 });
+const elementPins = new ElementPins($("pins"), $("pin-lines"), {
+  send(command) {
+    if (socket?.readyState === WebSocket.OPEN)
+      socket.send(JSON.stringify(command));
+  },
+  portPoint: (target) => view.portPoint(target),
+  highlight: (target) => view.highlight(target),
+  reveal: (target) => view.reveal(target),
+  changed() {
+    elementPins.sync(buildIndex(state.graph).elementPaths);
+    update();
+  },
+}, { valueText, propertyText, isTime: isTimeProperty });
+
 pins.setUnit(TIME_UNITS.includes(loadString(TIME_UNIT_KEY))
   ? loadString(TIME_UNIT_KEY) : "auto");
 
@@ -213,11 +228,13 @@ function currentPipeline() {
 function buildIndex(graph) {
   const pads = new Map();
   const padPaths = new Map();
+  const elementPaths = new Map();
   const elements = new Map();
   const peers = new Map();
   const visit = (element, parents) => {
     const path = elementPath(element, parents);
     elements.set(element.id, { element, path });
+    elementPaths.set(path, { id: element.id });
     for (const pad of element.pads) {
       pads.set(pad.id, { pad, element, path: `${path}:${pad.name}` });
       padPaths.set(`${path}:${pad.name}`, { id: pad.id, caps: pad.caps });
@@ -238,6 +255,7 @@ function buildIndex(graph) {
     elements,
     peers,
     padPaths,
+    elementPaths,
     padPath: (id) => pads.get(id)?.path,
     padName(id) {
       const p = pads.get(id);
@@ -353,7 +371,7 @@ async function layoutAndRender() {
     selectedPads,
     appeared: appearedIds(pipeline, index),
     badges,
-    pinned: pins.ports(),
+    pinned: new Set([...pins.ports(), ...elementPins.ports()]),
   });
   view.setLevels(state.queues);
   const details = selection && log.enabled ? {
@@ -367,7 +385,8 @@ async function layoutAndRender() {
   // The panel was rebuilt: refill it from the last answer, or ask now for a
   // newly selected element.
   if (selection && propsLast.id === selection.element.id)
-    updateProperties($("details"), propsLast.id, propsLast.data);
+    updateProperties($("details"), propsLast.id, propsLast.data,
+      pinningFor(propsLast.id));
   else if (selection)
     refreshProperties();
 }
@@ -391,10 +410,19 @@ async function refreshProperties() {
     }
     if (state.selected === id) {
       propsLast = { id, data };
-      updateProperties($("details"), id, data);
+      updateProperties($("details"), id, data, pinningFor(id));
     }
   }
   propsTimer = setTimeout(refreshProperties, 1000);
+}
+
+// Pinning the selected element's properties from the panel.
+function pinningFor(id) {
+  const path = buildIndex(state.graph).elements.get(id)?.path;
+  return path ? {
+    has: (name) => elementPins.hasProperty(path, name),
+    toggle: (name) => elementPins.toggleProperty(path, name),
+  } : null;
 }
 
 // The selected element's queue rows for the details panel, or null.
@@ -425,15 +453,20 @@ function connect(delay = 1000) {
     delay = 1000;
     log.reset();
     pins.connected();
+    elementPins.connected();
   };
   ws.onmessage = (event) => {
     const message = JSON.parse(event.data);
     if (message.type === "graph") {
       state.graph = message.graph;
-      pins.sync(buildIndex(state.graph).padPaths);
+      const index = buildIndex(state.graph);
+      pins.sync(index.padPaths);
+      elementPins.sync(index.elementPaths);
       update();
     } else if (message.type === "levels") {
       applyLevels(message.levels);
+    } else if (message.type === "properties") {
+      elementPins.apply(message);
     } else if (message.type === "pad-stats") {
       pins.apply(message.stats);
     } else if (message.type === "log") {
@@ -477,6 +510,7 @@ window.addEventListener("resize", () => {
   if (view.autoFit)
     view.fit();
   pins.place();
+  elementPins.place();
 });
 
 connect();
