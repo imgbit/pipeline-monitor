@@ -800,8 +800,9 @@ test_monitor_values (void)
   g_assert_cmpint (json_object_get_int_member (entry, "bytes"), >, 0);
   last = json_object_get_object_member (entry, "last");
   g_assert_false (json_object_get_null_member (last, "pts"));
-  g_assert_cmpint (json_object_get_int_member (last, "duration"), ==,
-      GST_SECOND / 30);
+  /* Frame durations are rounded to whole ns. */
+  g_assert_cmpint (ABS (json_object_get_int_member (last, "duration") -
+          GST_SECOND / 30), <=, 1);
   /* Live, so on time within a frame or two. */
   g_assert_cmpint (ABS (json_object_get_int_member (last, "delay")), <,
       GST_SECOND);
