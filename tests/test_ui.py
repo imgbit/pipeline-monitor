@@ -299,11 +299,14 @@ def check(browser, url):
 
     browser.click("#auto-fit")
     assert browser.wait(f"{AUTO_FIT} === 'true'"), "auto-fit did not turn on"
+    # A branch coming and going no longer changes the zoom (keepPlaces),
+    # so check that the fit follows the window.
     view = browser.eval(TRANSFORM)
-    count = browser.eval(NODES)
-    assert browser.wait(f"{NODES} !== {count}"), "graph did not update live"
+    browser.call("Emulation.setDeviceMetricsOverride", width=1000, height=700,
+                 deviceScaleFactor=1, mobile=False)
     assert browser.wait(f"{TRANSFORM} !== {json.dumps(view)}"), \
-        "auto-fit did not follow the graph"
+        "auto-fit did not follow the window"
+    browser.call("Emulation.clearDeviceMetricsOverride")
 
     browser.call("Page.reload")
     assert browser.wait("!!document.querySelector('#graph .node.collapsed')"), \
@@ -323,6 +326,7 @@ def check(browser, url):
     check_log(browser)
     check_caps(browser)
     check_units(browser)
+    check_places(browser)
     check_pins(browser)
 
     browser.call("Emulation.setDeviceMetricsOverride", width=390, height=760,
@@ -481,6 +485,40 @@ def check_units(browser):
                        json.dumps([[f, v, u] for f, v, u, _ in UNITS]) +
                        ".map(([f, v, u]) => m[f](v, u)))")
     assert got == [s for *_, s in UNITS], f"units: {got}"
+
+
+# keepPlaces: two unconnected parts; the upper one shrinks (a branch goes
+# away), the lower one must stay where it was.
+PLACES = """
+import('./layout.js').then(({ keepPlaces }) => {
+  const make = (lowerY) => ({
+    width: 300, height: lowerY + 60,
+    children: [
+      { id: 'a', x: 10, y: 10, width: 50, height: 30,
+        ports: [{ id: 'pa', x: 60, y: 20 }] },
+      { id: 'b', x: 100, y: 10, width: 50, height: 30,
+        ports: [{ id: 'pb', x: 100, y: 20 }] },
+      { id: 'c', x: 10, y: lowerY, width: 50, height: 30, ports: [] },
+    ],
+    edges: [{ sources: ['pa'], targets: ['pb'], sections: [{
+      startPoint: { x: 60, y: 20 }, endPoint: { x: 100, y: 20 } }] }],
+  });
+  const memory = { tops: new Map() };
+  const first = make(120);
+  keepPlaces(first, memory);
+  const second = make(60);
+  keepPlaces(second, memory);
+  const third = make(200);
+  keepPlaces(third, memory);
+  return [first.children[2].y, second.children[2].y, second.height,
+          second.children[0].y, second.edges[0].sections[0].startPoint.y,
+          third.children[2].y];
+})"""
+
+
+def check_places(browser):
+    got = browser.eval(PLACES)
+    assert got == [120, 120, 180, 10, 20, 200], f"keepPlaces: {got}"
 
 
 def pin_row(name):

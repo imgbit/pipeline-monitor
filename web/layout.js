@@ -158,3 +158,92 @@ export function buildElkGraph(pipeline, links, collapsed, capsLabels) {
   };
   return { graph, info };
 }
+
+// Shifts every shape of a node, its children and ports by dy (ROOT coords).
+function shiftNode(node, dy) {
+  node.y += dy;
+  for (const port of node.ports || [])
+    port.y += dy;
+  for (const label of node.labels || [])
+    label.y += dy;
+  for (const child of node.children || [])
+    shiftNode(child, dy);
+  for (const edge of node.edges || [])
+    shiftEdge(edge, dy);
+}
+
+function shiftEdge(edge, dy) {
+  for (const s of edge.sections || []) {
+    s.startPoint.y += dy;
+    s.endPoint.y += dy;
+    for (const p of s.bendPoints || [])
+      p.y += dy;
+  }
+  for (const label of edge.labels || [])
+    if (label.y !== undefined)
+      label.y += dy;
+}
+
+// Keeps the graph from jumping when a branch comes and goes: unconnected
+// parts of a pipeline (e.g. audio and video) never move up, and the size
+// (for auto-fit) never shrinks. memory: {tops: Map, width, height}, kept by
+// the caller and reset when the layout changes on purpose.
+export function keepPlaces(layout, memory) {
+  const top = new Map();
+  const parent = new Map();
+  const find = (id) => (parent.get(id) === id ? id : find(parent.get(id)));
+  for (const child of layout.children || []) {
+    parent.set(child.id, child.id);
+    const visit = (node) => {
+      for (const port of node.ports || [])
+        top.set(port.id, child.id);
+      for (const c of node.children || [])
+        visit(c);
+    };
+    visit(child);
+  }
+  for (const edge of layout.edges || []) {
+    const a = top.get(edge.sources[0]);
+    const b = top.get(edge.targets[0]);
+    if (a && b)
+      parent.set(find(a), find(b));
+  }
+
+  const parts = new Map();
+  for (const child of layout.children || []) {
+    const root = find(child.id);
+    if (!parts.has(root))
+      parts.set(root, { nodes: [], y: Infinity, left: null });
+    const part = parts.get(root);
+    part.nodes.push(child);
+    part.y = Math.min(part.y, child.y);
+    // A part is known by its leftmost node, usually the source; elements
+    // added later (branches) come first in the graph, so order won't do.
+    if (!part.left || child.x < part.left.x ||
+        (child.x === part.left.x && child.y < part.left.y))
+      part.left = child;
+  }
+
+  // Shifts only grow from top to bottom, so ELK's spacing is kept.
+  const shift = new Map();
+  let dy = 0;
+  for (const part of [...parts.values()].sort((a, b) => a.y - b.y)) {
+    const key = part.left.id;
+    dy = Math.max(dy, (memory.tops.get(key) ?? part.y) - part.y);
+    memory.tops.set(key, part.y + dy);
+    for (const node of part.nodes)
+      shift.set(node.id, dy);
+  }
+  for (const child of layout.children || [])
+    if (shift.get(child.id))
+      shiftNode(child, shift.get(child.id));
+  for (const edge of layout.edges || []) {
+    const d = shift.get(top.get(edge.sources[0]));
+    if (d)
+      shiftEdge(edge, d);
+  }
+  memory.width = Math.max(memory.width || 0, layout.width);
+  memory.height = Math.max(memory.height || 0, layout.height + dy);
+  layout.width = memory.width;
+  layout.height = memory.height;
+}

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Łukasz Huńczak
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
-import { buildElkGraph, elementPath } from "./layout.js";
+import { buildElkGraph, elementPath, keepPlaces } from "./layout.js";
 import { GraphView, countElements } from "./render.js";
 import { showDetails } from "./panel.js";
 import { LogView } from "./log.js";
@@ -24,6 +24,8 @@ const state = {
   collapsed: loadCollapsed(),
   capsLabels: loadFlag(CAPS_LABELS_KEY),
   known: new Map(),
+  // Where parts of the current pipeline were, see keepPlaces.
+  places: { tops: new Map() },
 };
 
 const tooltip = new Tooltip();
@@ -85,6 +87,7 @@ const view = new GraphView($("graph"), {
     else
       state.collapsed.add(path);
     saveCollapsed();
+    state.places = { tops: new Map() };
     update();
   },
   autoFit(on) {
@@ -299,6 +302,7 @@ async function layoutAndRender() {
   }
   if (pipeline.id !== state.pipelineId) {
     state.pipelineId = pipeline.id;
+    state.places = { tops: new Map() };
     view.setAutoFit(true);
   }
 
@@ -309,6 +313,7 @@ async function layoutAndRender() {
   const { graph, info } = buildElkGraph(pipeline, state.graph.links,
     state.collapsed, state.capsLabels);
   const layout = await elk.layout(graph);
+  keepPlaces(layout, state.places);
   const selectedPads = new Set(selection
     ? selection.element.pads.map((p) => `p${p.id}`) : []);
   const badges = new Map();
@@ -382,6 +387,7 @@ $("caps-labels").addEventListener("click", () => {
   state.capsLabels = !state.capsLabels;
   saveFlag(CAPS_LABELS_KEY, state.capsLabels);
   $("caps-labels").setAttribute("aria-pressed", String(state.capsLabels));
+  state.places = { tops: new Map() };
   update();
 });
 $("time-unit").textContent = `time: ${pins.unit}`;
