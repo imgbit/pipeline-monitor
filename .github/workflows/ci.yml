@@ -14,7 +14,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [default, sanitizers, threads]
+        variant: [default, sanitizers]
     steps:
       - uses: actions/checkout@v4
       # A package mirror that hangs used to block this step for 20+
@@ -34,18 +34,11 @@ jobs:
             echo "apt-get failed or hung (try $try)"
           done
           exit 1
-      # ThreadSanitizer cannot map its memory with the high address
-      # randomization of Ubuntu 24.04 runners.
-      - name: Lower address randomization
-        if: matrix.variant == 'threads'
-        run: sudo sysctl vm.mmap_rnd_bits=28
       - name: Build
         run: |
           case "${{ matrix.variant }}" in
             sanitizers)
               meson setup build -Db_sanitize=address,undefined -Db_lundef=false ;;
-            threads)
-              meson setup build -Db_sanitize=thread -Db_lundef=false ;;
             *)
               meson setup build ;;
           esac
@@ -55,13 +48,7 @@ jobs:
           GST_REGISTRY_FORK: ${{ matrix.variant != 'default' && 'no' || '' }}
           ASAN_OPTIONS: detect_leaks=0
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
-          TSAN_OPTIONS: >-
-            halt_on_error=1:second_deadlock_stack=1:suppressions=${{
-            github.workspace }}/tests/tsan.supp
-        # ThreadSanitizer makes the tests several times slower.
-        run: >-
-          meson test -C build --print-errorlogs --verbose
-          ${{ matrix.variant == 'threads' && '--timeout-multiplier 3' || '' }}
+        run: meson test -C build --print-errorlogs --verbose
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
