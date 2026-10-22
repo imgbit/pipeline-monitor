@@ -27,7 +27,8 @@ SHOT_PIPELINE = ("videotestsrc is-live=true ! jpegenc ! decodebin3 ! queue ! "
                  "tee name=split ! queue ! videoconvert ! fakesink "
                  "split. ! queue ! fakesink "
                  "audiotestsrc is-live=true ! opusenc ! decodebin3 ! "
-                 "audioconvert ! queue ! fakesink")
+                 "audioconvert ! queue max-size-time=500000000 ! "
+                 "fakesink sync=true ts-offset=300000000")
 TRANSFORM = "document.querySelector('#graph > g').getAttribute('transform')"
 AUTO_FIT = "document.getElementById('auto-fit').getAttribute('aria-pressed')"
 NODES = "document.querySelectorAll('#graph .node').length"
@@ -637,21 +638,17 @@ def screenshot(browser, url, path):
     browser.call("Page.navigate", url=url)
     assert browser.wait(f"{NODES} > 0")
     time.sleep(1)
-    # Video folded to one line, decoded audio in full below its row.
-    for element, pad in (("queue0", "src"), ("audioconvert0", "src")):
-        port = browser.eval(pad_id_expression(element, pad))
-        browser.click_point(f"document.querySelector('#graph "
-                            f"[data-port=\"p{port}\"]')")
-        time.sleep(0.3)
+    # A pinned video pad folded to one line above its pad (still anchored),
+    # and the tooltip of the audio queue, which the late sink keeps filled.
+    port = browser.eval(pad_id_expression("queue0", "src"))
+    browser.click_point(f"document.querySelector('#graph "
+                        f"[data-port=\"p{port}\"]')")
+    time.sleep(0.3)
     browser.click(".pin-card .pin-fold")
-    # Above its pad, still anchored; then the graph up, so the audio card
-    # fits below.
     browser.drag(".pin-card .pin-head", 0, -90)
-    for kind, y in (("mousePressed", 220), ("mouseMoved", 160),
-                    ("mouseMoved", 90), ("mouseReleased", 90)):
-        browser.call("Input.dispatchMouseEvent", type=kind, x=640, y=y,
-                     button="left", buttons=1, clickCount=1)
     time.sleep(3)
+    browser.hover(f"{element_selector('queue3')}?.querySelector('rect.box')")
+    time.sleep(0.5)
     browser.screenshot(path)
 
 
