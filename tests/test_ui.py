@@ -100,6 +100,21 @@ class WebSocket:
 
 class Browser:
     def __init__(self, chrome, profile):
+        # CI machines sometimes start Chrome very slowly: one more try.
+        page = self.start(chrome, profile, 1) or self.start(chrome, profile, 2)
+        if page is None:
+            with open(self.log.name, errors="replace") as f:
+                output = f.read()[-3000:]
+            raise AssertionError(f"Chrome did not start ({self.state}):\n"
+                                 f"{output}")
+        self.ws = WebSocket(page["webSocketDebuggerUrl"])
+        self.next_id = 0
+        self.errors = []
+        self.call("Runtime.enable")
+        self.call("Page.enable")
+
+    # Starts Chrome; returns its page target, or None after stopping it.
+    def start(self, chrome, profile, attempt):
         port = free_port()
         args = [chrome, "--headless=new", f"--remote-debugging-port={port}",
                 f"--user-data-dir={profile}", "--hide-scrollbars",
@@ -107,8 +122,8 @@ class Browser:
         # CI containers and Ubuntu 24.04 runners often block Chrome's sandbox.
         if os.environ.get("CI"):
             args.append("--no-sandbox")
-        # Kept so a failed start can say why; CI machines start Chrome slowly.
-        self.log = open(os.path.join(profile, "chrome.log"), "wb")
+        # Kept so a failed start can say why.
+        self.log = open(os.path.join(profile, f"chrome-{attempt}.log"), "wb")
         self.proc = subprocess.Popen(
             args + ["about:blank"],
             stdout=subprocess.DEVNULL, stderr=self.log)
@@ -126,16 +141,9 @@ class Browser:
             self.proc.kill()
             self.proc.wait()
             self.log.close()
-            with open(self.log.name, errors="replace") as f:
-                output = f.read()[-3000:]
-            state = (f"exited with code {code}" if code is not None
-                     else "no answer within 30 s")
-            raise AssertionError(f"Chrome did not start ({state}):\n{output}")
-        self.ws = WebSocket(page["webSocketDebuggerUrl"])
-        self.next_id = 0
-        self.errors = []
-        self.call("Runtime.enable")
-        self.call("Page.enable")
+            self.state = (f"exited with code {code}" if code is not None
+                          else "no answer within 30 s")
+        return page
 
     def call(self, method, **params):
         self.next_id += 1
