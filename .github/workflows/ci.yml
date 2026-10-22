@@ -10,20 +10,28 @@ jobs:
   ubuntu:
     name: Ubuntu (${{ matrix.variant }})
     runs-on: ubuntu-24.04
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
         variant: [default, sanitizers, threads]
     steps:
       - uses: actions/checkout@v4
+      # A package mirror that hangs used to block this step for 20+
+      # minutes: each try is limited, and it is tried twice.
       - name: Install dependencies
+        timeout-minutes: 10
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            meson ninja-build pkg-config libglib2.0-dev-bin \
-            libgstreamer1.0-dev gstreamer1.0-plugins-base \
-            gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
-            libsoup-3.0-dev libjson-glib-dev python3
+          apt() { timeout 240 sudo apt-get -o Acquire::Retries=3 "$@"; }
+          for try in 1 2; do
+            apt update && apt install -y --no-install-recommends \
+              meson ninja-build pkg-config libglib2.0-dev-bin \
+              libgstreamer1.0-dev gstreamer1.0-plugins-base \
+              gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
+              libsoup-3.0-dev libjson-glib-dev python3 && exit 0
+            echo "apt-get failed or hung (try $try)"
+          done
+          exit 1
       # ThreadSanitizer cannot map its memory with the high address
       # randomization of Ubuntu 24.04 runners.
       - name: Lower address randomization
@@ -59,16 +67,23 @@ jobs:
   debian-12:
     name: Debian 12 (GStreamer 1.22)
     runs-on: ubuntu-24.04
+    timeout-minutes: 25
     container: debian:12
     steps:
       - name: Install dependencies
+        timeout-minutes: 10
         run: |
-          apt-get update
-          apt-get install -y --no-install-recommends \
-            git ca-certificates meson ninja-build pkg-config gcc \
-            libglib2.0-dev-bin libgstreamer1.0-dev \
-            gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
-            gstreamer1.0-plugins-bad libsoup-3.0-dev libjson-glib-dev python3
+          apt() { timeout 240 apt-get -o Acquire::Retries=3 "$@"; }
+          for try in 1 2; do
+            apt update && apt install -y --no-install-recommends \
+              git ca-certificates meson ninja-build pkg-config gcc \
+              libglib2.0-dev-bin libgstreamer1.0-dev \
+              gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+              gstreamer1.0-plugins-bad libsoup-3.0-dev libjson-glib-dev \
+              python3 && exit 0
+            echo "apt-get failed or hung (try $try)"
+          done
+          exit 1
       - uses: actions/checkout@v4
       - name: Build
         run: meson setup build && meson compile -C build
@@ -83,9 +98,11 @@ jobs:
   macos:
     name: macOS (Homebrew)
     runs-on: macos-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - name: Install dependencies
+        timeout-minutes: 15
         run: brew install meson ninja pkgconf gstreamer libsoup json-glib
       - name: Build
         run: meson setup build && meson compile -C build
@@ -101,6 +118,7 @@ jobs:
   windows:
     name: Windows (MSVC, official GStreamer)
     runs-on: windows-latest
+    timeout-minutes: 25
     env:
       GST_VERSION: 1.28.8
       GST_SHA256: e4c41ee6ee9c6c32a45d198463ec08d79bac3bd5fa58adc93d13fe4a08abc9d9
