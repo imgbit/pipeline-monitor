@@ -2,73 +2,7 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "serve example",
-      "type": "cppdbg",
-      "request": "launch",
-      "program": "${workspaceFolder}/build/examples/serve",
-      "args": [
-        "${input:pipeline}"
-      ],
-      "cwd": "${workspaceFolder}",
-      "environment": [
-        {
-          "name": "GST_PLUGIN_PATH",
-          "value": "${workspaceFolder}/build/src"
-        },
-        {
-          "name": "GST_TRACERS",
-          "value": "pipeline-monitor"
-        }
-      ],
-      "externalConsole": false,
-      "preLaunchTask": "build",
-      "serverReadyAction": {
-        "pattern": "pipeline-monitor: (http://\\S+)",
-        "uriFormat": "%s",
-        "action": "openExternally"
-      },
-      "osx": {
-        "MIMode": "lldb"
-      },
-      "linux": {
-        "MIMode": "gdb"
-      }
-    },
-    {
-      "name": "serve example (UI from web/, no rebuild for UI changes)",
-      "type": "cppdbg",
-      "request": "launch",
-      "program": "${workspaceFolder}/build/examples/serve",
-      "args": [
-        "${input:pipeline}"
-      ],
-      "cwd": "${workspaceFolder}",
-      "environment": [
-        {
-          "name": "GST_PLUGIN_PATH",
-          "value": "${workspaceFolder}/build/src"
-        },
-        {
-          "name": "GST_TRACERS",
-          "value": "pipeline-monitor(ui-dir=${workspaceFolder}/web)"
-        }
-      ],
-      "externalConsole": false,
-      "preLaunchTask": "build",
-      "serverReadyAction": {
-        "pattern": "pipeline-monitor: (http://\\S+)",
-        "uriFormat": "%s",
-        "action": "openExternally"
-      },
-      "osx": {
-        "MIMode": "lldb"
-      },
-      "linux": {
-        "MIMode": "gdb"
-      }
-    },
-    {
-      "name": "serve example with warnings (UI from web/)",
+      "name": "Demo pipeline",
       "type": "cppdbg",
       "request": "launch",
       "program": "${workspaceFolder}/build/examples/serve",
@@ -100,41 +34,13 @@
       "linux": {
         "MIMode": "gdb"
       }
-    },
-    {
-      "name": "print-graph example",
-      "type": "cppdbg",
-      "request": "launch",
-      "program": "${workspaceFolder}/build/examples/print-graph",
-      "args": [
-        "${input:pipeline}"
-      ],
-      "cwd": "${workspaceFolder}",
-      "environment": [
-        {
-          "name": "GST_PLUGIN_PATH",
-          "value": "${workspaceFolder}/build/src"
-        },
-        {
-          "name": "GST_TRACERS",
-          "value": "pipeline-monitor"
-        }
-      ],
-      "externalConsole": false,
-      "preLaunchTask": "build",
-      "osx": {
-        "MIMode": "lldb"
-      },
-      "linux": {
-        "MIMode": "gdb"
-      }
     }
   ],
   "inputs": [
     {
       "id": "pipeline",
       "type": "promptString",
-      "description": "Pipeline description (gst-launch syntax). A tee named t gets a branch added and removed every 2 s in the serve example.",
+      "description": "Pipeline description (gst-launch syntax). A tee named t gets a branch added and removed every 2 s, posting a warning each time.",
       "default": "videotestsrc is-live=true ! jpegenc ! decodebin3 ! queue ! tee name=t ! queue ! videoconvert ! fakesink"
     }
   ]
