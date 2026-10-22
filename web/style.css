@@ -505,3 +505,19 @@ main {
 .pin-card.folded .pin-rows, .pin-card.folded .pin-note { display: none; }
 
 #time-unit { min-width: 76px; }
+
+/* Queue levels and pipeline times */
+
+.level-track { fill: var(--border); }
+.level-fill.ok { fill: var(--playing); }
+.level-fill.high { fill: var(--paused); }
+.level-fill.full { fill: var(--error); }
+.level-text { font-size: 10px; font-variant-numeric: tabular-nums; }
+.level-text.ok { fill: var(--muted); }
+.level-text.high { fill: var(--paused); }
+.level-text.full { fill: var(--error); font-weight: 600; }
+
+.times { font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+
+#details h3 { margin: 12px 0 4px; font-size: 13px; }
+#details .queue-levels dl { margin: 0; }

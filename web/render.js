@@ -3,6 +3,8 @@
 
 // Draws an ELK layout as SVG and handles pan and zoom.
 
+import { fillClass, percent, queueFill } from "./levels.js";
+
 
 const SVG = "http://www.w3.org/2000/svg";
 
@@ -92,13 +94,17 @@ export class GraphView {
     }, { passive: false });
   }
 
-  // Reports the pad or link under the pointer: {port} or {src, sink}.
+  // Reports the pad, link or queue under the pointer: {port}, {src, sink}
+  // or {level}.
   hover(e) {
-    const target = e.target.closest("[data-port], [data-edge]");
+    const target = e.target.closest("[data-port], [data-edge], [data-level]");
     if (!target) {
       this.handlers.hover(null);
     } else if (target.dataset.port) {
       this.handlers.hover({ port: target.dataset.port }, e.clientX, e.clientY);
+    } else if (target.dataset.level) {
+      this.handlers.hover({ level: Number(target.dataset.level) }, e.clientX,
+        e.clientY);
     } else {
       const [src, sink] = target.dataset.edge.split(" ");
       this.handlers.hover({ src, sink }, e.clientX, e.clientY);
@@ -159,6 +165,38 @@ export class GraphView {
     this.apply();
   }
 
+  // Fill bars on queue nodes; queues: Map element id -> queue from the
+  // "levels" message. Drawn over the nodes, redrawn on every message.
+  setLevels(queues) {
+    if (!this.levelLayer)
+      return;
+    this.levelLayer.replaceChildren();
+    for (const [id, queue] of queues) {
+      const box = this.boxes?.get(id);
+      if (!box)
+        continue;
+      const { g, node } = box;
+      if (!g.dataset.level) {
+        g.dataset.level = id;
+        // The levels tooltip replaces the browser's.
+        g.querySelector(":scope > title")?.remove();
+      }
+      const fill = queueFill(queue);
+      const cls = `level ${fillClass(fill.ratio)}`;
+      const x = node.x + 6;
+      const width = node.width - 12;
+      const y = node.y + node.height - 5;
+      el("rect", { class: "level-track", x, y, width, height: 3, rx: 1.5 },
+        this.levelLayer);
+      el("rect", { class: `${cls} level-fill`, x, y, height: 3, rx: 1.5,
+        width: Math.max(0, Math.min(1, fill.ratio)) * width },
+      this.levelLayer);
+      text(this.levelLayer, node.x + node.width - 8, node.y + 33,
+        `${cls} level-text`, fill.ratio > 0 ? `${percent(fill.ratio)} ` +
+          fill.limit : "0 %", "end");
+    }
+  }
+
   highlight(port) {
     for (const node of this.viewport.querySelectorAll(".pad.highlight"))
       node.classList.remove("highlight");
@@ -203,6 +241,7 @@ export class GraphView {
 
   // layout: ELK output with root coordinates; info: maps from layout.js.
   render(layout, info, view) {
+    this.boxes = new Map();
     const bins = el("g");
     const edges = el("g");
     const nodes = el("g");
@@ -220,7 +259,8 @@ export class GraphView {
           this.drawNode(nodes, node, meta, info, view);
       });
 
-    this.viewport.replaceChildren(bins, edges, nodes, labels);
+    this.levelLayer = el("g");
+    this.viewport.replaceChildren(bins, edges, nodes, labels, this.levelLayer);
     this.bounds = { width: layout.width, height: layout.height };
     if (this.autoFit)
       this.fit();
@@ -240,6 +280,7 @@ export class GraphView {
     const g = el("g", { class: classes.join(" "), "data-id": e.id }, parent);
     el("rect", { class: "box", x: node.x, y: node.y, width: node.width,
       height: node.height, rx: 5 }, g);
+    this.boxes.set(e.id, { g, node });
     return g;
   }
 

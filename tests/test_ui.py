@@ -329,6 +329,7 @@ def check(browser, url):
     check_caps(browser)
     check_units(browser)
     check_places(browser)
+    check_levels(browser)
     check_pins(browser)
 
     browser.call("Emulation.setDeviceMetricsOverride", width=390, height=760,
@@ -521,6 +522,30 @@ import('./layout.js').then(({ keepPlaces }) => {
 def check_places(browser):
     got = browser.eval(PLACES)
     assert got == [120, 120, 180, 10, 20, 200], f"keepPlaces: {got}"
+
+
+def check_levels(browser):
+    times = "document.getElementById('pipeline-times')"
+    assert browser.wait(f"!{times}.hidden && "
+                        f"{times}.textContent.includes('running 0:')"), \
+        "no pipeline times in the header"
+    assert browser.wait("document.querySelectorAll('#graph .level-fill')"
+                        ".length >= 2"), "no fill bars on queues"
+
+    queue = element_selector("queue0")
+    tip = "document.querySelector('.tooltip')"
+    browser.hover(f"{queue}?.querySelector('rect.box')")
+    assert browser.wait(f"!{tip}.hidden && "
+                        f"{tip}.textContent.includes('queue0 (queue)') && "
+                        f"{tip}.textContent.includes('overruns')"), \
+        "no queue tooltip"
+    browser.call("Input.dispatchMouseEvent", type="mouseMoved", x=2, y=2)
+
+    qid = browser.eval(f"{queue}?.dataset.id")
+    assert browser.click_until(
+        f'#graph .node[data-id="{qid}"] > rect.box',
+        "document.querySelector('#details .queue-levels')"
+        "?.textContent.includes('underruns')"), "no queue details"
 
 
 def pin_row(name):

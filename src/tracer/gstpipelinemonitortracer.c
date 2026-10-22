@@ -1,6 +1,7 @@
 /* SPDX-FileCopyrightText: 2026 Łukasz Huńczak */
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #include "gstpipelinemonitortracer.h"
+#include "pmlevels.h"
 #include "pmmodel.h"
 #include "pmserver.h"
 
@@ -60,12 +61,35 @@ resolve_pad (GstPad * pad)
   return ghost;
 }
 
+/* queue and multiqueue signal when they fill up or run empty; only counted
+ * here, on the streaming thread. */
+static void
+on_overrun (GstElement * element, GstPipelineMonitorTracer * self)
+{
+  pm_model_count_queue_event (self->model, element, TRUE);
+}
+
+static void
+on_underrun (GstElement * element, GstPipelineMonitorTracer * self)
+{
+  pm_model_count_queue_event (self->model, element, FALSE);
+}
+
 static void
 do_element_new (GstTracer * tracer, GstClockTime ts, GstElement * element)
 {
+  GstPipelineMonitorTracer *self = GST_PIPELINE_MONITOR_TRACER (tracer);
+
   GST_DEBUG_OBJECT (tracer, "new element %s (%s)", GST_OBJECT_NAME (element),
       G_OBJECT_TYPE_NAME (element));
-  sync_element (GST_PIPELINE_MONITOR_TRACER (tracer), element);
+  sync_element (self, element);
+  if (pm_levels_is_queue (element) &&
+      g_signal_lookup ("overrun", G_OBJECT_TYPE (element)) != 0) {
+    g_signal_connect_object (element, "overrun", G_CALLBACK (on_overrun),
+        self, 0);
+    g_signal_connect_object (element, "underrun", G_CALLBACK (on_underrun),
+        self, 0);
+  }
 }
 
 static void
@@ -257,6 +281,14 @@ do_element_post_message_pre (GstTracer * tracer, GstClockTime ts,
       /* Bins re-post their children's messages; keep only the original. */
       if (self->log && GST_MESSAGE_SRC (message) == GST_OBJECT_CAST (element))
         log_message (self, element, message);
+      break;
+    case GST_MESSAGE_BUFFERING:
+      if (GST_MESSAGE_SRC (message) == GST_OBJECT_CAST (element)) {
+        gint percent;
+
+        gst_message_parse_buffering (message, &percent);
+        pm_model_set_buffering (self->model, element, percent);
+      }
       break;
     default:
       break;

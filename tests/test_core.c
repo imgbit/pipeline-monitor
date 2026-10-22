@@ -245,6 +245,8 @@ test_monitor_values (Fixture * f, gconstpointer data)
   stats = stats_of (f, &root);
   g_assert_cmpint (json_object_get_int_member (stats, "buffers"), ==, 4);
   g_assert_cmpint (json_object_get_int_member (stats, "bytes"), ==, 130);
+  g_assert_cmpint (json_object_get_int_member (stats, "lists"), ==, 1);
+  g_assert_cmpint (json_object_get_int_member (stats, "list_buffers"), ==, 3);
   last = json_object_get_object_member (stats, "last");
   g_assert_cmpint (json_object_get_int_member (last, "pts"), ==,
       2 * GST_SECOND + 2);

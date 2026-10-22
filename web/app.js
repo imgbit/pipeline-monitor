@@ -3,12 +3,13 @@
 
 import { buildElkGraph, elementPath, keepPlaces } from "./layout.js";
 import { GraphView, countElements } from "./render.js";
-import { showDetails } from "./panel.js";
+import { showDetails, updateQueueDetails } from "./panel.js";
 import { LogView } from "./log.js";
 import { Tooltip } from "./tooltip.js";
 import { linkCaps } from "./caps.js";
 import { Pins } from "./pins.js";
 import { TIME_UNITS, formatSpan } from "./units.js";
+import { pipelineTimes, queueRows } from "./levels.js";
 
 const $ = (id) => document.getElementById(id);
 const COLLAPSED_KEY = "pipeline-monitor.collapsed";
@@ -24,6 +25,9 @@ const state = {
   collapsed: loadCollapsed(),
   capsLabels: loadFlag(CAPS_LABELS_KEY),
   known: new Map(),
+  // From the "levels" message: queues and pipelines by element id.
+  queues: new Map(),
+  pipelineTimes: new Map(),
   // Where parts of the current pipeline were, see keepPlaces.
   places: { tops: new Map() },
 };
@@ -58,7 +62,14 @@ function showTooltip(target, x, y) {
     tooltip.hide();
     return;
   }
-  if (target.port) {
+  if (target.level) {
+    const queue = state.queues.get(target.level);
+    const element = index.elements.get(target.level)?.element;
+    if (!queue || !element)
+      return tooltip.hide();
+    tooltip.show(x, y, `${element.name} (${queue.kind})`,
+      queueRows(queue, pins.unit, (id) => index.padName(id).split(":").pop()));
+  } else if (target.port) {
     const p = info.ports.get(target.port);
     if (!p)
       return tooltip.hide();
@@ -254,7 +265,19 @@ function updateHeader(pipeline) {
   $("pipeline-state").className = `state ${pipeline ? pipeline.state : ""}`;
   $("element-count").textContent = pipeline
     ? `${countElements(pipeline)} elements` : "";
+  showTimes(pipeline);
   $("empty").hidden = Boolean(pipeline);
+}
+
+function showTimes(pipeline) {
+  const times = pipeline && state.pipelineTimes.get(pipeline.id);
+  const node = $("pipeline-times");
+  node.hidden = !times;
+  if (times) {
+    const { text, title } = pipelineTimes(times, pins.unit);
+    node.textContent = text;
+    node.title = title;
+  }
 }
 
 // Elements not seen in the previous layout of the same pipeline.
@@ -331,6 +354,7 @@ async function layoutAndRender() {
     badges,
     pinned: pins.ports(),
   });
+  view.setLevels(state.queues);
   const details = selection && log.enabled ? {
     entries: log.entriesFor(selection.element.id),
     muted: log.isMuted(selection.path),
@@ -338,7 +362,24 @@ async function layoutAndRender() {
       !log.isMuted(selection.path)),
   } : null;
   showDetails($("details"), selection, index, () => view.handlers.select(null),
-    details);
+    details, queueDetails(selection, index));
+}
+
+// The selected element's queue rows for the details panel, or null.
+function queueDetails(selection, index) {
+  const queue = selection && state.queues.get(selection.element.id);
+  return queue ? queueRows(queue, pins.unit,
+    (id) => index.padName(id).split(":").pop()) : null;
+}
+
+function applyLevels(levels) {
+  state.queues = new Map(levels.queues.map((q) => [q.id, q]));
+  state.pipelineTimes = new Map(levels.pipelines.map((p) => [p.id, p]));
+  view.setLevels(state.queues);
+  showTimes(currentPipeline());
+  const index = buildIndex(state.graph);
+  updateQueueDetails($("details"), queueDetails(
+    index.elements.get(state.selected), index));
 }
 
 function connect(delay = 1000) {
@@ -359,6 +400,8 @@ function connect(delay = 1000) {
       state.graph = message.graph;
       pins.sync(buildIndex(state.graph).padPaths);
       update();
+    } else if (message.type === "levels") {
+      applyLevels(message.levels);
     } else if (message.type === "pad-stats") {
       pins.apply(message.stats);
     } else if (message.type === "log") {

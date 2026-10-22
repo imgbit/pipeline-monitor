@@ -16,6 +16,12 @@ struct _PmElement
   GstState pending;
   guint64 errors;
   guint64 warnings;
+  /* Queues: counted from their signals and BUFFERING messages. */
+  guint64 overruns;
+  guint64 underruns;
+  gint buffering;
+  /* Gives the element back while it exists, without keeping it alive. */
+  GWeakRef ref;
   PmElement *parent;
   GPtrArray *children;
   GPtrArray *pads;
@@ -97,6 +103,7 @@ pm_element_free (PmElement * element)
   g_free (element->type);
   g_ptr_array_unref (element->children);
   g_ptr_array_unref (element->pads);
+  g_weak_ref_clear (&element->ref);
   g_free (element);
 }
 
@@ -262,6 +269,8 @@ pm_model_update_element (PmModel * model, gpointer object, const gchar * name,
     element->state = GST_STATE_NULL;
     element->children = g_ptr_array_new ();
     element->pads = g_ptr_array_new ();
+    element->buffering = -1;
+    g_weak_ref_init (&element->ref, object);
     g_hash_table_insert (model->elements, object, element);
   }
   updated |= replace_string (&element->name, name);
@@ -648,6 +657,107 @@ element_path (PmElement * element)
       g_string_prepend_c (path, '/');
   }
   return g_string_free (path, FALSE);
+}
+
+void
+pm_model_count_queue_event (PmModel * model, gpointer object,
+    gboolean overrun)
+{
+  PmElement *element;
+
+  g_mutex_lock (&model->lock);
+  element = g_hash_table_lookup (model->elements, object);
+  if (element != NULL) {
+    if (overrun)
+      element->overruns++;
+    else
+      element->underruns++;
+  }
+  g_mutex_unlock (&model->lock);
+}
+
+void
+pm_model_set_buffering (PmModel * model, gpointer object, gint percent)
+{
+  PmElement *element;
+
+  g_mutex_lock (&model->lock);
+  element = g_hash_table_lookup (model->elements, object);
+  if (element != NULL)
+    element->buffering = percent;
+  g_mutex_unlock (&model->lock);
+}
+
+void
+pm_element_ref_free (PmElementRef * ref)
+{
+  gst_object_unref (ref->element);
+  g_free (ref->path);
+  g_free (ref);
+}
+
+/* The elements that exist and match filter, each with a new reference. The
+ * filter runs with the model locked and must not call back into it. */
+GPtrArray *
+pm_model_find_elements (PmModel * model, PmElementFilter filter)
+{
+  GPtrArray *found = g_ptr_array_new_with_free_func ((GDestroyNotify)
+      pm_element_ref_free);
+  GHashTableIter iter;
+  gpointer value;
+
+  g_mutex_lock (&model->lock);
+  g_hash_table_iter_init (&iter, model->elements);
+  while (g_hash_table_iter_next (&iter, NULL, &value)) {
+    PmElement *element = value;
+    GstElement *object = g_weak_ref_get (&element->ref);
+    PmElementRef *ref;
+
+    if (object == NULL)
+      continue;
+    if (!filter (object, element->parent == NULL)) {
+      gst_object_unref (object);
+      continue;
+    }
+    ref = g_new0 (PmElementRef, 1);
+    ref->element = object;
+    ref->id = element->id;
+    ref->path = element_path (element);
+    ref->overruns = element->overruns;
+    ref->underruns = element->underruns;
+    ref->buffering = element->buffering;
+    g_ptr_array_add (found, ref);
+  }
+  g_mutex_unlock (&model->lock);
+  return found;
+}
+
+/* The model's id of a pad, or 0 if it is not known. */
+guint64
+pm_model_pad_id (PmModel * model, gpointer object)
+{
+  PmPad *pad;
+  guint64 id;
+
+  g_mutex_lock (&model->lock);
+  pad = g_hash_table_lookup (model->pads, object);
+  id = pad ? pad->id : 0;
+  g_mutex_unlock (&model->lock);
+  return id;
+}
+
+/* The path of an element (pipeline0/bin/name), or NULL if not known. */
+gchar *
+pm_model_element_path (PmModel * model, gpointer object)
+{
+  PmElement *element;
+  gchar *path;
+
+  g_mutex_lock (&model->lock);
+  element = g_hash_table_lookup (model->elements, object);
+  path = element ? element_path (element) : NULL;
+  g_mutex_unlock (&model->lock);
+  return path;
 }
 
 void

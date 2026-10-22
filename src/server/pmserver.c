@@ -1,6 +1,7 @@
 /* SPDX-FileCopyrightText: 2026 Łukasz Huńczak */
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #include "pmserver.h"
+#include "pmlevels.h"
 #include "pmmonitor.h"
 #include "pmui.h"
 
@@ -37,6 +38,9 @@ struct _PmServer
   GPtrArray *clients;
   gchar *last_graph;
   guint64 log_sent;
+  /* Queue levels and pipeline times, sampled every STATS_INTERVAL_MS even
+   * without clients. */
+  gchar *last_levels;
 
   gint update_scheduled;
 };
@@ -208,6 +212,17 @@ handle_monitors (SoupServer * soup, SoupServerMessage * msg,
 }
 
 static void
+handle_levels (SoupServer * soup, SoupServerMessage * msg,
+    const char *path, GHashTable * query, gpointer user_data)
+{
+  PmServer *self = user_data;
+
+  if (check_request (self, msg))
+    set_json_response (msg, self->last_levels ? g_strdup (self->last_levels) :
+        pm_levels_to_json (self->model));
+}
+
+static void
 handle_log (SoupServer * soup, SoupServerMessage * msg, const char *path,
     GHashTable * query, gpointer user_data)
 {
@@ -327,15 +342,23 @@ send_all_stats (gpointer user_data)
   PmServer *self = user_data;
   guint i;
 
+  gchar *levels;
+
   pm_monitor_tick (self->monitor);
+  g_free (self->last_levels);
+  self->last_levels = pm_levels_to_json (self->model);
+  levels = g_strdup_printf ("{\"type\":\"levels\",\"levels\":%s}",
+      self->last_levels);
   for (i = 0; i < self->clients->len; i++) {
     SoupWebsocketConnection *conn = g_ptr_array_index (self->clients, i);
     gchar *stats = pm_monitor_stats_json (self->monitor, conn);
 
+    send_text (conn, levels);
     if (stats != NULL)
       send_stats (conn, stats);
     g_free (stats);
   }
+  g_free (levels);
   return G_SOURCE_CONTINUE;
 }
 
@@ -471,6 +494,8 @@ server_thread (gpointer user_data)
   soup_server_add_handler (self->soup, NULL, handle_ui, self, NULL);
   soup_server_add_handler (self->soup, "/api/graph", handle_graph, self, NULL);
   soup_server_add_handler (self->soup, "/api/log", handle_log, self, NULL);
+  soup_server_add_handler (self->soup, "/api/levels", handle_levels, self,
+      NULL);
   soup_server_add_handler (self->soup, "/api/monitors", handle_monitors, self,
       NULL);
   soup_server_add_handler (self->soup, "/ws", handle_ws_request, self, NULL);
@@ -562,6 +587,7 @@ pm_server_free (PmServer * self)
   g_cond_clear (&self->cond);
   g_free (self->last_graph);
   g_free (self->ui_dir);
+  g_free (self->last_levels);
   g_free (self->url);
   g_free (self);
 }

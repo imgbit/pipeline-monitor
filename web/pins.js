@@ -41,6 +41,8 @@ const ROWS = [
   ["base", "base"],
   [],
   ["totals", "total"],
+  ["lists", "lists", "Buffer lists: several buffers pushed at once (RTP, " +
+    "network); last values come from the last buffer of a list"],
   ["events", "events", "Seen since the pad was pinned"],
 ];
 
@@ -382,6 +384,8 @@ export class Pins {
     set("base", seg ? segValue(seg.base) : "—", time ? rawNs(seg.base) : "");
     set("totals", `${s.buffers} buffers, ${formatBytes(s.bytes)}`,
       `${s.bytes} bytes`);
+    set("lists", s.lists ? `${s.lists}, ~${(s.list_buffers / s.lists)
+      .toFixed(1)} buffers each` : "—");
     const events = Object.entries(s.events).filter(([, n]) => n > 0)
       .map(([name, n]) => `${name} ${n}`);
     set("events", events.length ? events.join(", ") : "—");

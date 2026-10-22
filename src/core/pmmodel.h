@@ -39,6 +39,27 @@ void pm_model_remove_object (PmModel * model, gpointer object);
 
 gchar *pm_model_to_json (PmModel * model);
 
+/* Queues and pipelines, for levels and times. */
+typedef struct
+{
+  GstElement *element;
+  guint64 id;
+  gchar *path;
+  guint64 overruns;
+  guint64 underruns;
+  gint buffering;
+} PmElementRef;
+
+typedef gboolean (*PmElementFilter) (GstElement * element, gboolean top_level);
+
+void pm_model_count_queue_event (PmModel * model, gpointer element,
+    gboolean overrun);
+void pm_model_set_buffering (PmModel * model, gpointer element, gint percent);
+GPtrArray *pm_model_find_elements (PmModel * model, PmElementFilter filter);
+void pm_element_ref_free (PmElementRef * ref);
+guint64 pm_model_pad_id (PmModel * model, gpointer pad);
+gchar *pm_model_element_path (PmModel * model, gpointer element);
+
 typedef enum
 {
   PM_LOG_ERROR,

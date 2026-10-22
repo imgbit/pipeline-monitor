@@ -1,6 +1,7 @@
 /* SPDX-FileCopyrightText: 2026 Łukasz Huńczak */
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #include "pmmonitor.h"
+#include "pmlevels.h"
 
 #include <string.h>
 
@@ -39,6 +40,7 @@ static const gchar *event_names[N_EVENTS] = {
 typedef struct
 {
   guint64 buffers, bytes;
+  guint64 lists, list_buffers;
   gboolean have_buffer;
   GstClockTime pts, dts, duration, running_time;
   gboolean have_delay;
@@ -229,6 +231,8 @@ on_probe (GstPad * pad, GstPadProbeInfo * info, gpointer user_data)
 
     for (i = 0; i < n; i++)
       count_buffer (stats, gst_buffer_list_get (list, i));
+    stats->values.lists++;
+    stats->values.list_buffers += n;
     if (n > 0)
       set_last (stats, gst_buffer_list_get (list, n - 1));
   } else {
@@ -594,6 +598,8 @@ append_entry (GString * json, PmEntry * entry, GstClockTime now)
   append_value (json, "pad", entry->pad_id);
   append_value (json, "buffers", v.buffers);
   append_value (json, "bytes", v.bytes);
+  append_value (json, "lists", v.lists);
+  append_value (json, "list_buffers", v.list_buffers);
   append_last (json, &v, now);
   append_segment (json, &v);
   append_window (json, entry);
@@ -623,7 +629,9 @@ pm_monitor_stats_json (PmMonitor * monitor, gpointer client)
   }
   g_ptr_array_sort (entries, compare_entries);
 
-  json = g_string_new ("{\"pads\":[");
+  json = g_string_new (NULL);
+  g_string_append_printf (json, "{\"schema\":%d,\"time\":%" G_GINT64_FORMAT
+      ",\"pads\":[", PM_SCHEMA, g_get_real_time ());
   for (i = 0; i < entries->len; i++) {
     PmEntry *entry = g_ptr_array_index (entries, i);
     GstPad *pad = g_weak_ref_get (&entry->pad);

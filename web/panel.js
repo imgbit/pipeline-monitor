@@ -37,8 +37,22 @@ function showLog(aside, log) {
   }
 }
 
-// log: { entries, muted, toggleMute } for the selected element, or null.
-export function showDetails(aside, selection, index, onClose, log) {
+// The queue section, refreshed with every "levels" message.
+export function updateQueueDetails(aside, rows) {
+  const section = aside.querySelector(".queue-levels");
+  if (!section)
+    return;
+  const dl = document.createElement("dl");
+  for (const [k, v] of rows || []) {
+    add(dl, "dt", k);
+    add(dl, "dd", v);
+  }
+  section.replaceChildren(dl);
+}
+
+// log: { entries, muted, toggleMute } for the selected element, or null;
+// queue: rows of its levels if it is a queue, or null.
+export function showDetails(aside, selection, index, onClose, log, queue) {
   if (!selection) {
     aside.hidden = true;
     aside.replaceChildren();
@@ -66,6 +80,11 @@ export function showDetails(aside, selection, index, onClose, log) {
   row("path", path);
   if (element.bin)
     row("contains", `${countElements(element)} elements`);
+  if (queue) {
+    add(aside, "h3", "Queue");
+    add(aside, "div", undefined, "queue-levels");
+    updateQueueDetails(aside, queue);
+  }
 
   if (element.pads.length > 0)
     showPads(aside, element, index);

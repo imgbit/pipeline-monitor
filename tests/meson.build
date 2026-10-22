@@ -28,6 +28,7 @@ endif
 
 test_core = executable('test_core',
   'test_core.c', '../src/core/pmmodel.c', '../src/core/pmmonitor.c',
+  '../src/core/pmlevels.c',
   c_args : core_args,
   include_directories : include_directories('../src/core'),
   dependencies : [gst_dep, json_glib_dep])
@@ -36,6 +37,7 @@ test('core', test_core, timeout : 60)
 
 test_server = executable('test_server',
   'test_server.c', '../src/core/pmmodel.c', '../src/core/pmmonitor.c',
+  '../src/core/pmlevels.c',
   '../src/server/pmserver.c',
   ui_resources,
   c_args : ['-DGST_USE_UNSTABLE_API'],

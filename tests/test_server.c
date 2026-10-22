@@ -824,6 +824,170 @@ test_monitor_values (void)
   g_object_unref (session);
 }
 
+/* Queue levels and pipeline times */
+
+static GstPadProbeReturn
+hold (GstPad * pad, GstPadProbeInfo * info, gpointer user_data)
+{
+  return GST_PAD_PROBE_OK;
+}
+
+/* The entry of /api/levels' "queues" whose path ends with name, or NULL. */
+static JsonObject *
+find_queue (JsonNode * root, const gchar * name)
+{
+  JsonArray *queues = json_object_get_array_member (json_node_get_object
+      (root), "queues");
+  guint i;
+
+  for (i = 0; i < json_array_get_length (queues); i++) {
+    JsonObject *q = json_array_get_object_element (queues, i);
+
+    if (g_str_has_suffix (json_object_get_string_member (q, "path"), name))
+      return q;
+  }
+  return NULL;
+}
+
+/* Polls /api/levels for up to 5 s until the queue has the given number of
+ * buffers and at least one overrun. */
+static JsonNode *
+wait_full (const gchar * name, gint64 buffers)
+{
+  gint tries;
+
+  for (tries = 0; tries < 50; tries++) {
+    gchar *text;
+    JsonNode *root;
+    JsonObject *q;
+
+    get_status ("api/levels", "GET", NULL, &text, NULL);
+    root = parse (text);
+    q = find_queue (root, name);
+    if (q != NULL && json_object_get_int_member (q, "overruns") > 0 &&
+        json_object_get_int_member (json_array_get_object_element
+            (json_object_get_array_member (q, "levels"), 0), "buffers") ==
+        buffers) {
+      g_free (text);
+      return root;
+    }
+    g_free (text);
+    json_node_unref (root);
+    g_usleep (100 * G_TIME_SPAN_MILLISECOND);
+  }
+  return NULL;
+}
+
+static void
+test_levels (void)
+{
+  GstElement *pipeline = gst_parse_launch ("videotestsrc is-live=true ! "
+      "queue name=lv-queue leaky=downstream max-size-buffers=5 ! "
+      "fakesink async=false", NULL);
+  GstElement *queue = gst_bin_get_by_name (GST_BIN (pipeline), "lv-queue");
+  GstPad *src = gst_element_get_static_pad (queue, "src");
+  JsonNode *root;
+  JsonObject *q, *limits, *p = NULL;
+  JsonArray *pipelines;
+  guint i;
+
+  /* The queue's thread waits on its first buffer (events and queries still
+   * pass, so the source can negotiate); the queue fills up and then drops
+   * the oldest (leaky) instead of blocking. */
+  gst_pad_add_probe (src, GST_PAD_PROBE_TYPE_BLOCK |
+      GST_PAD_PROBE_TYPE_BUFFER, hold, NULL, NULL);
+  gst_element_set_state (pipeline, GST_STATE_PLAYING);
+
+  root = wait_full ("/lv-queue", 5);
+  g_assert_nonnull (root);
+  g_assert_cmpint (json_object_get_int_member (json_node_get_object (root),
+          "schema"), ==, 1);
+  q = find_queue (root, "/lv-queue");
+  g_assert_cmpstr (json_object_get_string_member (q, "kind"), ==, "queue");
+  g_assert_cmpstr (json_object_get_string_member (q, "leaky"), ==,
+      "downstream");
+  limits = json_object_get_object_member (q, "limits");
+  g_assert_cmpint (json_object_get_int_member (limits, "buffers"), ==, 5);
+
+  pipelines = json_object_get_array_member (json_node_get_object (root),
+      "pipelines");
+  for (i = 0; i < json_array_get_length (pipelines); i++) {
+    JsonObject *candidate = json_array_get_object_element (pipelines, i);
+
+    if (json_object_get_int_member (candidate, "id") > 0 &&
+        g_strcmp0 (json_object_get_string_member (candidate, "path"),
+            GST_OBJECT_NAME (pipeline)) == 0)
+      p = candidate;
+  }
+  g_assert_nonnull (p);
+  g_assert_cmpstr (json_object_get_string_member (p, "state"), ==,
+      "PLAYING");
+  g_assert_nonnull (json_object_get_string_member (p, "clock"));
+  g_assert_cmpint (json_object_get_int_member (p, "running_time"), >, 0);
+  json_node_unref (root);
+
+  gst_element_set_state (pipeline, GST_STATE_NULL);
+  gst_object_unref (src);
+  gst_object_unref (queue);
+  gst_object_unref (pipeline);
+}
+
+/* multiqueue reports one level per sink pad, with the pad's id. */
+static void
+test_levels_multiqueue (void)
+{
+  GstElement *pipeline = start_pipeline ("videotestsrc is-live=true ! "
+      "multiqueue name=lv-mq ! fakesink async=false");
+  gint64 pad = pad_id ("lv-mq", "sink_0");
+  gboolean found = FALSE;
+  gint tries;
+
+  for (tries = 0; tries < 20 && !found; tries++) {
+    gchar *text;
+    JsonNode *root;
+    JsonObject *q;
+
+    get_status ("api/levels", "GET", NULL, &text, NULL);
+    root = parse (text);
+    g_free (text);
+    q = find_queue (root, "/lv-mq");
+    if (q != NULL) {
+      JsonArray *levels = json_object_get_array_member (q, "levels");
+
+      g_assert_cmpstr (json_object_get_string_member (q, "kind"), ==,
+          "multiqueue");
+      g_assert_cmpuint (json_array_get_length (levels), ==, 1);
+      g_assert_cmpint (json_object_get_int_member
+          (json_array_get_object_element (levels, 0), "pad"), ==, pad);
+      found = TRUE;
+    }
+    json_node_unref (root);
+    if (!found)
+      g_usleep (100 * G_TIME_SPAN_MILLISECOND);
+  }
+  g_assert_true (found);
+  stop_pipeline (pipeline);
+}
+
+/* Levels are also sent to every page, every 250 ms. */
+static void
+test_levels_websocket (void)
+{
+  SoupSession *session = soup_session_new ();
+  gchar *url = server_url ("ws");
+  WsClient client;
+  gchar *message;
+
+  ws_connect (&client, session, url, NULL);
+  message = ws_next (&client, "levels");
+  g_assert_nonnull (strstr (message, "\"schema\":1"));
+  g_assert_nonnull (strstr (message, "\"queues\":["));
+  g_free (message);
+  ws_disconnect (&client);
+  g_free (url);
+  g_object_unref (session);
+}
+
 /* A watched pad that goes away is reported once, then dropped. */
 static void
 test_monitor_pad_gone (void)
@@ -866,6 +1030,9 @@ main (int argc, char **argv)
   g_test_add_func ("/server/monitor-values", test_monitor_values);
   g_test_add_func ("/server/monitor-bad-commands", test_monitor_bad_commands);
   g_test_add_func ("/server/monitor-pad-gone", test_monitor_pad_gone);
+  g_test_add_func ("/server/levels", test_levels);
+  g_test_add_func ("/server/levels-multiqueue", test_levels_multiqueue);
+  g_test_add_func ("/server/levels-websocket", test_levels_websocket);
   g_test_add_func ("/server/origin-check", test_origin_check);
   g_test_add_func ("/server/port-fallback", test_port_fallback);
   g_test_add_func ("/server/no-free-port", test_no_free_port);
