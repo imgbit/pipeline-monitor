@@ -1132,7 +1132,8 @@ slow_element_init (SlowElement * self)
 }
 
 /* A getter that blocks makes the request answer in time, says which
- * property did not answer, and the property is skipped from then on. */
+ * property did not answer, and the property is skipped while it blocks;
+ * once the getter returns, the property is read again. */
 static void
 test_properties_not_answering (void)
 {
@@ -1163,6 +1164,23 @@ test_properties_not_answering (void)
   slow_released = TRUE;
   g_cond_broadcast (&slow_cond);
   g_mutex_unlock (&slow_lock);
+
+  for (start = 0; start < 50; start++) {
+    gboolean back;
+
+    root = get_properties (id);
+    back = json_object_has_member (json_node_get_object (root),
+        "properties") && !json_object_get_boolean_member_with_default
+        (property (root, "slow"), "not_answering", FALSE);
+    if (back)
+      g_assert_cmpint (json_object_get_int_member (property (root, "slow"),
+              "value"), ==, 1);
+    json_node_unref (root);
+    if (back)
+      break;
+    g_usleep (20 * G_TIME_SPAN_MILLISECOND);
+  }
+  g_assert_cmpint (start, <, 50);
   gst_object_unref (pipeline);
 }
 

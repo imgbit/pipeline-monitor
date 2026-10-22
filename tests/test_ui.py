@@ -588,7 +588,8 @@ def check_element_pins(browser):
     rendered = (f"[...{card}.querySelectorAll('dt')].find(d => d.textContent "
                 "=== 'rendered')?.nextElementSibling.textContent")
     assert browser.wait(f"/^[0-9]+ \\(\\+[0-9.]+\\/s\\)$/.test({rendered})",
-                        timeout=6), "no counter rate"
+                        timeout=6), \
+        f"no counter rate: {browser.eval(f'{card}?.innerText')!r}"
     sink = browser.eval(f"{element_selector('fakesink0')}?.dataset.id")
     assert browser.eval(f"document.querySelector('#graph .node[data-id="
                         f"\"{sink}\"]').classList.contains('pinned')")

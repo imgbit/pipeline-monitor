@@ -7,8 +7,9 @@
 
 /* Element properties as JSON. Getters are the element's own code and could
  * block, so they run on worker threads; the caller waits a limited time. A
- * property that does not answer in time is remembered (per element type)
- * and not read again. */
+ * property that does not answer in time is skipped (for its element type)
+ * for as long as that read is still running; a getter that was only slow
+ * is read again once it returns. */
 
 typedef struct
 {
@@ -24,8 +25,11 @@ typedef struct
 } PmReadJob;
 
 static GMutex silent_lock;
+/* "<type>:<property>" -> the job still reading it. */
 static GHashTable *silent;
 static GThreadPool *pool;
+
+static void job_unref (PmReadJob * job);
 
 static gchar *
 silent_key (GstElement * element, const gchar * name)
@@ -37,22 +41,32 @@ static gboolean
 is_silent (GstElement * element, const gchar * name)
 {
   gchar *key = silent_key (element, name);
-  gboolean found;
+  PmReadJob *job;
+  gboolean stuck = FALSE;
 
   g_mutex_lock (&silent_lock);
-  found = silent != NULL && g_hash_table_contains (silent, key);
+  job = silent ? g_hash_table_lookup (silent, key) : NULL;
+  if (job != NULL) {
+    g_mutex_lock (&job->lock);
+    stuck = !job->done;
+    g_mutex_unlock (&job->lock);
+    if (!stuck)
+      g_hash_table_remove (silent, key);
+  }
   g_mutex_unlock (&silent_lock);
   g_free (key);
-  return found;
+  return stuck;
 }
 
 static void
-make_silent (GstElement * element, const gchar * name)
+make_silent (PmReadJob * job, const gchar * name)
 {
   g_mutex_lock (&silent_lock);
   if (silent == NULL)
-    silent = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
-  g_hash_table_add (silent, silent_key (element, name));
+    silent = g_hash_table_new_full (g_str_hash, g_str_equal, g_free,
+        (GDestroyNotify) job_unref);
+  g_atomic_int_inc (&job->ref);
+  g_hash_table_insert (silent, silent_key (job->element, name), job);
   g_mutex_unlock (&silent_lock);
 }
 
@@ -442,6 +456,7 @@ pm_props_read (GstElement * element, const gchar * const *names,
   PmReadJob *job = g_new0 (PmReadJob, 1);
   gint64 deadline = g_get_monotonic_time () + timeout_us;
   GString *json = g_string_new (NULL);
+  const gchar *stuck = NULL;
 
   if (g_once_init_enter (&init)) {
     /* Not exclusive, no limit: a stuck getter keeps only its own thread. */
@@ -464,12 +479,14 @@ pm_props_read (GstElement * element, const gchar * const *names,
     g_string_append (json, ",\"properties\":");
     g_string_append_len (json, job->json->str, job->json->len);
   } else {
+    stuck = job->current;
     g_string_append (json, ",\"not_answering\":");
-    append_escaped (json, job->current ? job->current : "?");
-    if (job->current)
-      make_silent (element, job->current);
+    append_escaped (json, stuck ? stuck : "?");
   }
   g_mutex_unlock (&job->lock);
+  /* Not with the job locked: is_silent locks in the other order. */
+  if (stuck != NULL)
+    make_silent (job, stuck);
   job_unref (job);
 
   g_string_append_c (json, '}');
