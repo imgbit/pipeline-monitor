@@ -9,13 +9,14 @@
  * --warnings the tee also posts a warning each time. An appsrc named
  * "subs" gets a subtitle every two seconds, with a GAP event in between.
  * Without a description (or an empty one) it runs video, audio and
- * subtitles. */
+ * subtitles; the audio sink plays 300 ms late, so its queue stays about
+ * 60 % full. */
 
 #define DEFAULT_PIPELINE \
   "videotestsrc is-live=true ! jpegenc ! decodebin3 ! queue ! tee name=t ! " \
   "queue ! videoconvert ! fakesink " \
   "audiotestsrc is-live=true ! opusenc ! decodebin3 ! audioconvert ! " \
-  "queue ! fakesink " \
+  "queue max-size-time=500000000 ! fakesink sync=true ts-offset=300000000 " \
   "appsrc name=subs is-live=true format=time " \
   "caps=text/x-raw,format=utf8 ! queue ! fakesink"
 
