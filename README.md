@@ -2,7 +2,7 @@
 
 See a running GStreamer pipeline live in your browser.
 
-![pipeline-monitor showing a video and an audio branch, queue fill bars with the levels of one queue, the pipeline clock and times in the header, and a pinned pad](.github/screenshot.png)
+![pipeline-monitor showing a video and an audio branch with queue fill bars, the pipeline clock and times in the header, the properties of the audio sink, and its stats pinned to a live card](.github/screenshot.png)
 
 pipeline-monitor is a GStreamer tracer plugin. Enable it with one environment
 variable, without changing your application, and open http://127.0.0.1:8765/.
@@ -23,6 +23,9 @@ variable, without changing your application, and open http://127.0.0.1:8765/.
   against their limits, overruns, underruns and buffering
 - Pipeline clock and times in the header: clock and its provider, running
   time, position and duration, latency
+- Element properties in the details panel, with values changed from the
+  default marked; pin any of them (e.g. a sink's or jitterbuffer's `stats`)
+  to a live card next to the element, with rates for counters
 - Element details, collapsible bins, light and dark theme
 - Local only: listens on 127.0.0.1 and loads nothing from the internet
 
@@ -104,8 +107,9 @@ machine and only from its own page.
 
 ## Status
 
-Version 0.4 shows the pipeline graph, errors and warnings, negotiated caps,
-live values of pinned pads, queue fill and the pipeline's clock and times.
+Version 0.5 shows the pipeline graph, errors and warnings, negotiated caps,
+live values of pinned pads, queue fill, the pipeline's clock and times, and
+element properties, live when pinned.
 It is tested on macOS (Apple Silicon) with GStreamer 1.28.8, and in CI on
 Ubuntu 24.04 (GStreamer 1.24), Debian 12 (GStreamer 1.22), macOS (Homebrew)
 and Windows (official GStreamer 1.28.8, MSVC).
