@@ -2,6 +2,9 @@ test_env = environment()
 test_env.set('GST_PLUGIN_PATH', plugin_build_dir)
 test_env.set('GST_REGISTRY', meson.current_build_dir() / 'registry.bin')
 test_env.set('GST_TRACERS', 'pipeline-monitor(port=0)')
+# The tests only connect to 127.0.0.1: keep the system's proxy settings
+# (read through libproxy, which fails on some macOS exception lists) out.
+test_env.set('GIO_USE_PROXY_RESOLVER', 'dummy')
 
 test_load = executable('test_load', 'test_load.c',
   c_args : ['-DGST_USE_UNSTABLE_API'],
