@@ -6,3 +6,8 @@ called_from_lib:libgobject-2.0.so
 called_from_lib:libgio-2.0.so
 race:libpango
 race:libfontconfig
+# GLib locks its mutexes on a fast path ThreadSanitizer does not see, so
+# it takes their unlocks for unlocks of unlocked mutexes.
+mutex:libglib-2.0.so
+mutex:libgstreamer-1.0.so
+mutex:libsoup-3.0.so
