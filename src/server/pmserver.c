@@ -1,6 +1,7 @@
 /* SPDX-FileCopyrightText: 2026 Łukasz Huńczak */
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #include "pmserver.h"
+#include "pmlatency.h"
 #include "pmlevels.h"
 #include "pmprops.h"
 #include "pmmonitor.h"
@@ -20,6 +21,7 @@ struct _PmServer
 {
   PmModel *model;
   PmMonitor *monitor;
+  PmLatency *latency;
   gchar *ui_dir;
   guint requested_port;
   guint port;
@@ -299,6 +301,7 @@ forget_client (PmServer * self, SoupWebsocketConnection * conn)
 {
   g_signal_handlers_disconnect_by_data (conn, self);
   pm_monitor_remove_client (self->monitor, conn);
+  pm_latency_remove_client (self->latency, conn);
   g_hash_table_remove (self->watches, conn);
 }
 
@@ -380,6 +383,26 @@ on_ws_message (SoupWebsocketConnection * conn, gint type, GBytes * message,
     goto done;
   object = json_node_get_object (root);
   command = json_object_get_string_member_with_default (object, "type", "");
+
+  /* {"type":"measure-latency","element":12}, {"type":"measure-all"},
+   * {"type":"measure-path","from":3,"to":9} and their "un" forms. */
+  if (g_str_has_prefix (command, "measure-") ||
+      g_str_has_prefix (command, "unmeasure-")) {
+    gboolean on = command[0] == 'm';
+    const gchar *what = strchr (command, '-') + 1;
+    gint64 element = json_object_get_int_member_with_default (object,
+        "element", 0);
+    gint64 from = json_object_get_int_member_with_default (object, "from", 0);
+    gint64 to = json_object_get_int_member_with_default (object, "to", 0);
+
+    if (g_strcmp0 (what, "all") == 0)
+      pm_latency_measure_all (self->latency, conn, on);
+    else if (g_strcmp0 (what, "latency") == 0 && element > 0)
+      pm_latency_measure_element (self->latency, conn, element, on);
+    else if (g_strcmp0 (what, "path") == 0 && from > 0 && to > 0)
+      pm_latency_measure_path (self->latency, conn, from, to, on);
+    goto done;
+  }
 
   /* {"type":"watch-property","element":12,"property":"stats"} */
   if (g_strcmp0 (command, "watch-property") == 0 ||
@@ -528,7 +551,7 @@ send_all_stats (gpointer user_data)
   PmServer *self = user_data;
   guint i;
 
-  gchar *levels;
+  gchar *levels, *latency;
 
   pm_monitor_tick (self->monitor);
   g_free (self->last_levels);
@@ -546,6 +569,17 @@ send_all_stats (gpointer user_data)
   }
   g_free (levels);
   send_properties (self);
+
+  latency = pm_latency_tick (self->latency);
+  if (latency != NULL) {
+    gchar *text = g_strdup_printf ("{\"type\":\"latency\",\"latency\":%s}",
+        latency);
+
+    for (i = 0; i < self->clients->len; i++)
+      send_text (g_ptr_array_index (self->clients, i), text);
+    g_free (text);
+    g_free (latency);
+  }
   return G_SOURCE_CONTINUE;
 }
 
@@ -733,6 +767,11 @@ pm_server_new (PmModel * model, guint port, const gchar * ui_dir,
 
   self->model = model;
   self->monitor = pm_monitor_new (model);
+  self->latency = pm_latency_new (model);
+  /* Lets tests reach the "measure all" limit with a small pipeline. */
+  if (g_getenv ("PM_MEASURE_ALL_LIMIT") != NULL)
+    pm_latency_set_all_limit (self->latency,
+        g_ascii_strtoull (g_getenv ("PM_MEASURE_ALL_LIMIT"), NULL, 10));
   self->ui_dir = g_strdup (ui_dir);
   self->requested_port = port;
   self->context = g_main_context_new ();
@@ -772,6 +811,7 @@ pm_server_free (PmServer * self)
 
   g_ptr_array_unref (self->clients);
   g_hash_table_unref (self->watches);
+  pm_latency_free (self->latency);
   pm_monitor_free (self->monitor);
   g_main_loop_unref (self->loop);
   g_main_context_unref (self->context);

@@ -3,10 +3,12 @@
 #include <gst/gst.h>
 #include <json-glib/json-glib.h>
 #include <math.h>
+#include <string.h>
 
 #include "pmmodel.h"
 #include "pmmonitor.h"
 #include "pmprops.h"
+#include "pmlatency.h"
 
 /* Model tests without a pipeline: objects are created and destroyed by the
  * test itself, in orders the tracer hooks can't easily produce. */
@@ -562,6 +564,148 @@ test_props_read (void)
   gst_object_unref (bin);
 }
 
+/* Latency between two pads: data pushed on pad A arrives later on pad B
+ * (both pushed by the test into sinks that drop it). */
+
+typedef struct
+{
+  PmModel *model;
+  GstElement *bin;
+  GstPad *a, *b, *a_sink, *b_sink;
+} PathFixture;
+
+static GstPad *
+path_pad (PathFixture * f, const gchar * name)
+{
+  GstPad *pad = gst_object_ref_sink (gst_pad_new (name, GST_PAD_SRC));
+  GstPad *sink = gst_object_ref_sink (gst_pad_new (NULL, GST_PAD_SINK));
+  GstSegment segment;
+
+  gst_element_add_pad (f->bin, pad);
+  pm_model_add_pad (f->model, f->bin, pad, name, GST_PAD_SRC, NULL, FALSE);
+  gst_pad_set_chain_function (sink, drop_buffer);
+  g_assert_cmpint (gst_pad_link (pad, sink), ==, GST_PAD_LINK_OK);
+  gst_pad_set_active (sink, TRUE);
+  gst_pad_set_active (pad, TRUE);
+  gst_segment_init (&segment, GST_FORMAT_TIME);
+  gst_pad_push_event (pad, gst_event_new_stream_start (name));
+  gst_pad_push_event (pad, gst_event_new_segment (&segment));
+  if (f->a_sink == NULL)
+    f->a_sink = sink;
+  else
+    f->b_sink = sink;
+  return pad;
+}
+
+static void
+path_setup (PathFixture * f, gconstpointer data)
+{
+  f->model = pm_model_new ();
+  f->bin = gst_object_ref_sink (gst_bin_new ("path-bin"));
+  pm_model_update_element (f->model, f->bin, "path-bin", "bin", "GstBin",
+      TRUE, TRUE);
+  f->a = path_pad (f, "a");
+  f->b = path_pad (f, "b");
+}
+
+static void
+path_teardown (PathFixture * f, gconstpointer data)
+{
+  pm_model_free (f->model);
+  gst_object_unref (f->a);
+  gst_object_unref (f->b);
+  gst_object_unref (f->a_sink);
+  gst_object_unref (f->b_sink);
+  gst_object_unref (f->bin);
+}
+
+static void
+push_span (GstPad * pad, GstClockTime pts, GstClockTime duration)
+{
+  GstBuffer *buffer = gst_buffer_new ();
+
+  GST_BUFFER_PTS (buffer) = pts;
+  GST_BUFFER_DURATION (buffer) = duration;
+  g_assert_cmpint (gst_pad_push (pad, buffer), ==, GST_FLOW_OK);
+}
+
+/* Outputs are looked up at most every 10 ms. */
+static void
+push_out (GstPad * pad, GstClockTime pts, GstClockTime duration)
+{
+  g_usleep (12 * G_TIME_SPAN_MILLISECOND);
+  push_span (pad, pts, duration);
+}
+
+/* The "measured" object of the only path. */
+static JsonObject *
+path_measured (PmLatency * latency, JsonParser * parser)
+{
+  gchar *json = pm_latency_tick (latency);
+  JsonArray *paths;
+
+  g_assert_true (json_parser_load_from_data (parser, json, -1, NULL));
+  g_free (json);
+  paths = json_object_get_array_member (json_node_get_object
+      (json_parser_get_root (parser)), "paths");
+  g_assert_cmpuint (json_array_get_length (paths), ==, 1);
+  return json_object_get_object_member (json_array_get_object_element (paths,
+          0), "measured");
+}
+
+static void
+test_latency_path (PathFixture * f, gconstpointer data)
+{
+  PmLatency *latency = pm_latency_new (f->model);
+  JsonParser *parser = json_parser_new ();
+  guint64 a = pm_model_pad_id (f->model, f->a);
+  guint64 b = pm_model_pad_id (f->model, f->b);
+  JsonObject *m;
+  gchar *json;
+  gint i;
+
+  pm_latency_measure_path (latency, CLIENT, a, b, TRUE);
+
+  /* Three frames in, then out in another order (a decoder with B-frames),
+   * 30 ms later. */
+  for (i = 0; i < 3; i++)
+    push_span (f->a, i * 40 * GST_MSECOND, 40 * GST_MSECOND);
+  g_usleep (30 * G_TIME_SPAN_MILLISECOND);
+  push_out (f->b, 80 * GST_MSECOND, 40 * GST_MSECOND);
+  push_out (f->b, 0, 40 * GST_MSECOND);
+  push_out (f->b, 40 * GST_MSECOND, 40 * GST_MSECOND);
+  m = path_measured (latency, parser);
+  g_assert_cmpint (json_object_get_int_member (m, "matched"), ==, 3);
+  g_assert_cmpint (json_object_get_int_member (m, "unmatched"), ==, 0);
+  g_assert_cmpint (json_object_get_int_member (m, "min"), >=,
+      30 * GST_MSECOND);
+  g_assert_cmpint (json_object_get_int_member (m, "min"), <=,
+      json_object_get_int_member (m, "avg"));
+  g_assert_cmpint (json_object_get_int_member (m, "avg"), <=,
+      json_object_get_int_member (m, "max"));
+
+  /* One long input cut into smaller outputs (audio re-chunked). */
+  push_span (f->a, GST_SECOND, 100 * GST_MSECOND);
+  for (i = 0; i < 3; i++)
+    push_out (f->b, GST_SECOND + i * 20 * GST_MSECOND, 20 * GST_MSECOND);
+  /* A time that never went in: new timestamps. */
+  push_out (f->b, 9 * GST_SECOND, 20 * GST_MSECOND);
+  m = path_measured (latency, parser);
+  /* The window still holds the first three. */
+  g_assert_cmpint (json_object_get_int_member (m, "matched"), ==, 6);
+  g_assert_cmpint (json_object_get_int_member (m, "unmatched"), ==, 1);
+
+  /* After the last measurement, one empty message, then none. */
+  pm_latency_measure_path (latency, CLIENT, a, b, FALSE);
+  json = pm_latency_tick (latency);
+  g_assert_nonnull (strstr (json, "\"paths\":[]"));
+  g_free (json);
+  g_assert_null (pm_latency_tick (latency));
+
+  g_object_unref (parser);
+  pm_latency_free (latency);
+}
+
 int
 main (int argc, char **argv)
 {
@@ -588,6 +732,8 @@ main (int argc, char **argv)
       test_monitor_sparse, fixture_teardown);
   g_test_add_func ("/core/props-values", test_props_values);
   g_test_add_func ("/core/props-read", test_props_read);
+  g_test_add ("/core/latency-path", PathFixture, NULL, path_setup,
+      test_latency_path, path_teardown);
   g_test_add ("/core/monitor-overhead", Fixture, NULL, fixture_setup,
       test_monitor_overhead, fixture_teardown);
 

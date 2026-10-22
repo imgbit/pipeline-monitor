@@ -10,6 +10,7 @@ plugin_sources = files(
   'core/pmmonitor.c',
   'core/pmlevels.c',
   'core/pmprops.c',
+  'core/pmlatency.c',
   'server/pmserver.c',
   'tracer/gstpipelinemonitor.c',
   'tracer/gstpipelinemonitortracer.c',

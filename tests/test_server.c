@@ -1277,6 +1277,126 @@ test_watch_property (void)
   g_object_unref (session);
 }
 
+/* Latency */
+
+/* The next "latency" message's entry for element, or NULL. */
+static JsonNode *
+next_latency (WsClient * client, gint64 element, JsonNode ** all)
+{
+  gchar *message = ws_next (client, "latency");
+  JsonNode *root = parse (message);
+  JsonObject *latency = json_object_get_object_member (json_node_get_object
+      (root), "latency");
+  JsonArray *elements = json_object_get_array_member (latency, "elements");
+  JsonNode *found = NULL;
+  guint i;
+
+  for (i = 0; i < json_array_get_length (elements); i++)
+    if (json_object_get_int_member (json_array_get_object_element (elements,
+                i), "element") == element)
+      found = json_node_copy (json_array_get_element (elements, i));
+  if (all != NULL)
+    *all = json_node_copy (json_object_get_member (latency, "all"));
+  json_node_unref (root);
+  g_free (message);
+  return found;
+}
+
+/* Waits for a full window and returns its average for element, in ns. */
+static gint64
+measured_avg (WsClient * client, gint64 element)
+{
+  gint64 avg = -1;
+  gint tries;
+
+  for (tries = 0; tries < 40 && avg < 0; tries++) {
+    JsonNode *node = next_latency (client, element, NULL);
+    JsonObject *m;
+
+    if (node == NULL)
+      continue;
+    m = json_object_get_object_member (json_node_get_object (node),
+        "measured");
+    if (tries >= 6 && !json_object_get_null_member (m, "avg"))
+      avg = json_object_get_int_member (m, "avg");
+    json_node_unref (node);
+  }
+  return avg;
+}
+
+static void
+test_latency_element (void)
+{
+  SoupSession *session = soup_session_new ();
+  gchar *url = server_url ("ws");
+  /* The queue holds what the late sink has not played yet (~200 ms);
+   * identity sleeps 10 ms per 20 ms buffer, so it keeps up. */
+  GstElement *pipeline = start_pipeline ("audiotestsrc is-live=true "
+      "samplesperbuffer=960 ! audio/x-raw,rate=48000 ! "
+      "identity name=lat-sleep sleep-time=10000 ! "
+      "queue name=lat-queue max-size-time=500000000 ! fakesink sync=true "
+      "ts-offset=200000000 async=false");
+  gint64 sleep = element_id ("lat-sleep");
+  gint64 queue = element_id ("lat-queue");
+  WsClient client;
+  gint64 avg;
+
+  ws_connect (&client, session, url, NULL);
+  ws_send (&client, "{\"type\":\"measure-latency\",\"element\":%"
+      G_GINT64_FORMAT "}", sleep);
+  ws_send (&client, "{\"type\":\"measure-latency\",\"element\":%"
+      G_GINT64_FORMAT "}", queue);
+
+  avg = measured_avg (&client, sleep);
+  g_assert_cmpint (avg, >=, 8 * GST_MSECOND);
+  g_assert_cmpint (avg, <, 100 * GST_MSECOND);
+  avg = measured_avg (&client, queue);
+  g_assert_cmpint (avg, >=, 120 * GST_MSECOND);
+  g_assert_cmpint (avg, <, 450 * GST_MSECOND);
+
+  ws_disconnect (&client);
+  stop_pipeline (pipeline);
+  g_free (url);
+  g_object_unref (session);
+}
+
+/* "measure all" stops itself above its limit (50 buffers/s in this test,
+ * see main). */
+static void
+test_latency_all_limit (void)
+{
+  SoupSession *session = soup_session_new ();
+  gchar *url = server_url ("ws");
+  GstElement *pipeline = start_pipeline ("videotestsrc is-live=true ! "
+      "video/x-raw,framerate=60/1 ! queue ! identity ! queue ! "
+      "fakesink async=false");
+  WsClient client;
+  gboolean stopped = FALSE;
+  gint tries;
+
+  ws_connect (&client, session, url, NULL);
+  ws_send (&client, "{\"type\":\"measure-all\"}");
+  for (tries = 0; tries < 20 && !stopped; tries++) {
+    JsonNode *all = NULL;
+    JsonNode *entry = next_latency (&client, 0, &all);
+    JsonObject *a = json_node_get_object (all);
+
+    if (entry != NULL)
+      json_node_unref (entry);
+    stopped = !json_object_get_boolean_member (a, "on") &&
+        !json_object_get_null_member (a, "stopped_at");
+    if (stopped)
+      g_assert_cmpint (json_object_get_int_member (a, "stopped_at"), >, 50);
+    json_node_unref (all);
+  }
+  g_assert_true (stopped);
+
+  ws_disconnect (&client);
+  stop_pipeline (pipeline);
+  g_free (url);
+  g_object_unref (session);
+}
+
 /* A watched pad that goes away is reported once, then dropped. */
 static void
 test_monitor_pad_gone (void)
@@ -1306,6 +1426,8 @@ int
 main (int argc, char **argv)
 {
   g_test_init (&argc, &argv, NULL);
+  /* Read when the tracer starts its server, in gst_init. */
+  g_setenv ("PM_MEASURE_ALL_LIMIT", "50", TRUE);
   gst_init (&argc, &argv);
 
   g_test_add_func ("/server/url", test_url);
@@ -1326,6 +1448,8 @@ main (int argc, char **argv)
   g_test_add_func ("/server/properties-not-answering",
       test_properties_not_answering);
   g_test_add_func ("/server/watch-property", test_watch_property);
+  g_test_add_func ("/server/latency-element", test_latency_element);
+  g_test_add_func ("/server/latency-all-limit", test_latency_all_limit);
   g_test_add_func ("/server/origin-check", test_origin_check);
   g_test_add_func ("/server/port-fallback", test_port_fallback);
   g_test_add_func ("/server/no-free-port", test_no_free_port);
