@@ -1329,28 +1329,32 @@ test_latency_element (void)
 {
   SoupSession *session = soup_session_new ();
   gchar *url = server_url ("ws");
-  /* The queue holds what the late sink has not played yet (~200 ms);
-   * identity sleeps 10 ms per 20 ms buffer, so it keeps up. */
+  /* identity sleeps 5 ms per 20 ms buffer: a quarter of real time, so it
+   * keeps up even on a slow machine. */
   GstElement *pipeline = start_pipeline ("audiotestsrc is-live=true "
       "samplesperbuffer=960 ! audio/x-raw,rate=48000 ! "
-      "identity name=lat-sleep sleep-time=10000 ! "
-      "queue name=lat-queue max-size-time=500000000 ! fakesink sync=true "
-      "ts-offset=200000000 async=false");
-  gint64 sleep = element_id ("lat-sleep");
-  gint64 queue = element_id ("lat-queue");
+      "identity name=lat-sleep sleep-time=5000 ! fakesink async=false");
+  gint64 id = element_id ("lat-sleep");
   WsClient client;
   gint64 avg;
 
   ws_connect (&client, session, url, NULL);
   ws_send (&client, "{\"type\":\"measure-latency\",\"element\":%"
-      G_GINT64_FORMAT "}", sleep);
-  ws_send (&client, "{\"type\":\"measure-latency\",\"element\":%"
-      G_GINT64_FORMAT "}", queue);
-
-  avg = measured_avg (&client, sleep);
-  g_assert_cmpint (avg, >=, 8 * GST_MSECOND);
+      G_GINT64_FORMAT "}", id);
+  avg = measured_avg (&client, id);
+  g_assert_cmpint (avg, >=, 4 * GST_MSECOND);
   g_assert_cmpint (avg, <, 100 * GST_MSECOND);
-  avg = measured_avg (&client, queue);
+  stop_pipeline (pipeline);
+
+  /* The queue holds what the late sink has not played yet (~200 ms); its
+   * own pipeline, so nothing slow upstream keeps it from filling. */
+  pipeline = start_pipeline ("audiotestsrc is-live=true ! "
+      "queue name=lat-queue max-size-time=500000000 ! fakesink sync=true "
+      "ts-offset=200000000 async=false");
+  id = element_id ("lat-queue");
+  ws_send (&client, "{\"type\":\"measure-latency\",\"element\":%"
+      G_GINT64_FORMAT "}", id);
+  avg = measured_avg (&client, id);
   g_assert_cmpint (avg, >=, 120 * GST_MSECOND);
   g_assert_cmpint (avg, <, 450 * GST_MSECOND);
 
