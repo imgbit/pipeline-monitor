@@ -40,8 +40,8 @@
     {
       "id": "pipeline",
       "type": "promptString",
-      "description": "Pipeline description (gst-launch syntax). A tee named t gets a branch added and removed every 2 s, posting a warning each time.",
-      "default": "videotestsrc is-live=true ! jpegenc ! decodebin3 ! queue ! tee name=t ! queue ! videoconvert ! fakesink"
+      "description": "Pipeline description (gst-launch syntax), empty for the default: video, audio and subtitles. A tee named t gets a branch added and removed every 2 s, posting a warning each time.",
+      "default": ""
     }
   ]
 }
