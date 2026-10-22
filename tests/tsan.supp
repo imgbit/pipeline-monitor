@@ -1,0 +1,8 @@
+# ThreadSanitizer suppressions for CI (TSAN_OPTIONS=suppressions=...).
+# Libraries built without ThreadSanitizer: their own locks and atomics are
+# invisible to it, so it reports races inside them that are not real.
+called_from_lib:libglib-2.0.so
+called_from_lib:libgobject-2.0.so
+called_from_lib:libgio-2.0.so
+race:libpango
+race:libfontconfig
