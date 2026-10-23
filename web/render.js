@@ -42,11 +42,15 @@ export class GraphView {
     this.autoFit = true;
 
     const defs = el("defs", {}, svg);
-    const marker = el("marker", {
-      id: "arrow", viewBox: "0 0 8 8", refX: 8, refY: 4,
-      markerWidth: 7, markerHeight: 7, orient: "auto-start-reverse",
-    }, defs);
-    el("path", { d: "M0,0 L8,4 L0,8 z" }, marker);
+    // The same size on every line, thin or thick; coloured ones for links
+    // with a problem.
+    for (const id of ["arrow", "arrow-warning", "arrow-error"]) {
+      const marker = el("marker", {
+        id, viewBox: "0 0 8 8", refX: 8, refY: 4, markerUnits: "userSpaceOnUse",
+        markerWidth: 7, markerHeight: 7, orient: "auto-start-reverse",
+      }, defs);
+      el("path", { d: "M0,0 L8,4 L0,8 z" }, marker);
+    }
     this.viewport = el("g", {}, svg);
 
     this.setupPanZoom();

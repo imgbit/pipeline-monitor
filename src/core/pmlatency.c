@@ -368,46 +368,48 @@ update_probes (PmLatency * latency, PmMeasure * m)
 
 /* The element's own latency as it reports it: the latency query answered
  * at its src pad minus the one answered upstream of its sink pad; for a
- * source, what its src pad answers. */
-static void
-update_reported (PmLatency * latency, PmMeasure * m)
+ * source, what its src pad answers. FALSE if it has no src pad, is not
+ * PAUSED or PLAYING, or does not answer. */
+gboolean
+pm_latency_reported (GstElement * element, gboolean * live,
+    GstClockTime * min, GstClockTime * max)
 {
-  GstElement *element = pm_model_get_element (latency->model, m->a);
-  GstPad *src, *sink;
+  GstPad *src = gst_element_get_static_pad (element, "src");
+  GstPad *sink = gst_element_get_static_pad (element, "sink");
   GstQuery *out, *in;
-  gboolean live, live_in;
-  GstClockTime min, max, min_in, max_in;
+  gboolean ok = FALSE, live_in;
+  GstClockTime out_min, out_max, min_in = 0, max_in = 0;
 
-  m->have_reported = FALSE;
-  if (element == NULL)
-    return;
-  src = gst_element_get_static_pad (element, "src");
-  sink = gst_element_get_static_pad (element, "sink");
   if (src != NULL && GST_STATE (element) >= GST_STATE_PAUSED) {
     out = gst_query_new_latency ();
     in = gst_query_new_latency ();
     if (gst_pad_query (src, out) && (sink == NULL ||
             gst_pad_peer_query (sink, in))) {
-      gst_query_parse_latency (out, &live, &min, &max);
-      if (sink != NULL) {
+      gst_query_parse_latency (out, live, &out_min, &out_max);
+      if (sink != NULL)
         gst_query_parse_latency (in, &live_in, &min_in, &max_in);
-      } else {
-        min_in = 0;
-        max_in = 0;
-      }
-      m->have_reported = TRUE;
-      m->reported_live = live;
-      m->reported_min = min > min_in ? min - min_in : 0;
-      m->reported_max = !GST_CLOCK_TIME_IS_VALID (max) ||
+      *min = out_min > min_in ? out_min - min_in : 0;
+      *max = !GST_CLOCK_TIME_IS_VALID (out_max) ||
           !GST_CLOCK_TIME_IS_VALID (max_in) ? GST_CLOCK_TIME_NONE :
-          max > max_in ? max - max_in : 0;
+          out_max > max_in ? out_max - max_in : 0;
+      ok = TRUE;
     }
     gst_query_unref (out);
     gst_query_unref (in);
   }
   gst_clear_object (&src);
   gst_clear_object (&sink);
-  gst_object_unref (element);
+  return ok;
+}
+
+static void
+update_reported (PmLatency * latency, PmMeasure * m)
+{
+  GstElement *element = pm_model_get_element (latency->model, m->a);
+
+  m->have_reported = element != NULL && pm_latency_reported (element,
+      &m->reported_live, &m->reported_min, &m->reported_max);
+  gst_clear_object (&element);
 }
 
 PmLatency *

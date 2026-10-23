@@ -97,9 +97,12 @@ function showTooltip(target, x, y) {
     const sink = info.ports.get(target.sink);
     if (!src || !sink)
       return tooltip.hide();
+    // A problem where data leaves the src pad is a problem of the link.
+    const rows = (findings.byPlace().pads.get(Number(target.src.slice(1))) ||
+      []).map((f) => [f.severity, f.text]);
     tooltip.show(x, y, `${src.element.name}:${src.pad.name} → ` +
-      `${sink.element.name}:${sink.pad.name}`, [],
-      linkCaps(info, target.src, target.sink));
+      `${sink.element.name}:${sink.pad.name}`, rows,
+    linkCaps(info, target.src, target.sink));
   }
 }
 
@@ -151,6 +154,8 @@ const pins = new Pins($("pins"), $("pin-lines"), {
   highlight: (port) => view.highlight(port),
   reveal: (port) => view.reveal(port),
   changed() {
+    if (state.picking && !pins.has(state.picking.path))
+      stopPicking();
     pins.sync(buildIndex(state.graph).padPaths);
     updatePaths();
     update();
@@ -495,6 +500,8 @@ async function refreshProperties() {
     if (state.selected === id) {
       propsLast = { id, data };
       updateProperties($("details"), id, data, pinningFor(id));
+      const selection = buildIndex(state.graph).elements.get(id);
+      updateLatencyDetails($("details"), latencyDetails(selection));
     }
   }
   propsTimer = setTimeout(refreshProperties, 1000);
@@ -547,9 +554,11 @@ function latencyDetails(selection) {
       updateLatencyDetails($("details"), latencyDetails(selection));
     },
     rows: latencyRows(state.latency.get(id), pins.unit,
-      selection.element.pads),
-    // A source still has a reported latency; a sink has nothing at all.
-    measurable: selection.element.pads.some((p) => p.direction === "src"),
+      selection.element.pads, propsLast.id === id ? propsLast.data?.reported
+        : null),
+    // Only with data going in and out is there a time in between.
+    measurable: selection.element.pads.some((p) => p.direction === "sink") &&
+      selection.element.pads.some((p) => p.direction === "src"),
   };
 }
 
@@ -743,6 +752,9 @@ function connect(delay = 1000) {
   ws.onopen = () => {
     status.textContent = "connected";
     status.className = "connection connected";
+    $("ended").hidden = true;
+    ended = false;
+    document.body.classList.remove("ended");
     delay = 1000;
     log.reset();
     pins.connected();
@@ -758,6 +770,8 @@ function connect(delay = 1000) {
     const message = JSON.parse(event.data);
     if (message.type === "graph") {
       state.graph = message.graph;
+      if (state.graph.pipelines.length)
+        lastAlive.graph = state.graph;
       const index = buildIndex(state.graph);
       pins.sync(index.padPaths);
       elementPins.sync(index.elementPaths);
@@ -765,6 +779,8 @@ function connect(delay = 1000) {
       update();
     } else if (message.type === "findings") {
       findings.apply(message.findings);
+      if (state.graph.pipelines.length)
+        lastAlive.findings = message.findings;
       showProblems();
     } else if (message.type === "latency") {
       applyLatency(message.latency);
@@ -778,14 +794,40 @@ function connect(delay = 1000) {
       log.apply(message.log);
       if (state.selected !== null)
         update();
+    } else if (message.type === "bye") {
+      ended = true;
+      document.body.classList.add("ended");
+      // A program usually destroys its pipeline before it exits: show the
+      // last state in which there was one.
+      if (!state.graph.pipelines.length && lastAlive.graph) {
+        state.graph = lastAlive.graph;
+        if (lastAlive.findings)
+          findings.apply(lastAlive.findings);
+        showProblems();
+        update();
+      }
     }
   };
   ws.onclose = () => {
+    // After "bye" the program has ended: its last state stays on screen,
+    // and the page quietly looks for a new run on the same address.
+    if (ended) {
+      status.textContent = "program ended";
+      status.className = "connection ended";
+      $("ended").hidden = false;
+      setTimeout(() => connect(5000), 5000);
+      return;
+    }
     status.textContent = "disconnected, retrying";
     status.className = "connection disconnected";
     setTimeout(() => connect(Math.min(delay * 2, 5000)), delay);
   };
 }
+
+// The program said "bye" before the connection closed.
+let ended = false;
+// The graph and findings of the last moment a pipeline existed.
+const lastAlive = { graph: null, findings: null };
 
 $("pipeline-select").addEventListener("change", (e) => {
   state.pipelineId = Number(e.target.value);

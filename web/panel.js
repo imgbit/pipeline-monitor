@@ -145,6 +145,8 @@ export function showDetails(aside, selection, index, onClose, log, queue) {
   row("type", element.type);
   row("state", element.pending ? `${element.state} → ${element.pending}`
     : element.state);
+  if (element.preroll)
+    row("preroll", PREROLL[element.preroll] || element.preroll);
   row("path", path);
   if (element.bin)
     row("contains", `${countElements(element)} elements`);
@@ -223,6 +225,15 @@ function fieldsList(fields) {
   }
   return dl;
 }
+
+// A sink's (or a bin with sinks) preroll, from its own async messages.
+const PREROLL = {
+  waiting: "waiting for data",
+  done: "done",
+  eos: "done on end of stream",
+  live: "not needed (live)",
+  "no-wait": "not waited for",
+};
 
 function propertyTitle(p) {
   const lines = [p.blurb, p.type];

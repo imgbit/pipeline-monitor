@@ -23,6 +23,8 @@ void pm_latency_measure_all (PmLatency * latency, gpointer client,
 void pm_latency_remove_client (PmLatency * latency, gpointer client);
 
 void pm_latency_set_all_limit (PmLatency * latency, guint buffers_per_s);
+gboolean pm_latency_reported (GstElement * element, gboolean * live,
+    GstClockTime * min, GstClockTime * max);
 gchar *pm_latency_tick (PmLatency * latency);
 
 G_END_DECLS

@@ -3,14 +3,16 @@
 #include <gst/gst.h>
 #include <string.h>
 
-/* Usage: serve [--warnings] [pipeline description]
+/* Usage: serve [--warnings] [--set-caps NAME=CAPS]... [pipeline description]
  * Runs a pipeline until it ends. If it has a tee named "t", a branch is
  * added and removed every two seconds to produce live updates; with
  * --warnings the tee also posts a warning each time. An appsrc named
  * "subs" gets a subtitle every two seconds, with a GAP event in between.
  * Without a description (or an empty one) it runs video, audio and
  * subtitles; the audio sink plays 300 ms late, so its queue stays about
- * 60 % full. */
+ * 60 % full. --set-caps sets the caps of the capsfilter NAME after the
+ * pipeline is built, to make negotiation fail when it starts (a pipeline
+ * description with such caps would not even link). */
 
 #define DEFAULT_PIPELINE \
   "videotestsrc is-live=true ! jpegenc ! decodebin3 ! queue ! tee name=t ! " \
@@ -126,6 +128,7 @@ main (int argc, char **argv)
 {
   const gchar *description = DEFAULT_PIPELINE;
   GstElement *subs;
+  GList *set_caps = NULL, *l;
   Branch branch = { 0 };
   GError *error = NULL;
   GMainLoop *loop;
@@ -133,8 +136,17 @@ main (int argc, char **argv)
 
   g_setenv ("GST_TRACERS", "pipeline-monitor", FALSE);
   gst_init (&argc, &argv);
-  if (argc > 1 && g_strcmp0 (argv[1], "--warnings") == 0) {
-    branch.warnings = TRUE;
+  while (argc > 1 && g_str_has_prefix (argv[1], "--")) {
+    if (g_strcmp0 (argv[1], "--warnings") == 0) {
+      branch.warnings = TRUE;
+    } else if (g_strcmp0 (argv[1], "--set-caps") == 0 && argc > 2) {
+      set_caps = g_list_append (set_caps, argv[2]);
+      argv++;
+      argc--;
+    } else {
+      g_printerr ("unknown option %s\n", argv[1]);
+      return 1;
+    }
     argv++;
     argc--;
   }
@@ -146,6 +158,23 @@ main (int argc, char **argv)
     g_printerr ("%s\n", error->message);
     return 1;
   }
+  for (l = set_caps; l != NULL; l = l->next) {
+    gchar **parts = g_strsplit (l->data, "=", 2);
+    GstElement *filter = gst_bin_get_by_name (GST_BIN (branch.pipeline),
+        parts[0]);
+    GstCaps *caps = parts[1] ? gst_caps_from_string (parts[1]) : NULL;
+
+    if (filter == NULL || caps == NULL) {
+      g_printerr ("--set-caps %s: no such element or bad caps\n",
+          (gchar *) l->data);
+      return 1;
+    }
+    g_object_set (filter, "caps", caps, NULL);
+    gst_caps_unref (caps);
+    gst_object_unref (filter);
+    g_strfreev (parts);
+  }
+  g_list_free (set_caps);
 
   loop = g_main_loop_new (NULL, FALSE);
   bus = gst_element_get_bus (branch.pipeline);

@@ -37,7 +37,9 @@ export function latencyLabel(entry, unit) {
 
 // Rows for the details panel; pads: the element's pads, to explain why a
 // source or a sink is not measured before any data came.
-export function latencyRows(entry, unit, pads) {
+// reported: what the element reports, from its properties answer, when
+// it is not being measured.
+export function latencyRows(entry, unit, pads, reported) {
   const rows = [];
   const m = entry?.measured;
   const inputs = entry ? entry.inputs : pads.some((p) => p.direction === "sink");
@@ -45,8 +47,9 @@ export function latencyRows(entry, unit, pads) {
   if (!inputs)
     rows.push(["measured", "nothing to measure: a source has no input"]);
   else if (!outputs)
-    rows.push(["measured", "nothing to measure: a sink has no output; " +
-      "see \"delay\" on its pad card"]);
+    rows.push(["measured", "nothing to measure: a sink has no output. " +
+      "Click its sink pad in the graph: the pad card's \"delay\" shows how " +
+      "late buffers reach it"]);
   else if (!m)
     rows.push(["measured", "—"]);
   else if (cannotMeasure(m))
@@ -56,7 +59,10 @@ export function latencyRows(entry, unit, pads) {
   else
     rows.push(["measured", `${formatSpan(m.avg, unit)} avg`],
       ["min / max", `${formatSpan(m.min, unit)} / ${formatSpan(m.max, unit)}`]);
-  const r = entry?.reported;
+  // A sink has no output to report a latency for.
+  if (!outputs)
+    return rows;
+  const r = entry?.reported ?? reported;
   rows.push(["reported", r ? `${formatSpan(r.min, unit)}${r.live ? " (live)"
     : ""}` : "—"]);
   return rows;

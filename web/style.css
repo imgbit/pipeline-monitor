@@ -184,7 +184,7 @@ main {
   margin: 0 0 10px;
 }
 #details dt { color: var(--muted); }
-#details dd { margin: 0; word-break: break-all; }
+#details dd { margin: 0; overflow-wrap: anywhere; }
 
 #details table {
   width: 100%;
@@ -262,6 +262,8 @@ main {
 .edge.selected { stroke: var(--accent); stroke-width: 2; }
 
 #arrow path { fill: var(--edge); }
+#arrow-warning path { fill: var(--warning); }
+#arrow-error path { fill: var(--error); }
 
 .edge-hit {
   fill: none;
@@ -557,6 +559,8 @@ main {
 .latency-text.high { fill: var(--warning); font-weight: 600; }
 .latency-text.unknown { fill: var(--muted); font-style: italic; }
 #details .measure-toggle { margin: 0 0 6px; }
+/* Nothing left to act on once the program has ended. */
+body.ended #details .measure-toggle, body.ended #details .mute-toggle { display: none; }
 #details .latency-section dl { margin-bottom: 4px; }
 
 .pick-hint {
@@ -609,10 +613,11 @@ main {
 .finding-caps-side dd { margin: 0; word-break: break-all; }
 .finding-caps .differs { color: var(--error); font-weight: 600; }
 
-.pad.problem-error { fill: var(--error); stroke: var(--error); stroke-width: 3; }
-.pad.problem-warning { fill: var(--warning); stroke: var(--warning); stroke-width: 3; }
-.edge.problem-error { stroke: var(--error); stroke-dasharray: 5 3; stroke-width: 2; }
-.edge.problem-warning { stroke: var(--warning); stroke-dasharray: 5 3; stroke-width: 2; }
+.pad.problem-error { fill: var(--error); stroke: var(--error); }
+.pad.problem-warning { fill: var(--warning); stroke: var(--warning); }
+/* Solid: dashes already mean "changing state" on elements. */
+.edge.problem-error { stroke: var(--error); stroke-width: 3; marker-end: url(#arrow-error); }
+.edge.problem-warning { stroke: var(--warning); stroke-width: 3; marker-end: url(#arrow-warning); }
 .node.problem-error > rect.box { stroke: var(--error); stroke-width: 2; }
 .node.problem-warning > rect.box { stroke: var(--warning); stroke-width: 2; }
 
@@ -621,3 +626,22 @@ main {
 #details .element-problem.error { border-left-color: var(--error); }
 #details .element-problem-text { font-weight: 600; }
 #details .element-problem-hint { color: var(--muted); font-size: 12px; }
+
+/* The program has ended */
+
+.connection.ended::before { background: var(--muted); }
+.ended-banner {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: calc(100% - 32px);
+  padding: 6px 12px;
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--muted);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  font-size: 12px;
+}

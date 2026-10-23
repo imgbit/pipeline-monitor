@@ -1481,7 +1481,7 @@ test_findings_stuck (void)
   node = wait_finding (id, 3);
   g_assert_nonnull (node);
   g_assert_nonnull (strstr (json_object_get_string_member
-          (json_node_get_object (node), "hint"), "No data"));
+          (json_node_get_object (node), "hint"), "No pad before it"));
   json_node_unref (node);
   gst_element_set_state (pipeline, GST_STATE_NULL);
   gst_object_unref (pipeline);
@@ -1589,39 +1589,7 @@ test_check_failed_link (void)
   gst_object_unref (pipeline);
 }
 
-/* The classic: tee branches without queues wait for each other. */
-static void
-test_check_no_queue (void)
-{
-  GstElement *pipeline = run_pipeline ("videotestsrc ! tee name=nq-tee ! "
-      "fakesink nq-tee. ! fakesink");
-  gchar *id = pad_finding ("no-queue", "nq-tee", "src_0");
-  JsonNode *node;
 
-  expect_finding (id, 5, &node);
-  json_node_unref (node);
-  stop_pipeline (pipeline);
-  g_free (id);
-}
-
-static void
-test_check_unlinked (void)
-{
-  GstElement *pipeline = run_pipeline ("videotestsrc is-live=true ! "
-      "tee name=ul-tee ! queue ! fakesink async=false");
-  GstElement *tee = gst_bin_get_by_name (GST_BIN (pipeline), "ul-tee");
-  GstPad *pad = gst_element_request_pad_simple (tee, "src_%u");
-  gchar *id = pad_finding ("unlinked", "ul-tee", GST_OBJECT_NAME (pad));
-  JsonNode *node;
-
-  expect_finding (id, 5, &node);
-  json_node_unref (node);
-  gst_element_release_request_pad (tee, pad);
-  gst_object_unref (pad);
-  gst_object_unref (tee);
-  stop_pipeline (pipeline);
-  g_free (id);
-}
 
 static void
 test_check_missing_plugin (void)
@@ -1643,6 +1611,157 @@ test_check_missing_plugin (void)
   g_free (id);
 }
 
+/* Tee branches without queues, not live: the first sink prerolls and
+ * holds the tee's thread, the second never gets data. The push into the
+ * first sink is where it is blocked. */
+static void
+test_check_blocked (void)
+{
+  GstElement *pipeline = run_pipeline ("videotestsrc ! tee name=bt ! "
+      "fakesink name=bt-a bt. ! fakesink name=bt-b");
+  gchar *id = pad_finding ("blocked", "bt", "src_0");
+  JsonNode *node;
+  JsonObject *f = expect_finding (id, 8, &node);
+
+  g_assert_nonnull (strstr (json_object_get_string_member (f, "text"),
+          "bt:src_0 → "));
+  g_assert_nonnull (strstr (json_object_get_string_member (f, "hint"),
+          "has not returned"));
+  g_assert_nonnull (strstr (json_object_get_string_member (f, "hint"),
+          "is in PAUSED"));
+  json_node_unref (node);
+  stop_pipeline (pipeline);
+  g_free (id);
+}
+
+/* An element's preroll in the graph, waiting up to 5 s for it to be
+ * expected (NULL: none). */
+static void
+expect_preroll (const gchar * name, const gchar * expected)
+{
+  gchar *needle = g_strdup_printf ("\"name\":\"%s\"", name);
+  gchar *want = g_strdup_printf ("\"preroll\":\"%s\"", expected);
+  gint64 end = g_get_monotonic_time () + 5 * G_USEC_PER_SEC;
+  gchar *found = NULL;
+
+  while (g_get_monotonic_time () < end) {
+    gchar *graph, *at, *pads;
+
+    get_status ("api/graph", "GET", NULL, &graph, NULL);
+    at = strstr (graph, needle);
+    pads = at ? strstr (at, "\"pads\"") : NULL;
+    g_free (found);
+    found = NULL;
+    if (pads != NULL) {
+      *pads = '\0';
+      at = strstr (at, "\"preroll\":\"");
+      found = at ? g_strndup (at, strchr (at + 11, '"') - at + 1) : NULL;
+    }
+    g_free (graph);
+    if (g_strcmp0 (found, want) == 0)
+      break;
+    g_usleep (100 * G_TIME_SPAN_MILLISECOND);
+  }
+  g_assert_cmpstr (found, ==, want);
+  g_free (found);
+  g_free (needle);
+  g_free (want);
+}
+
+static GstElement *
+pause_pipeline (const gchar * description)
+{
+  GstElement *pipeline = gst_parse_launch (description, NULL);
+
+  gst_element_set_state (pipeline, GST_STATE_PAUSED);
+  return pipeline;
+}
+
+/* Sinks and bins with sinks, from their own async messages. */
+static void
+test_check_preroll (void)
+{
+  GstElement *tee = run_pipeline ("videotestsrc ! tee name=pr-tee ! "
+      "fakesink name=pr-a pr-tee. ! fakesink name=pr-b");
+  GstElement *no_wait = run_pipeline ("videotestsrc ! "
+      "fakesink name=pr-nowait async=false");
+  GstElement *bin = run_pipeline ("( name=pr-bin fakesink name=pr-inner ) "
+      "videotestsrc ! pr-inner.");
+  GstElement *live = pause_pipeline ("videotestsrc is-live=true ! "
+      "fakesink name=pr-live");
+  GstElement *eos = pause_pipeline ("fakesrc num-buffers=0 ! "
+      "fakesink name=pr-eos");
+  gchar *name = gst_element_get_name (tee);
+  gchar *id = element_finding ("stuck", name);
+  JsonNode *node;
+  JsonObject *f;
+
+  expect_preroll ("pr-a", "done");
+  expect_preroll ("pr-b", "waiting");
+  expect_preroll ("pr-nowait", "no-wait");
+  expect_preroll ("pr-bin", "done");
+  expect_preroll ("pr-inner", "done");
+  /* Live: the sink waits in PAUSED, the source sends from PLAYING. */
+  expect_preroll ("pr-live", "waiting");
+  gst_element_set_state (live, GST_STATE_PLAYING);
+  expect_preroll ("pr-live", "done");
+  expect_preroll ("pr-eos", "eos");
+
+  f = expect_finding (id, 8, &node);
+  g_assert_nonnull (strstr (json_object_get_string_member (f, "hint"),
+          "Prerolled: pr-a. Waiting for preroll: pr-b."));
+  json_node_unref (node);
+
+  stop_pipeline (tee);
+  stop_pipeline (no_wait);
+  stop_pipeline (bin);
+  stop_pipeline (live);
+  stop_pipeline (eos);
+  g_free (name);
+  g_free (id);
+}
+
+/* Healthy pipelines that look like problems to a guess must give no
+ * finding at all. */
+static void
+test_check_quiet (void)
+{
+  const gchar *pipelines[] = {
+    /* A tee with a queue on each branch. */
+    "videotestsrc name=q1-src ! tee name=q1-tee ! queue ! fakesink "
+        "q1-tee. ! queue ! fakesink",
+    /* No queues, but sinks that neither preroll nor sync: nothing waits.
+     * (sync=false alone still prerolls and does hang.) */
+    "videotestsrc is-live=true name=q2-src ! tee name=q2-tee ! "
+        "fakesink sync=false async=false q2-tee. ! "
+        "fakesink sync=false async=false",
+    /* An aggregator with its own thread. */
+    "videotestsrc name=q3-a ! compositor name=q3-mix ! fakesink "
+        "videotestsrc name=q3-b ! q3-mix.",
+    /* A leaky queue that is not full. */
+    "videotestsrc is-live=true name=q4-src ! "
+        "queue name=q4-leaky leaky=downstream ! fakesink",
+  };
+  GstElement *running[G_N_ELEMENTS (pipelines)];
+  gchar *text;
+  guint i;
+
+  for (i = 0; i < G_N_ELEMENTS (pipelines); i++)
+    running[i] = run_pipeline (pipelines[i]);
+  /* Longer than the 3 s of stuck and blocked, the 5 s of full. */
+  g_usleep (6 * G_USEC_PER_SEC);
+  get_status ("api/findings", "GET", NULL, &text, NULL);
+  for (i = 0; i < G_N_ELEMENTS (pipelines); i++) {
+    gchar *mark = g_strdup_printf ("/q%u-", i + 1);
+
+    if (strstr (text, mark) != NULL)
+      g_error ("finding for a healthy pipeline: %s", text);
+    g_free (mark);
+    stop_pipeline (running[i]);
+  }
+  g_free (text);
+}
+
 /* A leaky queue whose output is blocked keeps dropping. */
 static void
 test_check_leaky (void)
@@ -1661,6 +1780,11 @@ test_check_leaky (void)
   id = element_finding ("dropping", "lk-queue");
   expect_finding (id, 6, &node);
   json_node_unref (node);
+  g_free (id);
+  /* Full, but leaky: dropping is the finding, not "full". */
+  g_usleep (5 * G_USEC_PER_SEC);
+  id = element_finding ("full", "lk-queue");
+  g_assert_null (wait_finding (id, 1));
   gst_element_set_state (pipeline, GST_STATE_NULL);
   gst_object_unref (src);
   gst_object_unref (queue);
@@ -1781,8 +1905,9 @@ main (int argc, char **argv)
   g_test_add_func ("/server/check-not-negotiated",
       test_check_not_negotiated);
   g_test_add_func ("/server/check-failed-link", test_check_failed_link);
-  g_test_add_func ("/server/check-no-queue", test_check_no_queue);
-  g_test_add_func ("/server/check-unlinked", test_check_unlinked);
+  g_test_add_func ("/server/check-blocked", test_check_blocked);
+  g_test_add_func ("/server/check-quiet", test_check_quiet);
+  g_test_add_func ("/server/check-preroll", test_check_preroll);
   g_test_add_func ("/server/check-missing-plugin",
       test_check_missing_plugin);
   g_test_add_func ("/server/check-leaky", test_check_leaky);

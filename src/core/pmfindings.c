@@ -69,23 +69,27 @@ explain_flow (GstFlowReturn result, PmSeverity * severity,
   switch (result) {
     case GST_FLOW_NOT_LINKED:
       *severity = PM_WARNING;
-      *hint = "This pad is not linked: the data has nowhere to go.";
+      *hint = "Pushing from this pad returned not-linked: the pad is not "
+          "linked to anything.";
       break;
     case GST_FLOW_EOS:
       *severity = PM_INFO;
-      *hint = "Downstream has already ended (EOS).";
+      *hint = "Pushing from this pad returned eos: downstream has already "
+          "ended.";
       break;
     case GST_FLOW_NOT_NEGOTIATED:
       *severity = PM_ERROR;
-      *hint = "The formats on this link do not match.";
+      *hint = "No format was agreed on this link; what each side handles is "
+          "below.";
       break;
     case GST_FLOW_NOT_SUPPORTED:
       *severity = PM_ERROR;
-      *hint = "Downstream does not support what was asked.";
+      *hint = "Pushing from this pad returned not-supported.";
       break;
     default:
       *severity = PM_ERROR;
-      *hint = "An element downstream failed: see errors and warnings.";
+      *hint = "Pushing from this pad returned an error; the element's "
+          "message is under errors and warnings.";
       break;
   }
 }
@@ -332,8 +336,18 @@ add_stuck (PmFindings * self, GPtrArray * findings, gint64 stuck_after_us)
     f->text = g_strdup_printf ("%s has not reached %s for %" G_GINT64_FORMAT
         " s (it is %s)", p->path, gst_element_state_get_name (p->pending),
         p->since_us / G_USEC_PER_SEC, gst_element_state_get_name (p->state));
-    f->hint = g_strdup ("Something is still preparing, or a sink has no "
-        "data yet.");
+    {
+      gchar *pending_list = pm_model_pending_elements (self->model,
+          p->element);
+
+      gchar *preroll = pm_model_preroll_summary (self->model, p->element);
+
+      f->hint = pending_list ? g_strdup_printf ("Still changing state: %s.%s%s",
+          pending_list, preroll ? " " : "", preroll ? preroll : "") :
+          g_strdup (preroll);
+      g_free (pending_list);
+      g_free (preroll);
+    }
     g_ptr_array_add (findings, f);
 
     starved = pm_model_starved_sinks (self->model, p->element);
@@ -342,9 +356,9 @@ add_stuck (PmFindings * self, GPtrArray * findings, gint64 stuck_after_us)
 
       f = finding_new ("starved", s->pad, PM_WARNING, s->element, s->pad);
       f->text = g_strdup_printf ("%s has no data", s->path);
-      f->hint = s->detail ? g_strdup_printf ("Data gets as far as %s; look "
-          "between there and this sink.", s->detail) :
-          g_strdup ("No data from any source reaches it yet.");
+      f->hint = s->detail ? g_strdup_printf ("The nearest pad before it "
+          "that has received data is %s.", s->detail) :
+          g_strdup ("No pad before it has received data yet.");
       g_ptr_array_add (findings, f);
     }
     g_ptr_array_unref (starved);
@@ -370,26 +384,44 @@ add_spots (GPtrArray * findings, GPtrArray * spots, const gchar * kind,
   g_ptr_array_unref (spots);
 }
 
+#define BLOCKED_AFTER_MS 3000
+
+/* Pushes that have not returned for 3 s, where the thread is held. */
+static void
+add_blocked (PmFindings * self, GPtrArray * findings)
+{
+  GPtrArray *blocked = pm_model_blocked_pushes (self->model,
+      pm_model_now_ms (), BLOCKED_AFTER_MS);
+  guint i;
+
+  for (i = 0; i < blocked->len; i++) {
+    PmBlocked *b = g_ptr_array_index (blocked, i);
+    PmFinding *f = finding_new ("blocked", b->pad, PM_WARNING, b->element,
+        b->pad);
+
+    f->text = g_strdup_printf ("Data flow blocked at %s%s%s for %d s",
+        b->path, b->peer_path ? " → " : "", b->peer_path ? b->peer_path : "",
+        b->ms / 1000);
+    f->hint = b->peer_state ? g_strdup_printf ("The push into %s has not "
+        "returned. %s.", b->peer_path, b->peer_state) :
+        g_strdup ("The push from this pad has not returned.");
+    g_ptr_array_add (findings, f);
+  }
+  g_ptr_array_unref (blocked);
+}
+
 static void
 add_structure (PmFindings * self, GPtrArray * findings)
 {
   GPtrArray *failed = pm_model_failed_links (self->model);
   guint i;
 
-  add_spots (findings, pm_model_unqueued_branches (self->model),
-      "no-queue", PM_WARNING, "The branch from %s reaches %s without a "
-      "queue", "Every branch after a tee or demuxer needs a queue, or the "
-      "branches wait for each other and the pipeline hangs in PAUSED.");
-  add_spots (findings, pm_model_unlinked_pads (self->model), "unlinked",
-      PM_WARNING, "%s is not linked%s", "Data on this pad has nowhere to "
-      "go: link it, or connect it to a fakesink.");
   add_spots (findings, pm_model_missing_plugins (self->model), "missing",
-      PM_ERROR, "%s: missing %s", "Install the GStreamer plugin that "
-      "provides it (gst-inspect-1.0 lists what is installed).");
+      PM_ERROR, "%s: missing %s", "It reported that no installed element "
+      "can handle this.");
   add_spots (findings, pm_model_silent_sources (self->model,
-          SILENT_AFTER_US), "silent", PM_WARNING, "%s has not produced "
-      "anything yet%s", "Check the device, file or network address it "
-      "reads from.");
+          SILENT_AFTER_US), "silent", PM_INFO, "%s has sent no data for "
+      "5 s while PLAYING%s", "");
 
   for (i = 0; i < failed->len; i++) {
     PmLinkFailure *l = g_ptr_array_index (failed, i);
@@ -400,8 +432,8 @@ add_structure (PmFindings * self, GPtrArray * findings)
     f->text = g_strdup_printf ("%s could not link to %s: %s", l->src_path,
         l->sink_path, l->result);
     f->hint = g_strdup (g_strcmp0 (l->result, "no format") == 0 ?
-        "The two pads have no format in common." :
-        "See what each side accepts below.");
+        "The two pads have no format in common; what each side handles is "
+        "below." : "What each side handles is below.");
     f->upstream = g_strdup (l->src_caps);
     f->downstream = g_strdup (l->sink_caps);
     g_ptr_array_add (findings, f);
@@ -513,15 +545,17 @@ add_queues (PmFindings * self, GPtrArray * findings, GHashTable * seen)
     } else {
       q->full_since = 0;
     }
-    if (q->full_since != 0 && now - q->full_since >= FULL_AFTER_US) {
+    q->leaky = is_leaky (ref->element);
+    /* A full leaky queue drops instead of waiting: reported below. */
+    if (!q->leaky && q->full_since != 0 &&
+        now - q->full_since >= FULL_AFTER_US) {
       f = finding_new ("full", ref->id, PM_WARNING, ref->id, 0);
       f->text = g_strdup_printf ("%s has been full for %" G_GINT64_FORMAT
           " s", ref->path, (now - q->full_since) / G_USEC_PER_SEC);
-      f->hint = g_strdup ("What comes after it is stalled or too slow.");
+      f->hint = g_strdup ("Elements before it wait until it has room.");
       g_ptr_array_add (findings, f);
     }
 
-    q->leaky = is_leaky (ref->element);
     if (q->leaky && q->in.counter == NULL) {
       count_probe_add (&q->in, ref->element, "sink");
       count_probe_add (&q->out, ref->element, "src");
@@ -546,9 +580,8 @@ add_queues (PmFindings * self, GPtrArray * findings, GHashTable * seen)
         f->text = g_strdup_printf ("%s (leaky) dropped %" G_GUINT64_FORMAT
             " buffers in the last %d s", ref->path, history_sum (q->drops),
             HISTORY);
-        f->hint = g_strdup ("It is full and drops data instead of "
-            "waiting: what comes after it is too slow, or the queue is too "
-            "small.");
+        f->hint = g_strdup ("It is leaky: when full it drops buffers instead "
+            "of waiting.");
         g_ptr_array_add (findings, f);
       }
     }
@@ -596,9 +629,8 @@ add_sinks (PmFindings * self, GPtrArray * findings, GHashTable * seen)
 
       f->text = g_strdup_printf ("%s dropped %" G_GUINT64_FORMAT " buffers "
           "in the last %d s", ref->path, history_sum (s->drops), HISTORY);
-      f->hint = g_strdup ("They arrived too late to be shown or played: "
-          "something upstream is too slow (see latency), or the clock "
-          "drifts.");
+      f->hint = g_strdup ("It dropped them because they arrived later than "
+          "its max-lateness.");
       g_ptr_array_add (findings, f);
     }
   }
@@ -634,6 +666,7 @@ pm_findings_tick (PmFindings * self, gint64 stuck_after_us)
   guint i;
 
   add_flow (self, findings);
+  add_blocked (self, findings);
   add_stuck (self, findings, stuck_after_us);
   add_structure (self, findings);
   add_queues (self, findings, seen);

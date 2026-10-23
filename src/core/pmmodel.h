@@ -95,8 +95,6 @@ typedef struct
 } PmSpot;
 
 void pm_spot_free (PmSpot * spot);
-GPtrArray *pm_model_unqueued_branches (PmModel * model);
-GPtrArray *pm_model_unlinked_pads (PmModel * model);
 GPtrArray *pm_model_starved_sinks (PmModel * model, guint64 pipeline);
 GPtrArray *pm_model_silent_sources (PmModel * model, gint64 min_us);
 void pm_model_record_missing (PmModel * model, gpointer element,
@@ -116,6 +114,47 @@ void pm_model_record_failed_link (PmModel * model, gpointer src,
     const gchar * result, const gchar * src_caps, const gchar * sink_caps);
 GPtrArray *pm_model_failed_links (PmModel * model);
 void pm_link_failure_free (PmLinkFailure * f);
+
+/* A push in progress on a pad: start in ms since the tracer started, plus
+ * one (0 = none). Written by the pad's streaming thread only. */
+typedef struct
+{
+  gint start_ms;
+} PmPushTiming;
+
+typedef struct
+{
+  guint64 pad;
+  guint64 element;
+  gchar *path;
+  gchar *peer_path;
+  gchar *peer_state;
+  gint ms;
+} PmBlocked;
+
+PmPushTiming *pm_push_timing (GstPad * pad);
+GPtrArray *pm_model_blocked_pushes (PmModel * model, gint now_ms,
+    gint min_ms);
+void pm_blocked_free (PmBlocked * b);
+gchar *pm_model_pending_elements (PmModel * model, guint64 pipeline);
+
+/* Preroll of a sink or a bin with sinks, from its own ASYNC_START and
+ * ASYNC_DONE messages and state change results. */
+typedef enum
+{
+  PM_PREROLL_UNKNOWN,
+  PM_PREROLL_WAITING,
+  PM_PREROLL_DONE,
+  PM_PREROLL_DONE_EOS,
+  PM_PREROLL_LIVE,
+  PM_PREROLL_NO_WAIT,
+} PmPreroll;
+
+void pm_model_set_preroll (PmModel * model, gpointer element,
+    PmPreroll preroll);
+gchar *pm_model_preroll_summary (PmModel * model, guint64 pipeline);
+void pm_model_set_ts_offset (gint64 offset);
+gint pm_model_now_ms (void);
 gchar *pm_model_element_path (PmModel * model, gpointer element);
 
 typedef enum

@@ -129,9 +129,8 @@ export class FindingsView {
           f.caps.downstream), capsColumn("downstream accepts",
           f.caps.downstream, f.caps.upstream));
         if (f.caps.common === false && f.caps.upstream && f.caps.downstream)
-          add(body, "div", "Nothing in common: add a converter " +
-            "(videoconvert, audioconvert, …) or change the caps on one side.",
-          "finding-hint");
+          add(body, "div", "The two sides have no format in common.",
+            "finding-hint");
       }
       add(row, "span", f.count ? `${f.count}× · ${ago(f.last)}` : "",
         "finding-count");

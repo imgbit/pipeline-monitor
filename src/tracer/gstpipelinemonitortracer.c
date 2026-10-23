@@ -5,6 +5,7 @@
 #include "pmmodel.h"
 #include "pmserver.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 #define DEFAULT_PORT 8765
@@ -20,7 +21,13 @@ struct _GstPipelineMonitorTracer
   PmServer *server;
   gboolean log;
   gboolean flow;
+  gboolean wait;
 };
+
+/* The running server, for the exit handler (programs that exit without
+ * gst_deinit). */
+static PmServer *exiting_server;
+static GMutex exiting_lock;
 
 enum
 {
@@ -82,6 +89,14 @@ static void
 do_element_new (GstTracer * tracer, GstClockTime ts, GstElement * element)
 {
   GstPipelineMonitorTracer *self = GST_PIPELINE_MONITOR_TRACER (tracer);
+  static gsize calibrated;
+
+  /* Hook timestamps count from GStreamer's start: note once where that
+   * is, for the age of pushes in progress. */
+  if (g_once_init_enter (&calibrated)) {
+    pm_model_set_ts_offset (gst_util_get_timestamp () - ts);
+    g_once_init_leave (&calibrated, 1);
+  }
 
   GST_DEBUG_OBJECT (tracer, "new element %s (%s)", GST_OBJECT_NAME (element),
       G_OBJECT_TYPE_NAME (element));
@@ -335,6 +350,63 @@ record_stopped (GstPipelineMonitorTracer * self, GstElement * element,
   g_free (debug);
 }
 
+/* Sinks and bins with sinks, whose PAUSED waits for data. */
+static gboolean
+has_preroll (GstElement * element)
+{
+  return GST_OBJECT_FLAG_IS_SET (element, GST_ELEMENT_FLAG_SINK) &&
+      !GST_IS_PIPELINE (element);
+}
+
+/* Set on a pad when EOS is pushed into it, cleared when a new stream or
+ * a flush starts: the pad's own EOS flag is set only after the sink has
+ * handled the event, and it prerolls while handling it. */
+static GQuark
+eos_quark (void)
+{
+  static GQuark quark;
+
+  if (quark == 0)
+    quark = g_quark_from_static_string ("pm-eos");
+  return quark;
+}
+
+static void
+do_pad_push_event_pre (GstTracer * tracer, GstClockTime ts, GstPad * pad,
+    GstEvent * event)
+{
+  GstEventType type = GST_EVENT_TYPE (event);
+  GstPad *peer;
+
+  if (type != GST_EVENT_EOS && type != GST_EVENT_STREAM_START &&
+      type != GST_EVENT_FLUSH_STOP)
+    return;
+  peer = gst_pad_get_peer (pad);
+  if (peer == NULL)
+    return;
+  g_object_set_qdata (G_OBJECT (peer), eos_quark (),
+      GINT_TO_POINTER (type == GST_EVENT_EOS));
+  gst_object_unref (peer);
+}
+
+/* Prerolled on EOS: EOS has reached the sink's own sink pad. */
+static gboolean
+at_eos (GstElement * element)
+{
+  GstPad *pad;
+  gboolean eos;
+
+  if (GST_IS_BIN (element))
+    return FALSE;
+  pad = gst_element_get_static_pad (element, "sink");
+  if (pad == NULL)
+    return FALSE;
+  eos = GST_PAD_IS_EOS (pad) ||
+      g_object_get_qdata (G_OBJECT (pad), eos_quark ()) != NULL;
+  gst_object_unref (pad);
+  return eos;
+}
+
 static void
 do_element_post_message_pre (GstTracer * tracer, GstClockTime ts,
     GstElement * element, GstMessage * message)
@@ -352,8 +424,13 @@ do_element_post_message_pre (GstTracer * tracer, GstClockTime ts,
         break;
       if (self->log)
         log_message (self, element, message);
-      if (GST_MESSAGE_TYPE (message) == GST_MESSAGE_ERROR)
+      if (GST_MESSAGE_TYPE (message) == GST_MESSAGE_ERROR) {
         record_stopped (self, element, message);
+        /* The program may end right after an error: send what is known
+         * now. */
+        if (self->server != NULL)
+          pm_server_flush (self->server, FALSE);
+      }
       break;
     case GST_MESSAGE_ELEMENT:
       /* decodebin and playbin post this when no element can handle a
@@ -376,6 +453,17 @@ do_element_post_message_pre (GstTracer * tracer, GstClockTime ts,
         pm_model_record_missing (self->model, element, what);
         g_free (what);
         g_free (detail);
+      }
+      break;
+    case GST_MESSAGE_ASYNC_START:
+    case GST_MESSAGE_ASYNC_DONE:
+      if (GST_MESSAGE_SRC (message) == GST_OBJECT_CAST (element) &&
+          has_preroll (element)) {
+        sync_element (self, element);
+        pm_model_set_preroll (self->model, element,
+            GST_MESSAGE_TYPE (message) == GST_MESSAGE_ASYNC_START ?
+            PM_PREROLL_WAITING : at_eos (element) ? PM_PREROLL_DONE_EOS :
+            PM_PREROLL_DONE);
       }
       break;
     case GST_MESSAGE_BUFFERING:
@@ -411,6 +499,21 @@ do_element_change_state_post (GstTracer * tracer, GstClockTime ts,
     g_free (text);
   }
 
+  if (has_preroll (element)) {
+    if (transition == GST_STATE_CHANGE_PAUSED_TO_READY) {
+      sync_element (self, element);
+      pm_model_set_preroll (self->model, element, PM_PREROLL_UNKNOWN);
+    } else if (result == GST_STATE_CHANGE_NO_PREROLL &&
+        next == GST_STATE_PAUSED) {
+      sync_element (self, element);
+      pm_model_set_preroll (self->model, element, PM_PREROLL_LIVE);
+    } else if (result == GST_STATE_CHANGE_SUCCESS &&
+        transition == GST_STATE_CHANGE_READY_TO_PAUSED) {
+      sync_element (self, element);
+      pm_model_set_preroll (self->model, element, PM_PREROLL_NO_WAIT);
+    }
+  }
+
   /* On success GStreamer completes the change right after this hook, and
    * posts no message when the state does not change (PLAYING to PLAYING).
    * Record the outcome now so the pending state does not go stale. */
@@ -419,9 +522,15 @@ do_element_change_state_post (GstTracer * tracer, GstClockTime ts,
       GST_STATE_PENDING (element) == next) {
     sync_element (self, element);
     pm_model_set_state (self->model, element, next, GST_STATE_VOID_PENDING);
-    return;
+  } else {
+    sync_state (self, element);
   }
-  sync_state (self, element);
+
+  /* A stopped pipeline is often destroyed right away: send its final
+   * state before the next update would. */
+  if (transition == GST_STATE_CHANGE_READY_TO_NULL &&
+      GST_IS_PIPELINE (element) && self->server != NULL)
+    pm_server_flush (self->server, FALSE);
 }
 
 /* Data flow results. These run for every push and pull of every pad: keep
@@ -436,10 +545,21 @@ record_flow (GstTracer * tracer, GstPad * pad, GstFlowReturn res)
       resolve_pad (pad), res);
 }
 
+/* Pushes in progress: start and end, for blocked data flow. ms + 1, so
+ * that 0 means no push. */
+static void
+do_pad_push_pre (GstTracer * tracer, GstClockTime ts, GstPad * pad,
+    gpointer data)
+{
+  g_atomic_int_set (&pm_push_timing (pad)->start_ms,
+      (gint) (ts / GST_MSECOND) + 1);
+}
+
 static void
 do_pad_push_post (GstTracer * tracer, GstClockTime ts, GstPad * pad,
     GstFlowReturn res)
 {
+  g_atomic_int_set (&pm_push_timing (pad)->start_ms, 0);
   record_flow (tracer, pad, res);
 }
 
@@ -517,11 +637,25 @@ parse_options (GstPipelineMonitorTracer * self, gchar ** ui_dir)
     *ui_dir = g_strdup (gst_structure_get_string (s, "ui-dir"));
     self->log = get_bool_option (s, "log", TRUE);
     self->flow = get_bool_option (s, "flow", TRUE);
+    self->wait = get_bool_option (s, "wait", FALSE);
     gst_structure_free (s);
   }
   g_free (desc);
   g_free (params);
   return port;
+}
+
+static gsize exit_handler;
+
+/* The pages get the final state and "bye" also when the program exits
+ * without gst_deinit (which would finalize the tracer). */
+static void
+on_exit (void)
+{
+  g_mutex_lock (&exiting_lock);
+  if (exiting_server != NULL)
+    pm_server_flush (exiting_server, TRUE);
+  g_mutex_unlock (&exiting_lock);
 }
 
 static void
@@ -542,6 +676,10 @@ gst_pipeline_monitor_tracer_constructed (GObject * object)
   if (self->flow) {
     GstTracer *tracer = GST_TRACER (self);
 
+    gst_tracing_register_hook (tracer, "pad-push-pre",
+        G_CALLBACK (do_pad_push_pre));
+    gst_tracing_register_hook (tracer, "pad-push-list-pre",
+        G_CALLBACK (do_pad_push_pre));
     gst_tracing_register_hook (tracer, "pad-push-post",
         G_CALLBACK (do_pad_push_post));
     gst_tracing_register_hook (tracer, "pad-push-list-post",
@@ -562,6 +700,19 @@ gst_pipeline_monitor_tracer_constructed (GObject * object)
   pm_model_set_changed_func (self->model,
       (PmModelChangedFunc) pm_server_notify, self->server);
   g_printerr ("pipeline-monitor: %s\n", pm_server_get_url (self->server));
+
+  g_mutex_lock (&exiting_lock);
+  exiting_server = self->server;
+  g_mutex_unlock (&exiting_lock);
+  if (g_once_init_enter (&exit_handler)) {
+    atexit (on_exit);
+    g_once_init_leave (&exit_handler, 1);
+  }
+
+  if (self->wait) {
+    g_printerr ("pipeline-monitor: waiting for the page to be opened\n");
+    pm_server_wait_for_page (self->server);
+  }
 }
 
 static void
@@ -569,6 +720,10 @@ gst_pipeline_monitor_tracer_finalize (GObject * object)
 {
   GstPipelineMonitorTracer *self = GST_PIPELINE_MONITOR_TRACER (object);
 
+  g_mutex_lock (&exiting_lock);
+  if (exiting_server == self->server)
+    exiting_server = NULL;
+  g_mutex_unlock (&exiting_lock);
   if (self->server != NULL) {
     pm_model_set_changed_func (self->model, NULL, NULL);
     pm_server_free (self->server);
@@ -616,6 +771,8 @@ gst_pipeline_monitor_tracer_init (GstPipelineMonitorTracer * self)
       G_CALLBACK (do_pad_unlink_post));
   gst_tracing_register_hook (tracer, "element-change-state-post",
       G_CALLBACK (do_element_change_state_post));
+  gst_tracing_register_hook (tracer, "pad-push-event-pre",
+      G_CALLBACK (do_pad_push_event_pre));
   gst_tracing_register_hook (tracer, "element-post-message-pre",
       G_CALLBACK (do_element_post_message_pre));
   gst_tracing_register_hook (tracer, "object-destroyed",

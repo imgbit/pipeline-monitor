@@ -36,6 +36,10 @@ struct _PmServer
   GMutex lock;
   GCond cond;
   gboolean started;
+  /* A page has connected at least once (for wait=true). */
+  gboolean had_page;
+  /* "bye" was sent: the program is ending. */
+  gint bye_sent;
   GError *error;
 
   /* Server thread only */
@@ -255,8 +259,26 @@ handle_properties (SoupServer * soup, SoupServerMessage * msg,
     soup_server_message_set_status (msg, SOUP_STATUS_NOT_FOUND, NULL);
     return;
   }
-  set_json_response (msg, pm_props_read (element, NULL,
-          PROPERTIES_TIMEOUT_US));
+  {
+    gchar *props = pm_props_read (element, NULL, PROPERTIES_TIMEOUT_US);
+    GString *json = g_string_new_len (props, strlen (props) - 1);
+    gboolean live;
+    GstClockTime min, max;
+
+    /* With the latency the element reports, for its details. */
+    if (pm_latency_reported (element, &live, &min, &max)) {
+      g_string_append_printf (json, ",\"reported\":{\"live\":%s,\"min\":%"
+          G_GUINT64_FORMAT, live ? "true" : "false", min);
+      if (GST_CLOCK_TIME_IS_VALID (max))
+        g_string_append_printf (json, ",\"max\":%" G_GUINT64_FORMAT, max);
+      else
+        g_string_append (json, ",\"max\":null");
+      g_string_append_c (json, '}');
+    }
+    g_string_append_c (json, '}');
+    g_free (props);
+    set_json_response (msg, g_string_free (json, FALSE));
+  }
   gst_object_unref (element);
 }
 
@@ -561,6 +583,26 @@ send_properties (PmServer * self)
   g_hash_table_unref (by_element);
 }
 
+static void send_to_all (PmServer * self, const gchar * text);
+
+static void
+send_findings (PmServer * self)
+{
+  gchar *findings = pm_findings_tick (self->findings, PM_STUCK_AFTER_US);
+  gchar *text;
+
+  if (g_strcmp0 (findings, self->last_findings) == 0) {
+    g_free (findings);
+    return;
+  }
+  text = g_strdup_printf ("{\"type\":\"findings\",\"findings\":%s}",
+      findings);
+  send_to_all (self, text);
+  g_free (text);
+  g_free (self->last_findings);
+  self->last_findings = findings;
+}
+
 static gboolean
 send_all_stats (gpointer user_data)
 {
@@ -587,22 +629,8 @@ send_all_stats (gpointer user_data)
   send_properties (self);
 
   /* Findings once per second, sent when they change. */
-  if (self->ticks++ % 4 == 0) {
-    gchar *findings = pm_findings_tick (self->findings, PM_STUCK_AFTER_US);
-
-    if (g_strcmp0 (findings, self->last_findings) != 0) {
-      gchar *text = g_strdup_printf ("{\"type\":\"findings\","
-          "\"findings\":%s}", findings);
-
-      for (i = 0; i < self->clients->len; i++)
-        send_text (g_ptr_array_index (self->clients, i), text);
-      g_free (text);
-      g_free (self->last_findings);
-      self->last_findings = findings;
-    } else {
-      g_free (findings);
-    }
-  }
+  if (self->ticks++ % 4 == 0)
+    send_findings (self);
 
   latency = pm_latency_tick (self->latency);
   if (latency != NULL) {
@@ -628,6 +656,10 @@ handle_ws (SoupServer * soup, SoupServerMessage * msg, const char *path,
 
   g_ptr_array_add (self->clients, g_object_ref (conn));
   g_signal_connect (conn, "closed", G_CALLBACK (on_ws_closed), self);
+  g_mutex_lock (&self->lock);
+  self->had_page = TRUE;
+  g_cond_broadcast (&self->cond);
+  g_mutex_unlock (&self->lock);
   g_signal_connect (conn, "message", G_CALLBACK (on_ws_message), self);
 
   /* The whole log once; later updates may repeat some of it, which the
@@ -638,6 +670,13 @@ handle_ws (SoupServer * soup, SoupServerMessage * msg, const char *path,
   text = log_message (log);
   send_text (conn, text);
   g_free (text);
+  /* Findings are otherwise only sent when they change. */
+  if (self->last_findings != NULL) {
+    text = g_strdup_printf ("{\"type\":\"findings\",\"findings\":%s}",
+        self->last_findings);
+    send_text (conn, text);
+    g_free (text);
+  }
 
   g_free (log);
   g_free (graph);
@@ -684,6 +723,98 @@ send_update (gpointer user_data)
   g_free (log);
 
   return G_SOURCE_REMOVE;
+}
+
+/* Holds the calling thread until a page has connected (wait=true). */
+void
+pm_server_wait_for_page (PmServer * self)
+{
+  g_mutex_lock (&self->lock);
+  while (!self->had_page)
+    g_cond_wait (&self->cond, &self->lock);
+  g_mutex_unlock (&self->lock);
+}
+
+/* Shared by the caller and the server thread; freed by the last one. */
+typedef struct
+{
+  gint ref;
+  PmServer *server;
+  gboolean bye;
+  GMutex lock;
+  GCond cond;
+  gboolean done;
+} PmFlush;
+
+static void
+flush_unref (PmFlush * flush)
+{
+  if (!g_atomic_int_dec_and_test (&flush->ref))
+    return;
+  g_mutex_clear (&flush->lock);
+  g_cond_clear (&flush->cond);
+  g_free (flush);
+}
+
+static gboolean
+flush_done (gpointer user_data)
+{
+  PmFlush *flush = user_data;
+
+  g_mutex_lock (&flush->lock);
+  flush->done = TRUE;
+  g_cond_signal (&flush->cond);
+  g_mutex_unlock (&flush->lock);
+  return G_SOURCE_REMOVE;
+}
+
+static void send_findings (PmServer * self);
+
+/* On the server thread: everything now, not at the next update. The
+ * messages are only queued here; the loop writes them out before
+ * flush_done, a little later. */
+static gboolean
+flush_now (gpointer user_data)
+{
+  PmFlush *flush = user_data;
+  PmServer *self = flush->server;
+  GSource *source;
+
+  send_update (self);
+  send_findings (self);
+  if (flush->bye)
+    send_to_all (self, "{\"type\":\"bye\"}");
+  source = g_timeout_source_new (100);
+  g_source_set_callback (source, flush_done, flush,
+      (GDestroyNotify) flush_unref);
+  g_source_attach (source, self->context);
+  g_source_unref (source);
+  return G_SOURCE_REMOVE;
+}
+
+/* Sends the current state to the pages at once, and with bye, tells them
+ * the program is ending. Waits at most a second: the program may exit
+ * right after. Not for the server thread itself. */
+void
+pm_server_flush (PmServer * self, gboolean bye)
+{
+  PmFlush *flush;
+  gint64 end = g_get_monotonic_time () + G_USEC_PER_SEC;
+
+  if (bye && !g_atomic_int_compare_and_exchange (&self->bye_sent, 0, 1))
+    return;
+  flush = g_new0 (PmFlush, 1);
+  flush->ref = 2;
+  flush->server = self;
+  flush->bye = bye;
+  g_mutex_init (&flush->lock);
+  g_cond_init (&flush->cond);
+  g_main_context_invoke (self->context, flush_now, flush);
+  g_mutex_lock (&flush->lock);
+  while (!flush->done && g_cond_wait_until (&flush->cond, &flush->lock,
+          end));
+  g_mutex_unlock (&flush->lock);
+  flush_unref (flush);
 }
 
 void
@@ -838,7 +969,10 @@ pm_server_new (PmModel * model, guint port, const gchar * ui_dir,
 void
 pm_server_free (PmServer * self)
 {
-  GSource *source = g_idle_source_new ();
+  GSource *source;
+
+  pm_server_flush (self, TRUE);
+  source = g_idle_source_new ();
 
   /* Queued rather than direct so a quit before the loop runs is not lost. */
   g_source_set_callback (source, quit_loop, self->loop, NULL);

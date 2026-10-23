@@ -688,14 +688,18 @@ def check_paths(browser):
     assert not browser.eval(f"!!{card('videotestsrc0:src')}"), \
         "choosing a pad pinned it"
 
-    for name in ("fakesink0:sink", "queue0:sink"):
-        browser.eval(f"{card(name)}.querySelector('.pin-close').click()")
+    # Unpinning the card that is choosing stops choosing.
+    browser.eval(f"{card('queue0:sink')}.querySelector('.pin-from').click()")
+    assert browser.wait(f"!{hint}.hidden")
+    browser.eval(f"{card('queue0:sink')}.querySelector('.pin-close').click()")
+    assert browser.wait(f"{hint}.hidden"), "unpin did not cancel choosing"
+
+    browser.eval(f"{card('fakesink0:sink')}.querySelector('.pin-close').click()")
     assert browser.wait("document.querySelectorAll('.pin-card').length === 0")
 
 
-# A live tee whose first branch has no queue: it hangs in PAUSED.
-FAULTY_PIPELINE = ("videotestsrc is-live=true ! tee name=ft ! "
-                   "fakesink sync=true ft. ! queue ! fakesink")
+# Tee branches without queues, not live: the data flow blocks.
+FAULTY_PIPELINE = "videotestsrc ! tee name=ft ! fakesink ft. ! fakesink"
 
 
 def check_findings(browser, serve):
@@ -709,26 +713,73 @@ def check_findings(browser, serve):
         assert browser.eval(f"{counter}.classList.contains('has-warnings')")
         browser.click("#problems-counter")
         rows = "document.getElementById('findings-rows')"
-        assert browser.wait(f"{rows}.textContent.includes('without a "
-                            "queue')"), "no-queue finding not listed"
+        assert browser.wait(f"{rows}.textContent.includes('Data flow "
+                            "blocked at')"), "blocked finding not listed"
         assert browser.wait("!!document.querySelector('#graph "
                             ".pad.problem-warning')"), "pad not marked"
         assert browser.wait("!!document.querySelector('#graph "
                             ".edge.problem-warning')"), "link not marked"
         browser.eval("[...document.querySelectorAll('.finding-place')]"
-                     ".find(b => b.textContent.includes('without a queue'))"
+                     ".find(b => b.textContent.includes('blocked at'))"
                      ".click()")
         assert browser.wait("document.querySelector('#details h2')"
                             "?.textContent === 'ft'"), \
             "clicking a problem did not select its element"
         assert browser.wait("document.querySelector('#details "
                             ".element-problems')?.textContent"
-                            ".includes('without a queue')"), \
+                            ".includes('blocked at')"), \
             "no problems in the details"
+        # The panels cover the sink.
+        browser.click("#findings-close")
+        browser.click("#details .close")
+        sink = browser.eval(f"{element_selector('fakesink1')}?.dataset.id")
+        assert browser.click_until(
+            f'#graph .node[data-id="{sink}"] > rect.box',
+            "document.querySelector('#details h2')?.textContent === "
+            "'fakesink1'"), "could not select fakesink1"
+        assert browser.wait("document.querySelector('#details dl')"
+                            "?.textContent.includes('prerollwaiting for "
+                            "data')"), "no preroll in the details"
         assert not browser.errors, f"errors in the page: {browser.errors}"
     finally:
         server.terminate()
         server.wait()
+
+
+# The program ends by itself (EOS after 30 frames) and exits.
+ENDING_PIPELINE = "videotestsrc num-buffers=30 ! queue ! fakesink sync=true"
+
+
+def check_ended(browser, serve):
+    server, url = start_server(serve, ENDING_PIPELINE)
+    try:
+        browser.call("Page.navigate", url=url)
+        assert browser.wait(f"{NODES} > 0"), "graph was not drawn"
+        server.wait(timeout=10)
+        status = "document.getElementById('connection')"
+        assert browser.wait(f"{status}.textContent === 'program ended'"), \
+            "page did not see the program end"
+        assert browser.eval("!document.getElementById('ended').hidden")
+        # The last state stays on screen.
+        assert browser.eval(f"{NODES} > 0"), "last state not kept"
+        assert browser.wait("document.getElementById('pipeline-state')"
+                            ".textContent.includes('NULL')"), \
+            "the stopped pipeline is not shown as NULL"
+        queue = browser.eval(f"{element_selector('queue0')}?.dataset.id")
+        assert browser.click_until(
+            f'#graph .node[data-id="{queue}"] > rect.box',
+            "document.querySelector('#details h2')?.textContent === "
+            "'queue0'"), "could not select queue0"
+        assert browser.wait("!!document.querySelector('#details "
+                            ".measure-toggle')")
+        assert browser.eval("[...document.querySelectorAll('#details "
+                            ".measure-toggle, #details .mute-toggle')]"
+                            ".every(b => !b.offsetParent)"), \
+            "buttons shown after the program ended"
+    finally:
+        if server.poll() is None:
+            server.terminate()
+            server.wait()
 
 
 def pin_row(name):
@@ -874,6 +925,7 @@ def main():
         else:
             check(browser, url)
             check_findings(browser, serve)
+            check_ended(browser, serve)
     finally:
         if browser:
             browser.close()

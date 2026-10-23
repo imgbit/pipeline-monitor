@@ -26,6 +26,7 @@ struct _PmElement
   guint64 overruns;
   guint64 underruns;
   gint buffering;
+  PmPreroll preroll;
   /* Gives the element back while it exists, without keeping it alive. */
   GWeakRef ref;
   PmElement *parent;
@@ -585,6 +586,10 @@ append_pad (GString * json, PmPad * pad)
       pad->is_ghost ? "true" : "false");
 }
 
+static const gchar *preroll_names[] = { NULL, "waiting", "done", "eos",
+  "live", "no-wait"
+};
+
 static void
 append_element (PmModel * model, GString * json, PmElement * element)
 {
@@ -603,6 +608,9 @@ append_element (PmModel * model, GString * json, PmElement * element)
   if (element->pending != GST_STATE_VOID_PENDING)
     g_string_append_printf (json, ",\"pending\":\"%s\"",
         gst_element_state_get_name (element->pending));
+  if (element->preroll != PM_PREROLL_UNKNOWN)
+    g_string_append_printf (json, ",\"preroll\":\"%s\"",
+        preroll_names[element->preroll]);
   if (element->errors > 0)
     g_string_append_printf (json, ",\"errors\":%" G_GUINT64_FORMAT,
         element->errors);
@@ -835,7 +843,53 @@ pm_flow_record_free (PmFlowRecord * record)
   g_free (record);
 }
 
-/* Pads where data stopped (a flow record), for the findings. */
+static void downstream_of (PmModel * model, gpointer pad, GPtrArray * out);
+
+/* Whether a pad downstream of pad has the same flow result: a failed push
+ * returns the same result to every element upstream, and only the most
+ * downstream one is where data stopped. */
+static gboolean
+echoed_downstream (PmModel * model, gpointer start, GstFlowReturn result)
+{
+  GHashTable *seen = g_hash_table_new (NULL, NULL);
+  GPtrArray *level = g_ptr_array_new ();
+  gboolean found = FALSE;
+
+  g_ptr_array_add (level, start);
+  g_hash_table_add (seen, start);
+  while (level->len > 0 && !found) {
+    GPtrArray *next = g_ptr_array_new ();
+    guint i, j;
+
+    for (i = 0; i < level->len && !found; i++) {
+      GPtrArray *out = g_ptr_array_new ();
+
+      downstream_of (model, g_ptr_array_index (level, i), out);
+      for (j = 0; j < out->len; j++) {
+        gpointer pad = g_ptr_array_index (out, j);
+        PmPad *p = g_hash_table_lookup (model->pads, pad);
+
+        if (p == NULL || g_hash_table_contains (seen, pad))
+          continue;
+        g_hash_table_add (seen, pad);
+        if (p->flow_count > 0 && p->flow == result) {
+          found = TRUE;
+          break;
+        }
+        g_ptr_array_add (next, pad);
+      }
+      g_ptr_array_unref (out);
+    }
+    g_ptr_array_unref (level);
+    level = next;
+  }
+  g_ptr_array_unref (level);
+  g_hash_table_unref (seen);
+  return found;
+}
+
+/* Pads where data stopped (a flow record), for the findings; the echoes
+ * of the same result further upstream left out. */
 GPtrArray *
 pm_model_flow_records (PmModel * model)
 {
@@ -844,14 +898,17 @@ pm_model_flow_records (PmModel * model)
   GHashTableIter iter;
   gpointer value;
 
+  gpointer key;
+
   g_mutex_lock (&model->lock);
   g_hash_table_iter_init (&iter, model->pads);
-  while (g_hash_table_iter_next (&iter, NULL, &value)) {
+  while (g_hash_table_iter_next (&iter, &key, &value)) {
     PmPad *pad = value;
     PmFlowRecord *record;
     gchar *element;
 
-    if (pad->flow_count == 0 || pad->element == NULL)
+    if (pad->flow_count == 0 || pad->element == NULL ||
+        echoed_downstream (model, key, pad->flow))
       continue;
     record = g_new0 (PmFlowRecord, 1);
     record->pad = pad->id;
@@ -1111,13 +1168,6 @@ spots_new (void)
   return g_ptr_array_new_with_free_func ((GDestroyNotify) pm_spot_free);
 }
 
-static gboolean
-is_queue (PmElement * element)
-{
-  return g_strcmp0 (element->factory, "queue") == 0 ||
-      g_strcmp0 (element->factory, "queue2") == 0 ||
-      g_strcmp0 (element->factory, "multiqueue") == 0;
-}
 
 static guint
 count_pads (PmModel * model, PmElement * element, GstPadDirection direction)
@@ -1196,120 +1246,8 @@ upstream_of (PmModel * model, gpointer pad, GPtrArray * out)
   }
 }
 
-/* Walks downstream from pad; returns the first sink reached without
- * passing a queue, or NULL. */
-static PmElement *
-sink_without_queue (PmModel * model, gpointer start)
-{
-  GHashTable *seen = g_hash_table_new (NULL, NULL);
-  GPtrArray *level = g_ptr_array_new ();
-  PmElement *found = NULL;
 
-  g_ptr_array_add (level, start);
-  while (level->len > 0 && found == NULL) {
-    GPtrArray *next = g_ptr_array_new ();
-    guint i, j;
 
-    for (i = 0; i < level->len && found == NULL; i++) {
-      GPtrArray *out = g_ptr_array_new ();
-
-      downstream_of (model, g_ptr_array_index (level, i), out);
-      for (j = 0; j < out->len; j++) {
-        gpointer pad = g_ptr_array_index (out, j);
-        PmPad *p = g_hash_table_lookup (model->pads, pad);
-
-        if (p == NULL || g_hash_table_contains (seen, pad))
-          continue;
-        g_hash_table_add (seen, pad);
-        if (is_queue (p->element))
-          continue;
-        if (is_sink (model, p->element)) {
-          found = p->element;
-          break;
-        }
-        g_ptr_array_add (next, pad);
-      }
-      g_ptr_array_unref (out);
-    }
-    g_ptr_array_unref (level);
-    level = next;
-  }
-  g_ptr_array_unref (level);
-  g_hash_table_unref (seen);
-  return found;
-}
-
-/* Elements that split data into several branches (tee, demuxers): each
- * branch needs a queue before its sink, or all branches share one
- * streaming thread and wait for each other (a pipeline stuck in PAUSED).
- * One spot per branch reaching a sink without a queue. */
-GPtrArray *
-pm_model_unqueued_branches (PmModel * model)
-{
-  GPtrArray *found = spots_new ();
-  GHashTableIter iter;
-  gpointer value;
-
-  g_mutex_lock (&model->lock);
-  g_hash_table_iter_init (&iter, model->elements);
-  while (g_hash_table_iter_next (&iter, NULL, &value)) {
-    PmElement *element = value;
-    guint i, linked = 0;
-
-    if (element->is_bin || is_queue (element))
-      continue;
-    for (i = 0; i < element->pads->len; i++) {
-      gpointer pad = g_ptr_array_index (element->pads, i);
-
-      if (g_hash_table_contains (model->links_by_src, pad))
-        linked++;
-    }
-    if (linked < 2)
-      continue;
-    for (i = 0; i < element->pads->len; i++) {
-      gpointer pad = g_ptr_array_index (element->pads, i);
-      PmElement *sink;
-      gchar *path;
-
-      if (!g_hash_table_contains (model->links_by_src, pad))
-        continue;
-      sink = sink_without_queue (model, pad);
-      if (sink == NULL)
-        continue;
-      path = element_path (sink);
-      g_ptr_array_add (found, spot_new (element,
-              g_hash_table_lookup (model->pads, pad), path));
-      g_free (path);
-    }
-  }
-  g_mutex_unlock (&model->lock);
-  return found;
-}
-
-/* src pads with no link while their element runs: data on them has
- * nowhere to go. Always pads count too: a link the program tried with
- * gst_element_link and that failed leaves them unlinked. */
-GPtrArray *
-pm_model_unlinked_pads (PmModel * model)
-{
-  GPtrArray *found = spots_new ();
-  GHashTableIter iter;
-  gpointer key, value;
-
-  g_mutex_lock (&model->lock);
-  g_hash_table_iter_init (&iter, model->pads);
-  while (g_hash_table_iter_next (&iter, &key, &value)) {
-    PmPad *pad = value;
-
-    if (pad->direction != GST_PAD_SRC || pad->is_ghost ||
-        pad->element->state < GST_STATE_PAUSED ||
-        g_hash_table_contains (model->links_by_src, key))
-      continue;
-    g_ptr_array_add (found, spot_new (pad->element, pad, NULL));
-  }
-  g_mutex_unlock (&model->lock);
-  return found;
-}
 
 /* Sinks of a pipeline whose sink pads have no caps: no data reached them.
  * detail: the pad nearest upstream that has caps (how far data got), or
@@ -1526,4 +1464,279 @@ pm_model_missing_plugins (PmModel * model)
   }
   g_mutex_unlock (&model->lock);
   return found;
+}
+
+/* Pushes in progress, for blocked data flow. Each pad gets a small slot
+ * (qdata) written by its streaming thread at the start and end of every
+ * push, without locks; the findings read it once per second. */
+
+static GQuark
+timing_quark (void)
+{
+  static GQuark quark;
+
+  if (quark == 0)
+    quark = g_quark_from_static_string ("pipeline-monitor-push");
+  return quark;
+}
+
+PmPushTiming *
+pm_push_timing (GstPad * pad)
+{
+  PmPushTiming *t = g_object_get_qdata (G_OBJECT (pad), timing_quark ());
+
+  if (t == NULL) {
+    t = g_new0 (PmPushTiming, 1);
+    g_object_set_qdata_full (G_OBJECT (pad), timing_quark (), t, g_free);
+  }
+  return t;
+}
+
+void
+pm_blocked_free (PmBlocked * b)
+{
+  g_free (b->path);
+  g_free (b->peer_path);
+  g_free (b->peer_state);
+  g_free (b);
+}
+
+static gboolean
+blocked_downstream (PmModel * model, gpointer start, GHashTable * blocked)
+{
+  GHashTable *seen = g_hash_table_new (NULL, NULL);
+  GPtrArray *level = g_ptr_array_new ();
+  gboolean found = FALSE;
+
+  g_ptr_array_add (level, start);
+  g_hash_table_add (seen, start);
+  while (level->len > 0 && !found) {
+    GPtrArray *next = g_ptr_array_new ();
+    guint i, j;
+
+    for (i = 0; i < level->len && !found; i++) {
+      GPtrArray *out = g_ptr_array_new ();
+
+      downstream_of (model, g_ptr_array_index (level, i), out);
+      for (j = 0; j < out->len; j++) {
+        gpointer pad = g_ptr_array_index (out, j);
+
+        if (g_hash_table_contains (seen, pad))
+          continue;
+        g_hash_table_add (seen, pad);
+        if (g_hash_table_contains (blocked, pad)) {
+          found = TRUE;
+          break;
+        }
+        g_ptr_array_add (next, pad);
+      }
+      g_ptr_array_unref (out);
+    }
+    g_ptr_array_unref (level);
+    level = next;
+  }
+  g_ptr_array_unref (level);
+  g_hash_table_unref (seen);
+  return found;
+}
+
+/* Pushes that have not returned for at least min_ms (now_ms on the same
+ * clock as the slots). Only the innermost of a chain of waiting pushes is
+ * reported: that is where the thread is held. */
+GPtrArray *
+pm_model_blocked_pushes (PmModel * model, gint now_ms, gint min_ms)
+{
+  GPtrArray *found = g_ptr_array_new_with_free_func ((GDestroyNotify)
+      pm_blocked_free);
+  GHashTable *blocked = g_hash_table_new (NULL, NULL);
+  GHashTableIter iter;
+  gpointer key, value;
+
+  g_mutex_lock (&model->lock);
+  g_hash_table_iter_init (&iter, model->pads);
+  while (g_hash_table_iter_next (&iter, &key, &value)) {
+    PmPad *pad = value;
+    GstPad *object = g_weak_ref_get (&pad->ref);
+    PmPushTiming *t;
+    gint start;
+
+    if (object == NULL)
+      continue;
+    t = g_object_get_qdata (G_OBJECT (object), timing_quark ());
+    start = t ? g_atomic_int_get (&t->start_ms) : 0;
+    gst_object_unref (object);
+    if (start != 0 && now_ms - (start - 1) >= min_ms)
+      g_hash_table_insert (blocked, key, GINT_TO_POINTER (start));
+  }
+
+  g_hash_table_iter_init (&iter, blocked);
+  while (g_hash_table_iter_next (&iter, &key, &value)) {
+    PmPad *pad = g_hash_table_lookup (model->pads, key);
+    PmLink *link = g_hash_table_lookup (model->links_by_src, key);
+    PmPad *peer = link ? g_hash_table_lookup (model->pads, link->sink) : NULL;
+    PmBlocked *b;
+    gchar *path;
+
+    if (blocked_downstream (model, key, blocked))
+      continue;
+    b = g_new0 (PmBlocked, 1);
+    b->pad = pad->id;
+    b->element = pad->element->id;
+    path = element_path (pad->element);
+    b->path = g_strdup_printf ("%s:%s", path, pad->name);
+    g_free (path);
+    if (peer != NULL) {
+      path = element_path (peer->element);
+      b->peer_path = g_strdup_printf ("%s:%s", path, peer->name);
+      g_free (path);
+      b->peer_state = peer->element->pending != GST_STATE_VOID_PENDING ?
+          g_strdup_printf ("%s is in %s, waiting for %s", peer->element->name,
+          gst_element_state_get_name (peer->element->state),
+          gst_element_state_get_name (peer->element->pending)) :
+          g_strdup_printf ("%s is in %s%s", peer->element->name,
+          gst_element_state_get_name (peer->element->state),
+          peer->element->preroll == PM_PREROLL_DONE ? " and prerolled" : "");
+    }
+    b->ms = now_ms - (GPOINTER_TO_INT (value) - 1);
+    g_ptr_array_add (found, b);
+  }
+  g_mutex_unlock (&model->lock);
+  g_hash_table_unref (blocked);
+  return found;
+}
+
+/* Elements of a pipeline still changing state, as "name (A -> B)". */
+gchar *
+pm_model_pending_elements (PmModel * model, guint64 pipeline)
+{
+  GString *text = g_string_new (NULL);
+  GHashTableIter iter;
+  gpointer value;
+
+  g_mutex_lock (&model->lock);
+  g_hash_table_iter_init (&iter, model->elements);
+  while (g_hash_table_iter_next (&iter, NULL, &value)) {
+    PmElement *element = value;
+
+    if (element->is_bin || element->pending == GST_STATE_VOID_PENDING ||
+        top_level (element)->id != pipeline)
+      continue;
+    g_string_append_printf (text, "%s%s (%s → %s)", text->len ? ", " : "",
+        element->name, gst_element_state_get_name (element->state),
+        gst_element_state_get_name (element->pending));
+  }
+  g_mutex_unlock (&model->lock);
+  return g_string_free (text, text->len == 0);
+}
+
+void
+pm_model_set_preroll (PmModel * model, gpointer object, PmPreroll preroll)
+{
+  PmElement *element;
+
+  g_mutex_lock (&model->lock);
+  element = g_hash_table_lookup (model->elements, object);
+  if (element != NULL && element->preroll != preroll) {
+    element->preroll = preroll;
+    changed (model);
+  }
+  g_mutex_unlock (&model->lock);
+}
+
+static gboolean
+has_preroll_inside (PmModel * model, PmElement * element)
+{
+  guint i;
+
+  for (i = 0; i < element->children->len; i++) {
+    PmElement *child = g_hash_table_lookup (model->elements,
+        g_ptr_array_index (element->children, i));
+
+    if (child != NULL && (child->preroll != PM_PREROLL_UNKNOWN ||
+            has_preroll_inside (model, child)))
+      return TRUE;
+  }
+  return FALSE;
+}
+
+static void
+append_name (GString * list, PmElement * element, PmElement * top)
+{
+  GString *name = g_string_new (element->name);
+  PmElement *e;
+
+  for (e = element->parent; e != NULL && e != top; e = e->parent) {
+    g_string_prepend_c (name, '/');
+    g_string_prepend (name, e->name);
+  }
+  g_string_append_printf (list, "%s%s", list->len ? ", " : "", name->str);
+  g_string_free (name, TRUE);
+}
+
+/* "Prerolled: a. Waiting for preroll: b." for the innermost sinks and bins
+ * of a pipeline whose preroll is known; NULL if none. */
+gchar *
+pm_model_preroll_summary (PmModel * model, guint64 pipeline)
+{
+  GString *done = g_string_new (NULL);
+  GString *eos = g_string_new (NULL);
+  GString *waiting = g_string_new (NULL);
+  GString *text = g_string_new (NULL);
+  GHashTableIter iter;
+  gpointer value;
+
+  g_mutex_lock (&model->lock);
+  g_hash_table_iter_init (&iter, model->elements);
+  while (g_hash_table_iter_next (&iter, NULL, &value)) {
+    PmElement *element = value;
+    PmElement *top = top_level (element);
+    GString *list;
+
+    if (top->id != pipeline || has_preroll_inside (model, element))
+      continue;
+    list = element->preroll == PM_PREROLL_DONE ? done :
+        element->preroll == PM_PREROLL_DONE_EOS ? eos :
+        element->preroll == PM_PREROLL_WAITING ? waiting : NULL;
+    if (list != NULL)
+      append_name (list, element, top);
+  }
+  g_mutex_unlock (&model->lock);
+
+  if (done->len)
+    g_string_append_printf (text, "Prerolled: %s.", done->str);
+  if (eos->len)
+    g_string_append_printf (text, "%sPrerolled on end of stream: %s.",
+        text->len ? " " : "", eos->str);
+  if (waiting->len)
+    g_string_append_printf (text, "%sWaiting for preroll: %s.",
+        text->len ? " " : "", waiting->str);
+  g_string_free (done, TRUE);
+  g_string_free (eos, TRUE);
+  g_string_free (waiting, TRUE);
+  return g_string_free (text, text->len == 0);
+}
+
+/* Tracer hook timestamps count from GStreamer's start; offset is the
+ * system time (gst_util_get_timestamp) at that start, set once. */
+static gint64 ts_offset;
+static GMutex ts_lock;
+
+void
+pm_model_set_ts_offset (gint64 offset)
+{
+  g_mutex_lock (&ts_lock);
+  ts_offset = offset;
+  g_mutex_unlock (&ts_lock);
+}
+
+/* Now, in ms on the push slots' clock. */
+gint
+pm_model_now_ms (void)
+{
+  gint64 offset;
+
+  g_mutex_lock (&ts_lock);
+  offset = ts_offset;
+  g_mutex_unlock (&ts_lock);
+  return (gint) ((gst_util_get_timestamp () - offset) / GST_MSECOND);
 }
