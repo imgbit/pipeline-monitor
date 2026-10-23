@@ -650,7 +650,7 @@ static gsize exit_handler;
 /* The pages get the final state and "bye" also when the program exits
  * without gst_deinit (which would finalize the tracer). */
 static void
-on_exit (void)
+flush_at_exit (void)
 {
   g_mutex_lock (&exiting_lock);
   if (exiting_server != NULL)
@@ -705,7 +705,7 @@ gst_pipeline_monitor_tracer_constructed (GObject * object)
   exiting_server = self->server;
   g_mutex_unlock (&exiting_lock);
   if (g_once_init_enter (&exit_handler)) {
-    atexit (on_exit);
+    atexit (flush_at_exit);
     g_once_init_leave (&exit_handler, 1);
   }
 

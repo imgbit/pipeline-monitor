@@ -283,7 +283,11 @@ def element_selector(name):
 
 def check(browser, url):
     browser.call("Page.navigate", url=url)
-    assert browser.wait(f"{NODES} > 0"), "graph was not drawn"
+    if not browser.wait(f"{NODES} > 0"):
+        status = browser.eval("document.getElementById('connection')"
+                              "?.textContent")
+        raise AssertionError(f"graph was not drawn: connection {status!r}, "
+                             f"errors {browser.errors}")
     assert browser.eval("document.getElementById('connection').textContent") \
         == "connected"
     assert browser.eval("document.getElementById('empty').hidden")

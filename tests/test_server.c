@@ -1857,6 +1857,8 @@ test_monitor_pad_gone (void)
       "fakesink name=gone-sink");
   gint64 pad = pad_id ("gone-sink", "sink");
   WsClient client;
+  gint64 result = 0;
+  guint i;
 
   ws_connect (&client, session, url, NULL);
   ws_send (&client, "{\"type\":\"monitor\",\"pad\":%" G_GINT64_FORMAT "}",
@@ -1864,7 +1866,9 @@ test_monitor_pad_gone (void)
   g_assert_cmpint (next_stats (&client, pad), >=, 0);
 
   stop_pipeline (pipeline);
-  g_assert_cmpint (next_stats (&client, pad), ==, -1);
+  /* The stopped pipeline's last stats can come first. */
+  for (i = 0; i < 3 && (result = next_stats (&client, pad)) >= 0; i++);
+  g_assert_cmpint (result, ==, -1);
   g_assert_true (wait_viewers (pad, 0));
 
   ws_disconnect (&client);
