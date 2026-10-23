@@ -571,3 +571,53 @@ main {
   font-size: 12px;
   pointer-events: none;
 }
+
+/* Problems */
+
+.problems-counter { color: var(--muted); }
+.problems-counter.has-warnings { color: var(--warning); border-color: var(--warning); }
+.problems-counter.has-errors { color: var(--error); border-color: var(--error); }
+
+.finding {
+  display: grid;
+  grid-template-columns: 72px 1fr auto;
+  gap: 10px;
+  align-items: baseline;
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.finding-severity { font-weight: 600; text-transform: uppercase; font-size: 11px; color: var(--muted); }
+.finding.error .finding-severity { color: var(--error); }
+.finding.warning .finding-severity { color: var(--warning); }
+.finding-place {
+  border: none;
+  background: none;
+  padding: 0;
+  min-width: 0;
+  text-align: left;
+  font: inherit;
+  color: var(--fg);
+  font-weight: 600;
+}
+.finding-place:hover { color: var(--accent); text-decoration: underline; }
+.finding-hint { color: var(--muted); margin-top: 2px; }
+.finding-count { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.finding-caps { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 6px; }
+.finding-caps-title { font-size: 11px; color: var(--muted); text-transform: uppercase; margin-bottom: 2px; }
+.finding-caps-side dl { display: grid; grid-template-columns: auto 1fr; gap: 1px 10px; margin: 0; }
+.finding-caps-side dt { color: var(--muted); }
+.finding-caps-side dd { margin: 0; word-break: break-all; }
+.finding-caps .differs { color: var(--error); font-weight: 600; }
+
+.pad.problem-error { fill: var(--error); stroke: var(--error); stroke-width: 3; }
+.pad.problem-warning { fill: var(--warning); stroke: var(--warning); stroke-width: 3; }
+.edge.problem-error { stroke: var(--error); stroke-dasharray: 5 3; stroke-width: 2; }
+.edge.problem-warning { stroke: var(--warning); stroke-dasharray: 5 3; stroke-width: 2; }
+.node.problem-error > rect.box { stroke: var(--error); stroke-width: 2; }
+.node.problem-warning > rect.box { stroke: var(--warning); stroke-width: 2; }
+
+#details .element-problems { margin: 0 0 10px; }
+#details .element-problem { border-left: 3px solid var(--warning); padding: 2px 0 2px 8px; margin-bottom: 4px; }
+#details .element-problem.error { border-left-color: var(--error); }
+#details .element-problem-text { font-weight: 600; }
+#details .element-problem-hint { color: var(--muted); font-size: 12px; }

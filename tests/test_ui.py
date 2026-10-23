@@ -342,6 +342,10 @@ def check(browser, url):
     check_properties(browser)
     check_element_pins(browser)
     check_latency(browser)
+    # The test pipeline is healthy.
+    assert browser.wait("document.getElementById('problems-counter')"
+                        ".textContent === 'No problems'"), \
+        "problems found in a healthy pipeline"
     check_pins(browser)
     check_paths(browser)
 
@@ -689,6 +693,44 @@ def check_paths(browser):
     assert browser.wait("document.querySelectorAll('.pin-card').length === 0")
 
 
+# A live tee whose first branch has no queue: it hangs in PAUSED.
+FAULTY_PIPELINE = ("videotestsrc is-live=true ! tee name=ft ! "
+                   "fakesink sync=true ft. ! queue ! fakesink")
+
+
+def check_findings(browser, serve):
+    server, url = start_server(serve, FAULTY_PIPELINE)
+    try:
+        counter = "document.getElementById('problems-counter')"
+        browser.call("Page.navigate", url=url)
+        assert browser.wait(f"/^[0-9]+ problems?$/.test({counter}"
+                            ".textContent)", timeout=10), \
+            "no problems found in a faulty pipeline"
+        assert browser.eval(f"{counter}.classList.contains('has-warnings')")
+        browser.click("#problems-counter")
+        rows = "document.getElementById('findings-rows')"
+        assert browser.wait(f"{rows}.textContent.includes('without a "
+                            "queue')"), "no-queue finding not listed"
+        assert browser.wait("!!document.querySelector('#graph "
+                            ".pad.problem-warning')"), "pad not marked"
+        assert browser.wait("!!document.querySelector('#graph "
+                            ".edge.problem-warning')"), "link not marked"
+        browser.eval("[...document.querySelectorAll('.finding-place')]"
+                     ".find(b => b.textContent.includes('without a queue'))"
+                     ".click()")
+        assert browser.wait("document.querySelector('#details h2')"
+                            "?.textContent === 'ft'"), \
+            "clicking a problem did not select its element"
+        assert browser.wait("document.querySelector('#details "
+                            ".element-problems')?.textContent"
+                            ".includes('without a queue')"), \
+            "no problems in the details"
+        assert not browser.errors, f"errors in the page: {browser.errors}"
+    finally:
+        server.terminate()
+        server.wait()
+
+
 def pin_row(name):
     return ("[...document.querySelectorAll('.pin-card dt')].find(d => "
             f"d.textContent === {json.dumps(name)})?.nextElementSibling"
@@ -831,6 +873,7 @@ def main():
             screenshot(browser, url, shot)
         else:
             check(browser, url)
+            check_findings(browser, serve)
     finally:
         if browser:
             browser.close()

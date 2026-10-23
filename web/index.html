@@ -20,6 +20,8 @@
   <span id="element-count" class="muted"></span>
   <span id="pipeline-times" class="muted times" hidden></span>
   <span class="spacer"></span>
+  <button id="problems-counter" class="problems-counter"
+    aria-controls="findings-panel" aria-expanded="false">No problems</button>
   <button id="log-counter" class="log-counter" aria-controls="log-panel"
     aria-expanded="false" hidden>No errors</button>
   <span id="connection" class="connection">connecting</span>
@@ -43,6 +45,15 @@
   </div>
   <aside id="details" hidden></aside>
 </main>
+<section id="findings-panel" class="log-panel" aria-label="Problems" hidden>
+  <div class="log-head">
+    <strong>Problems</strong>
+    <span class="muted">found in the running pipeline, updated every second</span>
+    <span class="spacer"></span>
+    <button id="findings-close" class="close" title="Close">×</button>
+  </div>
+  <div id="findings-rows" class="log-rows"></div>
+</section>
 <section id="log-panel" class="log-panel" aria-label="Errors and warnings" hidden>
   <div class="log-head">
     <strong>Errors and warnings</strong>

@@ -226,7 +226,30 @@ export class GraphView {
     }
   }
 
+  // Marks pads, elements and links with problems; pads, elements: Map id
+  // -> "error" | "warning" | "info". Done on the drawn graph, no new
+  // layout; applied again after every render.
+  setProblems(pads, elements) {
+    this.problems = { pads, elements };
+    if (!this.viewport)
+      return;
+    for (const node of this.viewport.querySelectorAll("[class*='problem-']"))
+      node.classList.remove("problem-error", "problem-warning", "problem-info");
+    for (const [id, severity] of pads) {
+      this.viewport.querySelector(`[data-port="p${id}"]`)
+        ?.classList.add(`problem-${severity}`);
+      // The link leaving a src pad where data stopped.
+      const hit = [...this.viewport.querySelectorAll(".edge-hit")]
+        .find((e) => e.dataset.edge?.startsWith(`p${id} `));
+      hit?.previousElementSibling?.classList.add(`problem-${severity}`);
+    }
+    for (const [id, severity] of elements)
+      this.boxes?.get(id)?.g.classList.add(`problem-${severity}`);
+  }
+
+  // Kept across renders: the graph is redrawn while a card is hovered.
   highlight(target) {
+    this.highlighted = target;
     for (const node of this.viewport.querySelectorAll(".highlight"))
       node.classList.remove("highlight");
     if (target)
@@ -292,6 +315,10 @@ export class GraphView {
     this.viewport.replaceChildren(bins, edges, nodes, labels, this.levelLayer,
       this.latencyLayer);
     this.bounds = { width: layout.width, height: layout.height };
+    if (this.problems)
+      this.setProblems(this.problems.pads, this.problems.elements);
+    if (this.highlighted)
+      this.highlight(this.highlighted);
     if (this.autoFit)
       this.fit();
     else

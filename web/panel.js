@@ -42,6 +42,22 @@ function showLog(aside, log) {
   }
 }
 
+// The element's problems (its own and its pads'), under its name; list:
+// findings, empty to hide the section.
+export function updateProblemsDetails(aside, list) {
+  const section = aside.querySelector(".element-problems");
+  if (!section)
+    return;
+  section.hidden = !list.length;
+  section.replaceChildren();
+  for (const f of list) {
+    const row = add(section, "div", undefined, `element-problem ${f.severity}`);
+    add(row, "div", f.text, "element-problem-text");
+    if (f.hint)
+      add(row, "div", f.hint, "element-problem-hint");
+  }
+}
+
 // The queue section, refreshed with every "levels" message.
 export function updateQueueDetails(aside, rows) {
   const section = aside.querySelector(".queue-levels");
@@ -118,6 +134,7 @@ export function showDetails(aside, selection, index, onClose, log, queue) {
   close.title = "Close";
   close.addEventListener("click", onClose);
   add(aside, "h2", element.name);
+  add(aside, "div", undefined, "element-problems").hidden = true;
 
   const dl = add(aside, "dl");
   const row = (k, v) => {

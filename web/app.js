@@ -4,7 +4,8 @@
 import { buildElkGraph, elementPath, keepPlaces } from "./layout.js";
 import { GraphView, countElements } from "./render.js";
 import { isTimeProperty, propertyText, showDetails, updateLatencyDetails,
-  updateProperties, updateQueueDetails, valueText } from "./panel.js";
+  updateProblemsDetails, updateProperties, updateQueueDetails, valueText }
+  from "./panel.js";
 import { LogView } from "./log.js";
 import { Tooltip } from "./tooltip.js";
 import { linkCaps } from "./caps.js";
@@ -12,6 +13,7 @@ import { ElementPins, Pins } from "./pins.js";
 import { TIME_UNITS, formatSpan } from "./units.js";
 import { pipelineTimes, queueRows } from "./levels.js";
 import { cannotMeasure, latencyLabel, latencyRows } from "./latency.js";
+import { FindingsView } from "./findings.js";
 
 const $ = (id) => document.getElementById(id);
 const COLLAPSED_KEY = "pipeline-monitor.collapsed";
@@ -64,6 +66,8 @@ function padRows(p, index) {
     rows.push(["buffers/s", stats.window.buffers_per_s.toFixed(1)]);
   if (stats?.last && stats.last.delay !== null)
     rows.push(["delay", formatSpan(stats.last.delay, pins.unit)]);
+  for (const f of findings.byPlace().pads.get(pad.id) || [])
+    rows.push([f.severity, f.text]);
   rows.push(["pinned", pins.has(index.padPath(pad.id))
     ? "yes, click to unpin" : "no, click to pin"]);
   return rows;
@@ -201,6 +205,42 @@ const log = new LogView({
     update();
   },
 });
+
+const findings = new FindingsView({
+  counter: $("problems-counter"),
+  panel: $("findings-panel"),
+  rows: $("findings-rows"),
+  close: $("findings-close"),
+}, {
+  select(id) {
+    if (buildIndex(state.graph).elements.has(id))
+      view.handlers.select(id);
+  },
+});
+
+// The worst severity per place, for the graph.
+const RANK = { info: 0, warning: 1, error: 2 };
+function worst(list) {
+  return list.reduce((a, f) => (RANK[f.severity] > RANK[a] ? f.severity : a),
+    "info");
+}
+
+// Findings of an element and of its pads.
+function problemsOf(element) {
+  const ids = new Set(element.pads.map((p) => p.id));
+  return findings.list.filter((f) => f.element === element.id ||
+    ids.has(f.pad));
+}
+
+function showProblems() {
+  const selection = buildIndex(state.graph).elements.get(state.selected);
+  if (selection)
+    updateProblemsDetails($("details"), problemsOf(selection.element));
+  const { pads, elements } = findings.byPlace();
+  const sev = (map) => new Map([...map].map(([id, list]) => [id,
+    worst(list)]).filter(([, s]) => s !== "info"));
+  view.setProblems(sev(pads), sev(elements));
+}
 
 // Current error and warning counters of every element, by id.
 function elementCounts(graph) {
@@ -424,6 +464,8 @@ async function layoutAndRender() {
   showDetails($("details"), selection, index, () => view.handlers.select(null),
     details, queueDetails(selection, index));
   updateLatencyDetails($("details"), latencyDetails(selection));
+  if (selection)
+    updateProblemsDetails($("details"), problemsOf(selection.element));
   // The panel was rebuilt: refill it from the last answer, or ask now for a
   // newly selected element.
   if (selection && propsLast.id === selection.element.id)
@@ -721,6 +763,9 @@ function connect(delay = 1000) {
       elementPins.sync(index.elementPaths);
       updatePaths();
       update();
+    } else if (message.type === "findings") {
+      findings.apply(message.findings);
+      showProblems();
     } else if (message.type === "latency") {
       applyLatency(message.latency);
     } else if (message.type === "levels") {
