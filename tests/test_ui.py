@@ -780,28 +780,24 @@ def screenshot(browser, url, path):
     browser.call("Page.navigate", url=url)
     assert browser.wait(f"{NODES} > 0")
     time.sleep(1)
-    # The audio sink's properties in the details panel, its "stats" pinned
-    # to a card moved to the free space below the graph.
-    sink = browser.eval(f"{element_selector('fakesink2')}?.dataset.id")
-    rows = "[...document.querySelectorAll('#details table.props tr')]"
-    browser.click_until(f'#graph .node[data-id="{sink}"] > rect.box',
-                        f"{rows}.some(r => r.cells[1]?.textContent === "
-                        "'stats')")
-    browser.eval(f"{rows}.find(r => r.cells[1]?.textContent === 'stats')"
-                 ".querySelector('.pin-prop').click()")
-    browser.wait("!!document.querySelector('.pin-card')")
-    # The card opens next to the sink, under the panel: move it with the
-    # panel closed, then open the panel again.
-    browser.click("#details .close")
-    time.sleep(0.5)
-    browser.drag(".pin-card .pin-head", -760, 60)
-    browser.click_until(f'#graph .node[data-id="{sink}"] > rect.box',
-                        f"{rows}.some(r => r.cells[1]?.textContent === "
-                        "'stats')")
-    time.sleep(0.5)
+    # "Measure all" on: a latency label under every element; the audio
+    # queue's details open at its latency, measured against reported.
+    browser.click("#measure-all")
+    browser.wait("document.querySelectorAll('#graph .latency-text').length "
+                 ">= 5", timeout=6)
+    queue = browser.eval(f"{element_selector('queue3')}?.dataset.id")
+    section = "document.querySelector('#details .latency-section')"
+    browser.click_until(f'#graph .node[data-id="{queue}"] > rect.box',
+                        f"/ms avg/.test({section}?.textContent)")
     browser.eval("document.querySelector('#details').scrollTop = "
-                 "document.querySelector('#details h3:last-of-type')"
-                 ".offsetTop - 12")
+                 "document.querySelector('#details .latency-section')"
+                 ".offsetTop - 40")
+    # Smaller and to the left, so the queue is not under the panel.
+    browser.click("#zoom-out")
+    for kind, x in (("mousePressed", 700), ("mouseMoved", 620),
+                    ("mouseMoved", 610), ("mouseReleased", 610)):
+        browser.call("Input.dispatchMouseEvent", type=kind, x=x, y=120,
+                     button="left", buttons=1, clickCount=1)
     time.sleep(3)
     browser.screenshot(path)
 
