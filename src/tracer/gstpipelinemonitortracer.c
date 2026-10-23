@@ -17,6 +17,7 @@ struct _GstPipelineMonitorTracer
   PmModel *model;
   PmServer *server;
   gboolean log;
+  gboolean flow;
 };
 
 enum
@@ -328,6 +329,32 @@ do_element_change_state_post (GstTracer * tracer, GstClockTime ts,
   sync_state (self, element);
 }
 
+/* Data flow results. These run for every push and pull of every pad: keep
+ * the OK case to one comparison. Flushing is normal during seeks and
+ * state changes. */
+static void
+record_flow (GstTracer * tracer, GstPad * pad, GstFlowReturn res)
+{
+  if (G_LIKELY (res == GST_FLOW_OK || res == GST_FLOW_FLUSHING))
+    return;
+  pm_model_record_flow (GST_PIPELINE_MONITOR_TRACER (tracer)->model,
+      resolve_pad (pad), res);
+}
+
+static void
+do_pad_push_post (GstTracer * tracer, GstClockTime ts, GstPad * pad,
+    GstFlowReturn res)
+{
+  record_flow (tracer, pad, res);
+}
+
+static void
+do_pad_pull_range_post (GstTracer * tracer, GstClockTime ts, GstPad * pad,
+    GstBuffer * buffer, GstFlowReturn res)
+{
+  record_flow (tracer, pad, res);
+}
+
 static void
 do_object_destroyed (GstTracer * tracer, GstClockTime ts, GstObject * object)
 {
@@ -394,6 +421,7 @@ parse_options (GstPipelineMonitorTracer * self, gchar ** ui_dir)
     }
     *ui_dir = g_strdup (gst_structure_get_string (s, "ui-dir"));
     self->log = get_bool_option (s, "log", TRUE);
+    self->flow = get_bool_option (s, "flow", TRUE);
     gst_structure_free (s);
   }
   g_free (desc);
@@ -413,8 +441,19 @@ gst_pipeline_monitor_tracer_constructed (GObject * object)
       (object);
 
   self->log = TRUE;
+  self->flow = TRUE;
   port = parse_options (self, &ui_dir);
   pm_model_set_log_enabled (self->model, self->log);
+  if (self->flow) {
+    GstTracer *tracer = GST_TRACER (self);
+
+    gst_tracing_register_hook (tracer, "pad-push-post",
+        G_CALLBACK (do_pad_push_post));
+    gst_tracing_register_hook (tracer, "pad-push-list-post",
+        G_CALLBACK (do_pad_push_post));
+    gst_tracing_register_hook (tracer, "pad-pull-range-post",
+        G_CALLBACK (do_pad_pull_range_post));
+  }
   if (ui_dir != NULL && !g_file_test (ui_dir, G_FILE_TEST_IS_DIR))
     g_printerr ("pipeline-monitor: ui-dir '%s' is not a folder, the page "
         "will not load\n", ui_dir);

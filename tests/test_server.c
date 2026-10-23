@@ -1401,6 +1401,83 @@ test_latency_all_limit (void)
   g_object_unref (session);
 }
 
+/* Findings */
+
+/* Polls /api/findings for up to timeout_s until one has this id; returns
+ * a copy of it, or NULL. */
+static JsonNode *
+wait_finding (const gchar * id, gint timeout_s)
+{
+  gint64 end = g_get_monotonic_time () + timeout_s * G_USEC_PER_SEC;
+
+  while (g_get_monotonic_time () < end) {
+    gchar *text;
+    JsonNode *root, *found = NULL;
+    JsonArray *list;
+    guint i;
+
+    get_status ("api/findings", "GET", NULL, &text, NULL);
+    root = parse (text);
+    g_free (text);
+    list = json_object_get_array_member (json_node_get_object (root),
+        "findings");
+    for (i = 0; i < json_array_get_length (list); i++)
+      if (g_strcmp0 (json_object_get_string_member
+              (json_array_get_object_element (list, i), "id"), id) == 0)
+        found = json_node_copy (json_array_get_element (list, i));
+    json_node_unref (root);
+    if (found != NULL)
+      return found;
+    g_usleep (100 * G_TIME_SPAN_MILLISECOND);
+  }
+  return NULL;
+}
+
+/* A tee without outputs: the queue's pushes fail with not-linked. */
+static void
+test_findings_flow (void)
+{
+  GstElement *pipeline = start_pipeline ("videotestsrc ! "
+      "queue name=flow-queue ! tee name=flow-tee");
+  gchar *id = g_strdup_printf ("flow:%" G_GINT64_FORMAT,
+      pad_id ("flow-queue", "src"));
+  JsonNode *node = wait_finding (id, 5);
+  JsonObject *f;
+
+  g_assert_nonnull (node);
+  f = json_node_get_object (node);
+  g_assert_cmpstr (json_object_get_string_member (f, "severity"), ==,
+      "warning");
+  g_assert_nonnull (strstr (json_object_get_string_member (f, "text"),
+          "not-linked"));
+  g_assert_cmpint (json_object_get_int_member (f, "count"), >=, 1);
+  json_node_unref (node);
+  stop_pipeline (pipeline);
+  g_free (id);
+}
+
+/* A sink that never gets data keeps the pipeline from PAUSED. */
+static void
+test_findings_stuck (void)
+{
+  GstElement *pipeline = gst_parse_launch ("appsrc name=stuck-src ! "
+      "fakesink", NULL);
+  gchar *id;
+  JsonNode *node;
+
+  gst_element_set_state (pipeline, GST_STATE_PLAYING);
+  id = g_strdup_printf ("stuck:%" G_GINT64_FORMAT,
+      element_id (GST_OBJECT_NAME (pipeline)));
+  node = wait_finding (id, 8);
+  g_assert_nonnull (node);
+  g_assert_nonnull (strstr (json_object_get_string_member
+          (json_node_get_object (node), "text"), "has not reached"));
+  json_node_unref (node);
+  gst_element_set_state (pipeline, GST_STATE_NULL);
+  gst_object_unref (pipeline);
+  g_free (id);
+}
+
 /* A watched pad that goes away is reported once, then dropped. */
 static void
 test_monitor_pad_gone (void)
@@ -1454,6 +1531,8 @@ main (int argc, char **argv)
   g_test_add_func ("/server/watch-property", test_watch_property);
   g_test_add_func ("/server/latency-element", test_latency_element);
   g_test_add_func ("/server/latency-all-limit", test_latency_all_limit);
+  g_test_add_func ("/server/findings-flow", test_findings_flow);
+  g_test_add_func ("/server/findings-stuck", test_findings_stuck);
   g_test_add_func ("/server/origin-check", test_origin_check);
   g_test_add_func ("/server/port-fallback", test_port_fallback);
   g_test_add_func ("/server/no-free-port", test_no_free_port);

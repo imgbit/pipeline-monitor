@@ -59,6 +59,31 @@ GPtrArray *pm_model_find_elements (PmModel * model, PmElementFilter filter);
 void pm_element_ref_free (PmElementRef * ref);
 guint64 pm_model_pad_id (PmModel * model, gpointer pad);
 GstElement *pm_model_get_element (PmModel * model, guint64 id);
+
+/* Where data stopped, and pipelines not reaching their state. */
+typedef struct
+{
+  guint64 pad;
+  guint64 element;
+  gchar *path;
+  GstFlowReturn result;
+  guint64 count;
+  gint64 first, last;
+} PmFlowRecord;
+
+typedef struct
+{
+  guint64 element;
+  gchar *path;
+  GstState state, pending;
+  gint64 since_us;
+} PmPending;
+
+void pm_model_record_flow (PmModel * model, gpointer pad, GstFlowReturn res);
+GPtrArray *pm_model_flow_records (PmModel * model);
+void pm_flow_record_free (PmFlowRecord * record);
+GPtrArray *pm_model_pending (PmModel * model, gint64 min_us);
+void pm_pending_free (PmPending * pending);
 gchar *pm_model_element_path (PmModel * model, gpointer element);
 
 typedef enum

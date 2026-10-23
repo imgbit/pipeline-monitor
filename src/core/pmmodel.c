@@ -14,6 +14,8 @@ struct _PmElement
   gboolean is_pipeline;
   GstState state;
   GstState pending;
+  /* When the pending state was set (monotonic µs), 0 if none. */
+  gint64 pending_since;
   guint64 errors;
   guint64 warnings;
   /* Queues: counted from their signals and BUFFERING messages. */
@@ -37,6 +39,11 @@ struct _PmPad
   gchar *presence;
   gchar *caps;
   gboolean is_ghost;
+  /* The last push or pull that did not return OK, if any: data stopped
+   * here. Times in µs since 1970. */
+  GstFlowReturn flow;
+  guint64 flow_count;
+  gint64 flow_first, flow_last;
   PmElement *element;
   /* Gives the pad back while it exists, without keeping it alive. */
   GWeakRef ref;
@@ -306,6 +313,10 @@ store_state (PmModel * model, gpointer object, GstState state,
 
   if (element != NULL && (element->state != state ||
           element->pending != pending)) {
+    if (pending == GST_STATE_VOID_PENDING)
+      element->pending_since = 0;
+    else if (pending != element->pending)
+      element->pending_since = g_get_monotonic_time ();
     element->state = state;
     element->pending = pending;
     changed (model);
@@ -508,6 +519,11 @@ append_pad (GString * json, PmPad * pad)
     g_string_append (json, ",\"caps\":");
     append_string (json, pad->caps);
   }
+  if (pad->flow_count > 0)
+    g_string_append_printf (json, ",\"flow\":{\"result\":\"%s\","
+        "\"count\":%" G_GUINT64_FORMAT ",\"first\":%" G_GINT64_FORMAT
+        ",\"last\":%" G_GINT64_FORMAT "}", gst_flow_get_name (pad->flow),
+        pad->flow_count, pad->flow_first, pad->flow_last);
   g_string_append_printf (json, ",\"ghost\":%s}",
       pad->is_ghost ? "true" : "false");
 }
@@ -727,6 +743,109 @@ pm_model_find_elements (PmModel * model, PmElementFilter filter)
     ref->underruns = element->underruns;
     ref->buffering = element->buffering;
     g_ptr_array_add (found, ref);
+  }
+  g_mutex_unlock (&model->lock);
+  return found;
+}
+
+/* A push or pull at pad did not return OK. Repeats only count up; the
+ * graph is sent again only when the result is new for the pad. */
+void
+pm_model_record_flow (PmModel * model, gpointer object, GstFlowReturn res)
+{
+  PmPad *pad;
+  gint64 now = g_get_real_time ();
+
+  g_mutex_lock (&model->lock);
+  pad = g_hash_table_lookup (model->pads, object);
+  if (pad != NULL) {
+    if (pad->flow_count == 0 || pad->flow != res) {
+      pad->flow = res;
+      pad->flow_count = 0;
+      pad->flow_first = now;
+      changed (model);
+    }
+    pad->flow_count++;
+    pad->flow_last = now;
+  }
+  g_mutex_unlock (&model->lock);
+}
+
+void
+pm_flow_record_free (PmFlowRecord * record)
+{
+  g_free (record->path);
+  g_free (record);
+}
+
+/* Pads where data stopped (a flow record), for the findings. */
+GPtrArray *
+pm_model_flow_records (PmModel * model)
+{
+  GPtrArray *found = g_ptr_array_new_with_free_func ((GDestroyNotify)
+      pm_flow_record_free);
+  GHashTableIter iter;
+  gpointer value;
+
+  g_mutex_lock (&model->lock);
+  g_hash_table_iter_init (&iter, model->pads);
+  while (g_hash_table_iter_next (&iter, NULL, &value)) {
+    PmPad *pad = value;
+    PmFlowRecord *record;
+    gchar *element;
+
+    if (pad->flow_count == 0 || pad->element == NULL)
+      continue;
+    record = g_new0 (PmFlowRecord, 1);
+    record->pad = pad->id;
+    record->element = pad->element->id;
+    element = element_path (pad->element);
+    record->path = g_strdup_printf ("%s:%s", element, pad->name);
+    g_free (element);
+    record->result = pad->flow;
+    record->count = pad->flow_count;
+    record->first = pad->flow_first;
+    record->last = pad->flow_last;
+    g_ptr_array_add (found, record);
+  }
+  g_mutex_unlock (&model->lock);
+  return found;
+}
+
+void
+pm_pending_free (PmPending * pending)
+{
+  g_free (pending->path);
+  g_free (pending);
+}
+
+/* Top-level pipelines that have had a pending state for at least
+ * min_us. */
+GPtrArray *
+pm_model_pending (PmModel * model, gint64 min_us)
+{
+  GPtrArray *found = g_ptr_array_new_with_free_func ((GDestroyNotify)
+      pm_pending_free);
+  GHashTableIter iter;
+  gpointer value;
+  gint64 now = g_get_monotonic_time ();
+
+  g_mutex_lock (&model->lock);
+  g_hash_table_iter_init (&iter, model->elements);
+  while (g_hash_table_iter_next (&iter, NULL, &value)) {
+    PmElement *element = value;
+    PmPending *pending;
+
+    if (!element->is_pipeline || element->parent != NULL ||
+        element->pending_since == 0 || now - element->pending_since < min_us)
+      continue;
+    pending = g_new0 (PmPending, 1);
+    pending->element = element->id;
+    pending->path = element_path (element);
+    pending->state = element->state;
+    pending->pending = element->pending;
+    pending->since_us = now - element->pending_since;
+    g_ptr_array_add (found, pending);
   }
   g_mutex_unlock (&model->lock);
   return found;

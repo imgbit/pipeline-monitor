@@ -1,6 +1,7 @@
 /* SPDX-FileCopyrightText: 2026 Łukasz Huńczak */
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #include "pmserver.h"
+#include "pmfindings.h"
 #include "pmlatency.h"
 #include "pmlevels.h"
 #include "pmprops.h"
@@ -44,6 +45,9 @@ struct _PmServer
   /* Queue levels and pipeline times, sampled every STATS_INTERVAL_MS even
    * without clients. */
   gchar *last_levels;
+  /* The findings last sent, to send them again only when they change. */
+  gchar *last_findings;
+  guint64 ticks;
   /* Watched properties: client -> set of "<element id>\n<property>". */
   GHashTable *watches;
 
@@ -253,6 +257,17 @@ handle_properties (SoupServer * soup, SoupServerMessage * msg,
   set_json_response (msg, pm_props_read (element, NULL,
           PROPERTIES_TIMEOUT_US));
   gst_object_unref (element);
+}
+
+static void
+handle_findings (SoupServer * soup, SoupServerMessage * msg,
+    const char *path, GHashTable * query, gpointer user_data)
+{
+  PmServer *self = user_data;
+
+  if (check_request (self, msg))
+    set_json_response (msg, pm_findings_to_json (self->model,
+            PM_STUCK_AFTER_US));
 }
 
 static void
@@ -570,6 +585,24 @@ send_all_stats (gpointer user_data)
   g_free (levels);
   send_properties (self);
 
+  /* Findings once per second, sent when they change. */
+  if (self->ticks++ % 4 == 0) {
+    gchar *findings = pm_findings_to_json (self->model, PM_STUCK_AFTER_US);
+
+    if (g_strcmp0 (findings, self->last_findings) != 0) {
+      gchar *text = g_strdup_printf ("{\"type\":\"findings\","
+          "\"findings\":%s}", findings);
+
+      for (i = 0; i < self->clients->len; i++)
+        send_text (g_ptr_array_index (self->clients, i), text);
+      g_free (text);
+      g_free (self->last_findings);
+      self->last_findings = findings;
+    } else {
+      g_free (findings);
+    }
+  }
+
   latency = pm_latency_tick (self->latency);
   if (latency != NULL) {
     gchar *text = g_strdup_printf ("{\"type\":\"latency\",\"latency\":%s}",
@@ -717,6 +750,8 @@ server_thread (gpointer user_data)
   soup_server_add_handler (self->soup, "/api/log", handle_log, self, NULL);
   soup_server_add_handler (self->soup, "/api/levels", handle_levels, self,
       NULL);
+  soup_server_add_handler (self->soup, "/api/findings", handle_findings, self,
+      NULL);
   soup_server_add_handler (self->soup, "/api/properties", handle_properties,
       self, NULL);
   soup_server_add_handler (self->soup, "/api/monitors", handle_monitors, self,
@@ -820,6 +855,7 @@ pm_server_free (PmServer * self)
   g_free (self->last_graph);
   g_free (self->ui_dir);
   g_free (self->last_levels);
+  g_free (self->last_findings);
   g_free (self->url);
   g_free (self);
 }

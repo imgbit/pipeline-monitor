@@ -9,6 +9,7 @@
 #include "pmmonitor.h"
 #include "pmprops.h"
 #include "pmlatency.h"
+#include "pmfindings.h"
 
 /* Model tests without a pipeline: objects are created and destroyed by the
  * test itself, in orders the tracer hooks can't easily produce. */
@@ -706,6 +707,32 @@ test_latency_path (PathFixture * f, gconstpointer data)
   pm_latency_free (latency);
 }
 
+/* A failed push becomes a finding at its pad; repeats count up. */
+static void
+test_findings_flow (Fixture * f, gconstpointer data)
+{
+  gchar *json;
+
+  json = pm_findings_to_json (f->model, PM_STUCK_AFTER_US);
+  g_assert_null (strstr (json, "flow:"));
+  g_free (json);
+
+  pm_model_record_flow (f->model, f->pad, GST_FLOW_NOT_NEGOTIATED);
+  pm_model_record_flow (f->model, f->pad, GST_FLOW_NOT_NEGOTIATED);
+  json = pm_findings_to_json (f->model, PM_STUCK_AFTER_US);
+  g_assert_nonnull (strstr (json, "\"severity\":\"error\""));
+  g_assert_nonnull (strstr (json, "core-pad: not-negotiated"));
+  g_assert_nonnull (strstr (json, "\"count\":2"));
+  g_free (json);
+
+  /* A different result starts counting again. */
+  pm_model_record_flow (f->model, f->pad, GST_FLOW_NOT_LINKED);
+  json = pm_findings_to_json (f->model, PM_STUCK_AFTER_US);
+  g_assert_nonnull (strstr (json, "\"count\":1"));
+  g_assert_nonnull (strstr (json, "\"severity\":\"warning\""));
+  g_free (json);
+}
+
 int
 main (int argc, char **argv)
 {
@@ -734,6 +761,8 @@ main (int argc, char **argv)
   g_test_add_func ("/core/props-read", test_props_read);
   g_test_add ("/core/latency-path", PathFixture, NULL, path_setup,
       test_latency_path, path_teardown);
+  g_test_add ("/core/findings-flow", Fixture, NULL, fixture_setup,
+      test_findings_flow, fixture_teardown);
   g_test_add ("/core/monitor-overhead", Fixture, NULL, fixture_setup,
       test_monitor_overhead, fixture_teardown);
 
