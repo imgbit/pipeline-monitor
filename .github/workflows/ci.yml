@@ -17,23 +17,43 @@ jobs:
         variant: [default, sanitizers]
     steps:
       - uses: actions/checkout@v4
-      # A package mirror that hangs used to block this step for 20+
-      # minutes: a download silent for 30 s is retried, each try is
-      # limited, and it is tried twice.
+      # The Ubuntu mirrors are sometimes very slow: the downloaded packages
+      # are kept between runs, so usually only the package lists are
+      # fetched.
+      - name: Restore package cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/apt-cache
+          key: apt-ubuntu-24.04-${{ hashFiles('.github/workflows/ci.yml') }}
+          restore-keys: apt-ubuntu-24.04-
+      # A download silent for 30 s is retried, each try is limited, and it
+      # is tried twice.
       - name: Install dependencies
-        timeout-minutes: 10
+        timeout-minutes: 20
         run: |
-          apt() { timeout 240 sudo apt-get -o Acquire::Retries=3 \
-            -o Acquire::http::Timeout=30 "$@"; }
+          mkdir -p ~/apt-cache/partial
+          apt() { timeout 480 sudo apt-get -o Acquire::Retries=3 \
+            -o Acquire::http::Timeout=30 \
+            -o Dir::Cache::Archives="$HOME/apt-cache" "$@"; }
+          installed=no
           for try in 1 2; do
             apt update && apt install -y --no-install-recommends \
               meson ninja-build pkg-config libglib2.0-dev-bin \
               libgstreamer1.0-dev gstreamer1.0-plugins-base \
               gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
-              libsoup-3.0-dev libjson-glib-dev python3 && exit 0
+              libsoup-3.0-dev libjson-glib-dev python3 &&
+              installed=yes && break
             echo "apt-get failed or hung (try $try)"
           done
-          exit 1
+          # apt leaves its lock and half downloads owned by root.
+          sudo rm -rf ~/apt-cache/lock ~/apt-cache/partial
+          sudo chown -R "$USER" ~/apt-cache
+          [ "$installed" = yes ]
+      - name: Save package cache
+        uses: actions/cache/save@v4
+        with:
+          path: ~/apt-cache
+          key: apt-ubuntu-24.04-${{ hashFiles('.github/workflows/ci.yml') }}
       - name: Build
         run: |
           case "${{ matrix.variant }}" in
