@@ -711,15 +711,16 @@ test_latency_path (PathFixture * f, gconstpointer data)
 static void
 test_findings_flow (Fixture * f, gconstpointer data)
 {
+  PmFindings *findings = pm_findings_new (f->model);
   gchar *json;
 
-  json = pm_findings_to_json (f->model, PM_STUCK_AFTER_US);
+  json = pm_findings_tick (findings, PM_STUCK_AFTER_US);
   g_assert_null (strstr (json, "flow:"));
   g_free (json);
 
   pm_model_record_flow (f->model, f->pad, GST_FLOW_NOT_NEGOTIATED);
   pm_model_record_flow (f->model, f->pad, GST_FLOW_NOT_NEGOTIATED);
-  json = pm_findings_to_json (f->model, PM_STUCK_AFTER_US);
+  json = pm_findings_tick (findings, PM_STUCK_AFTER_US);
   g_assert_nonnull (strstr (json, "\"severity\":\"error\""));
   g_assert_nonnull (strstr (json, "core-pad: not-negotiated"));
   g_assert_nonnull (strstr (json, "\"count\":2"));
@@ -727,10 +728,11 @@ test_findings_flow (Fixture * f, gconstpointer data)
 
   /* A different result starts counting again. */
   pm_model_record_flow (f->model, f->pad, GST_FLOW_NOT_LINKED);
-  json = pm_findings_to_json (f->model, PM_STUCK_AFTER_US);
+  json = pm_findings_tick (findings, PM_STUCK_AFTER_US);
   g_assert_nonnull (strstr (json, "\"count\":1"));
   g_assert_nonnull (strstr (json, "\"severity\":\"warning\""));
   g_free (json);
+  pm_findings_free (findings);
 }
 
 int

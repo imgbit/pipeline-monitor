@@ -5,6 +5,8 @@
 #include "pmmodel.h"
 #include "pmserver.h"
 
+#include <string.h>
+
 #define DEFAULT_PORT 8765
 
 GST_DEBUG_CATEGORY_STATIC (gst_pipeline_monitor_debug);
@@ -214,6 +216,35 @@ log_link_failure (GstPipelineMonitorTracer * self, GstPad * src, GstPad * sink,
   gst_clear_object (&element);
 }
 
+static gchar *
+caps_text (GstPad * pad)
+{
+  GstCaps *caps = gst_pad_query_caps (pad, NULL);
+  gchar *text = caps ? gst_caps_to_string (caps) : NULL;
+
+  gst_clear_caps (&caps);
+  return text;
+}
+
+/* Kept for the findings, with what each pad could handle. */
+static void
+record_failed_link (GstPipelineMonitorTracer * self, GstPad * src,
+    GstPad * sink, GstPadLinkReturn result)
+{
+  gchar *src_name = g_strdup_printf ("%s:%s", GST_DEBUG_PAD_NAME (src));
+  gchar *sink_name = g_strdup_printf ("%s:%s", GST_DEBUG_PAD_NAME (sink));
+  gchar *src_caps = caps_text (src);
+  gchar *sink_caps = caps_text (sink);
+
+  pm_model_record_failed_link (self->model, resolve_pad (src),
+      resolve_pad (sink), src_name, sink_name, gst_pad_link_get_name (result),
+      src_caps, sink_caps);
+  g_free (src_name);
+  g_free (sink_name);
+  g_free (src_caps);
+  g_free (sink_caps);
+}
+
 static void
 do_pad_link_post (GstTracer * tracer, GstClockTime ts, GstPad * src,
     GstPad * sink, GstPadLinkReturn result)
@@ -221,8 +252,11 @@ do_pad_link_post (GstTracer * tracer, GstClockTime ts, GstPad * src,
   GstPipelineMonitorTracer *self = GST_PIPELINE_MONITOR_TRACER (tracer);
 
   if (result != GST_PAD_LINK_OK) {
-    if (self->log && !already_linked (src, sink, result))
+    if (already_linked (src, sink, result))
+      return;
+    if (self->log)
       log_link_failure (self, src, sink, result);
+    record_failed_link (self, src, sink, result);
     return;
   }
   pm_model_link (self->model, resolve_pad (src), resolve_pad (sink));
@@ -267,6 +301,40 @@ log_message (GstPipelineMonitorTracer * self, GstElement * element,
   g_error_free (error);
 }
 
+/* Sources (basesrc) stop on their own when negotiation or linking fails,
+ * without a push the flow hooks would see: their error says "streaming
+ * stopped, reason not-negotiated". Recorded on the element's src pad like
+ * a failed push. */
+static void
+record_stopped (GstPipelineMonitorTracer * self, GstElement * element,
+    GstMessage * message)
+{
+  static const struct
+  {
+    const gchar *reason;
+    GstFlowReturn result;
+  } reasons[] = {
+    {"reason not-negotiated", GST_FLOW_NOT_NEGOTIATED},
+    {"reason not-linked", GST_FLOW_NOT_LINKED},
+  };
+  gchar *debug = NULL;
+  GstPad *pad;
+  guint i;
+
+  gst_message_parse_error (message, NULL, &debug);
+  for (i = 0; debug != NULL && i < G_N_ELEMENTS (reasons); i++) {
+    if (strstr (debug, reasons[i].reason) == NULL)
+      continue;
+    pad = gst_element_get_static_pad (element, "src");
+    if (pad != NULL) {
+      pm_model_record_flow (self->model, pad, reasons[i].result);
+      gst_object_unref (pad);
+    }
+    break;
+  }
+  g_free (debug);
+}
+
 static void
 do_element_post_message_pre (GstTracer * tracer, GstClockTime ts,
     GstElement * element, GstMessage * message)
@@ -280,8 +348,35 @@ do_element_post_message_pre (GstTracer * tracer, GstClockTime ts,
     case GST_MESSAGE_ERROR:
     case GST_MESSAGE_WARNING:
       /* Bins re-post their children's messages; keep only the original. */
-      if (self->log && GST_MESSAGE_SRC (message) == GST_OBJECT_CAST (element))
+      if (GST_MESSAGE_SRC (message) != GST_OBJECT_CAST (element))
+        break;
+      if (self->log)
         log_message (self, element, message);
+      if (GST_MESSAGE_TYPE (message) == GST_MESSAGE_ERROR)
+        record_stopped (self, element, message);
+      break;
+    case GST_MESSAGE_ELEMENT:
+      /* decodebin and playbin post this when no element can handle a
+       * stream (no decoder for its caps, no source for a URI...). */
+      if (GST_MESSAGE_SRC (message) == GST_OBJECT_CAST (element) &&
+          gst_message_has_name (message, "missing-plugin")) {
+        const GstStructure *s = gst_message_get_structure (message);
+        const gchar *name = gst_structure_get_string (s, "name");
+        const gchar *type = gst_structure_get_string (s, "type");
+        gchar *detail = NULL;
+        gchar *what;
+
+        if (name == NULL && gst_structure_has_field (s, "detail"))
+          detail = gst_value_serialize (gst_structure_get_value (s,
+                  "detail"));
+        what = name ? g_strdup (name) :
+            g_strdup_printf ("%s for %s", type ? type : "element",
+            detail ? detail : "?");
+        sync_element (self, element);
+        pm_model_record_missing (self->model, element, what);
+        g_free (what);
+        g_free (detail);
+      }
       break;
     case GST_MESSAGE_BUFFERING:
       if (GST_MESSAGE_SRC (message) == GST_OBJECT_CAST (element)) {

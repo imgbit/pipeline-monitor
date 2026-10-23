@@ -1461,7 +1461,7 @@ static void
 test_findings_stuck (void)
 {
   GstElement *pipeline = gst_parse_launch ("appsrc name=stuck-src ! "
-      "fakesink", NULL);
+      "fakesink name=stuck-sink", NULL);
   gchar *id;
   JsonNode *node;
 
@@ -1473,8 +1473,253 @@ test_findings_stuck (void)
   g_assert_nonnull (strstr (json_object_get_string_member
           (json_node_get_object (node), "text"), "has not reached"));
   json_node_unref (node);
+  g_free (id);
+
+  /* And the sink that got no data, with no source reaching it. */
+  id = g_strdup_printf ("starved:%" G_GINT64_FORMAT, pad_id ("stuck-sink",
+          "sink"));
+  node = wait_finding (id, 3);
+  g_assert_nonnull (node);
+  g_assert_nonnull (strstr (json_object_get_string_member
+          (json_node_get_object (node), "hint"), "No data"));
+  json_node_unref (node);
   gst_element_set_state (pipeline, GST_STATE_NULL);
   gst_object_unref (pipeline);
+  g_free (id);
+}
+
+/* Starts a pipeline without waiting for its state: the checks look at
+ * pipelines that fail or hang. */
+static GstElement *
+run_pipeline (const gchar * description)
+{
+  GError *error = NULL;
+  GstElement *pipeline = gst_parse_launch (description, &error);
+
+  g_assert_no_error (error);
+  gst_element_set_state (pipeline, GST_STATE_PLAYING);
+  return pipeline;
+}
+
+static gchar *
+pad_finding (const gchar * kind, const gchar * element, const gchar * pad)
+{
+  return g_strdup_printf ("%s:%" G_GINT64_FORMAT, kind, pad_id (element,
+          pad));
+}
+
+static gchar *
+element_finding (const gchar * kind, const gchar * element)
+{
+  return g_strdup_printf ("%s:%" G_GINT64_FORMAT, kind,
+      element_id (element));
+}
+
+/* Expects the finding within timeout_s; returns it for more checks. */
+static JsonObject *
+expect_finding (const gchar * id, gint timeout_s, JsonNode ** node)
+{
+  *node = wait_finding (id, timeout_s);
+  if (*node == NULL)
+    g_error ("no finding %s", id);
+  return json_node_get_object (*node);
+}
+
+/* The source cannot agree on a format: its error is turned into a finding
+ * at its src pad, with what each side can handle. */
+static void
+test_check_not_negotiated (void)
+{
+  /* Linked first, the impossible caps set afterwards: negotiation fails
+   * when the source starts. */
+  GstElement *pipeline = gst_parse_launch ("videotestsrc name=nn-src ! "
+      "capsfilter name=nn-filter ! fakesink", NULL);
+  GstElement *filter = gst_bin_get_by_name (GST_BIN (pipeline), "nn-filter");
+  GstCaps *audio = gst_caps_from_string ("audio/x-raw");
+  gchar *id;
+  JsonNode *node;
+  JsonObject *f, *caps;
+
+  g_object_set (filter, "caps", audio, NULL);
+  gst_caps_unref (audio);
+  gst_object_unref (filter);
+  gst_element_set_state (pipeline, GST_STATE_PLAYING);
+  id = pad_finding ("flow", "nn-src", "src");
+  f = expect_finding (id, 5, &node);
+
+  g_assert_cmpstr (json_object_get_string_member (f, "severity"), ==,
+      "error");
+  caps = json_object_get_object_member (f, "caps");
+  g_assert_nonnull (caps);
+  g_assert_false (json_object_get_boolean_member (caps, "common"));
+  g_assert_true (g_str_has_prefix (json_object_get_string_member (caps,
+              "upstream"), "video/x-raw"));
+  json_node_unref (node);
+  stop_pipeline (pipeline);
+  g_free (id);
+}
+
+static void
+test_check_failed_link (void)
+{
+  GstElement *pipeline = gst_pipeline_new ("fl-pipeline");
+  GstElement *src = gst_element_factory_make ("videotestsrc", "fl-src");
+  GstElement *conv = gst_element_factory_make ("audioconvert", "fl-conv");
+  JsonNode *node;
+  JsonObject *f, *caps;
+  GstPad *src_pad, *sink_pad;
+
+
+  /* As a pad-added handler would do it; gst_element_link checks the
+   * formats itself and never tries. */
+  gst_bin_add_many (GST_BIN (pipeline), src, conv, NULL);
+  src_pad = gst_element_get_static_pad (src, "src");
+  sink_pad = gst_element_get_static_pad (conv, "sink");
+  g_assert_cmpint (gst_pad_link (src_pad, sink_pad), ==,
+      GST_PAD_LINK_NOFORMAT);
+  gst_object_unref (src_pad);
+  gst_object_unref (sink_pad);
+  f = expect_finding ("link:fl-src:src>fl-conv:sink", 5, &node);
+  caps = json_object_get_object_member (f, "caps");
+  g_assert_true (g_str_has_prefix (json_object_get_string_member (caps,
+              "upstream"), "video/x-raw"));
+  g_assert_true (g_str_has_prefix (json_object_get_string_member (caps,
+              "downstream"), "audio/x-raw"));
+  json_node_unref (node);
+  gst_object_unref (pipeline);
+}
+
+/* The classic: tee branches without queues wait for each other. */
+static void
+test_check_no_queue (void)
+{
+  GstElement *pipeline = run_pipeline ("videotestsrc ! tee name=nq-tee ! "
+      "fakesink nq-tee. ! fakesink");
+  gchar *id = pad_finding ("no-queue", "nq-tee", "src_0");
+  JsonNode *node;
+
+  expect_finding (id, 5, &node);
+  json_node_unref (node);
+  stop_pipeline (pipeline);
+  g_free (id);
+}
+
+static void
+test_check_unlinked (void)
+{
+  GstElement *pipeline = run_pipeline ("videotestsrc is-live=true ! "
+      "tee name=ul-tee ! queue ! fakesink async=false");
+  GstElement *tee = gst_bin_get_by_name (GST_BIN (pipeline), "ul-tee");
+  GstPad *pad = gst_element_request_pad_simple (tee, "src_%u");
+  gchar *id = pad_finding ("unlinked", "ul-tee", GST_OBJECT_NAME (pad));
+  JsonNode *node;
+
+  expect_finding (id, 5, &node);
+  json_node_unref (node);
+  gst_element_release_request_pad (tee, pad);
+  gst_object_unref (pad);
+  gst_object_unref (tee);
+  stop_pipeline (pipeline);
+  g_free (id);
+}
+
+static void
+test_check_missing_plugin (void)
+{
+  /* Pushed, so decodebin takes the caps as they are and looks for a
+   * decoder (pulled, its typefinder would fail on the bytes first). */
+  GstElement *pipeline = run_pipeline ("fakesrc can-activate-pull=false "
+      "num-buffers=1 sizetype=fixed sizemax=16 ! "
+      "capsfilter caps=application/x-pm-unknown ! decodebin name=mp-dec ! "
+      "fakesink");
+  gchar *id = element_finding ("missing", "mp-dec");
+  JsonNode *node;
+  JsonObject *f = expect_finding (id, 5, &node);
+
+  g_assert_nonnull (strstr (json_object_get_string_member (f, "text"),
+          "missing"));
+  json_node_unref (node);
+  stop_pipeline (pipeline);
+  g_free (id);
+}
+
+/* A leaky queue whose output is blocked keeps dropping. */
+static void
+test_check_leaky (void)
+{
+  GstElement *pipeline = gst_parse_launch ("videotestsrc is-live=true ! "
+      "queue name=lk-queue leaky=downstream max-size-buffers=3 ! "
+      "fakesink async=false", NULL);
+  GstElement *queue = gst_bin_get_by_name (GST_BIN (pipeline), "lk-queue");
+  GstPad *src = gst_element_get_static_pad (queue, "src");
+  gchar *id;
+  JsonNode *node;
+
+  gst_pad_add_probe (src, GST_PAD_PROBE_TYPE_BLOCK |
+      GST_PAD_PROBE_TYPE_BUFFER, hold, NULL, NULL);
+  gst_element_set_state (pipeline, GST_STATE_PLAYING);
+  id = element_finding ("dropping", "lk-queue");
+  expect_finding (id, 6, &node);
+  json_node_unref (node);
+  gst_element_set_state (pipeline, GST_STATE_NULL);
+  gst_object_unref (src);
+  gst_object_unref (queue);
+  gst_object_unref (pipeline);
+  g_free (id);
+}
+
+/* A queue whose output is blocked stays full. */
+static void
+test_check_full_queue (void)
+{
+  GstElement *pipeline = gst_parse_launch ("videotestsrc is-live=true ! "
+      "queue name=fq-queue max-size-buffers=3 ! fakesink async=false",
+      NULL);
+  GstElement *queue = gst_bin_get_by_name (GST_BIN (pipeline), "fq-queue");
+  GstPad *src = gst_element_get_static_pad (queue, "src");
+  gchar *id;
+  JsonNode *node;
+
+  gst_pad_add_probe (src, GST_PAD_PROBE_TYPE_BLOCK |
+      GST_PAD_PROBE_TYPE_BUFFER, hold, NULL, NULL);
+  gst_element_set_state (pipeline, GST_STATE_PLAYING);
+  id = element_finding ("full", "fq-queue");
+  expect_finding (id, 9, &node);
+  json_node_unref (node);
+  gst_element_set_state (pipeline, GST_STATE_NULL);
+  gst_object_unref (src);
+  gst_object_unref (queue);
+  gst_object_unref (pipeline);
+  g_free (id);
+}
+
+/* identity makes buffers late; the sink drops those too late. */
+static void
+test_check_late_sink (void)
+{
+  GstElement *pipeline = run_pipeline ("videotestsrc is-live=true ! "
+      "identity sleep-time=60000 ! fakesink name=late-sink sync=true "
+      "max-lateness=1000000");
+  gchar *id = element_finding ("late", "late-sink");
+  JsonNode *node;
+
+  expect_finding (id, 10, &node);
+  json_node_unref (node);
+  stop_pipeline (pipeline);
+  g_free (id);
+}
+
+static void
+test_check_silent_source (void)
+{
+  GstElement *pipeline = run_pipeline ("appsrc name=sl-src is-live=true ! "
+      "fakesink async=false");
+  gchar *id = element_finding ("silent", "sl-src");
+  JsonNode *node;
+
+  expect_finding (id, 9, &node);
+  json_node_unref (node);
+  stop_pipeline (pipeline);
   g_free (id);
 }
 
@@ -1533,6 +1778,17 @@ main (int argc, char **argv)
   g_test_add_func ("/server/latency-all-limit", test_latency_all_limit);
   g_test_add_func ("/server/findings-flow", test_findings_flow);
   g_test_add_func ("/server/findings-stuck", test_findings_stuck);
+  g_test_add_func ("/server/check-not-negotiated",
+      test_check_not_negotiated);
+  g_test_add_func ("/server/check-failed-link", test_check_failed_link);
+  g_test_add_func ("/server/check-no-queue", test_check_no_queue);
+  g_test_add_func ("/server/check-unlinked", test_check_unlinked);
+  g_test_add_func ("/server/check-missing-plugin",
+      test_check_missing_plugin);
+  g_test_add_func ("/server/check-leaky", test_check_leaky);
+  g_test_add_func ("/server/check-full-queue", test_check_full_queue);
+  g_test_add_func ("/server/check-late-sink", test_check_late_sink);
+  g_test_add_func ("/server/check-silent-source", test_check_silent_source);
   g_test_add_func ("/server/origin-check", test_origin_check);
   g_test_add_func ("/server/port-fallback", test_port_fallback);
   g_test_add_func ("/server/no-free-port", test_no_free_port);

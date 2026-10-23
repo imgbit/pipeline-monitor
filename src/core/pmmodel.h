@@ -84,6 +84,38 @@ GPtrArray *pm_model_flow_records (PmModel * model);
 void pm_flow_record_free (PmFlowRecord * record);
 GPtrArray *pm_model_pending (PmModel * model, gint64 min_us);
 void pm_pending_free (PmPending * pending);
+
+/* A place in the graph (element, and pad if any) with a detail. */
+typedef struct
+{
+  guint64 element;
+  guint64 pad;
+  gchar *path;
+  gchar *detail;
+} PmSpot;
+
+void pm_spot_free (PmSpot * spot);
+GPtrArray *pm_model_unqueued_branches (PmModel * model);
+GPtrArray *pm_model_unlinked_pads (PmModel * model);
+GPtrArray *pm_model_starved_sinks (PmModel * model, guint64 pipeline);
+GPtrArray *pm_model_silent_sources (PmModel * model, gint64 min_us);
+void pm_model_record_missing (PmModel * model, gpointer element,
+    const gchar * what);
+GPtrArray *pm_model_missing_plugins (PmModel * model);
+
+typedef struct
+{
+  guint64 element, src, sink;
+  gchar *src_path, *sink_path;
+  gchar *result;
+  gchar *src_caps, *sink_caps;
+} PmLinkFailure;
+
+void pm_model_record_failed_link (PmModel * model, gpointer src,
+    gpointer sink, const gchar * src_name, const gchar * sink_name,
+    const gchar * result, const gchar * src_caps, const gchar * sink_caps);
+GPtrArray *pm_model_failed_links (PmModel * model);
+void pm_link_failure_free (PmLinkFailure * f);
 gchar *pm_model_element_path (PmModel * model, gpointer element);
 
 typedef enum

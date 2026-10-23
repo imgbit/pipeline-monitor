@@ -23,6 +23,7 @@ struct _PmServer
   PmModel *model;
   PmMonitor *monitor;
   PmLatency *latency;
+  PmFindings *findings;
   gchar *ui_dir;
   guint requested_port;
   guint port;
@@ -266,8 +267,8 @@ handle_findings (SoupServer * soup, SoupServerMessage * msg,
   PmServer *self = user_data;
 
   if (check_request (self, msg))
-    set_json_response (msg, pm_findings_to_json (self->model,
-            PM_STUCK_AFTER_US));
+    set_json_response (msg, g_strdup (self->last_findings ?
+            self->last_findings : "{\"schema\":1,\"findings\":[]}"));
 }
 
 static void
@@ -587,7 +588,7 @@ send_all_stats (gpointer user_data)
 
   /* Findings once per second, sent when they change. */
   if (self->ticks++ % 4 == 0) {
-    gchar *findings = pm_findings_to_json (self->model, PM_STUCK_AFTER_US);
+    gchar *findings = pm_findings_tick (self->findings, PM_STUCK_AFTER_US);
 
     if (g_strcmp0 (findings, self->last_findings) != 0) {
       gchar *text = g_strdup_printf ("{\"type\":\"findings\","
@@ -803,6 +804,7 @@ pm_server_new (PmModel * model, guint port, const gchar * ui_dir,
   self->model = model;
   self->monitor = pm_monitor_new (model);
   self->latency = pm_latency_new (model);
+  self->findings = pm_findings_new (model);
   /* Lets tests reach the "measure all" limit with a small pipeline. */
   if (g_getenv ("PM_MEASURE_ALL_LIMIT") != NULL)
     pm_latency_set_all_limit (self->latency,
@@ -847,6 +849,7 @@ pm_server_free (PmServer * self)
   g_ptr_array_unref (self->clients);
   g_hash_table_unref (self->watches);
   pm_latency_free (self->latency);
+  pm_findings_free (self->findings);
   pm_monitor_free (self->monitor);
   g_main_loop_unref (self->loop);
   g_main_context_unref (self->context);

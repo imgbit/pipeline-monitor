@@ -16,6 +16,10 @@ struct _PmElement
   GstState pending;
   /* When the pending state was set (monotonic µs), 0 if none. */
   gint64 pending_since;
+  /* When the state last changed (monotonic µs). */
+  gint64 state_since;
+  /* Descriptions from missing-plugin messages. */
+  GPtrArray *missing;
   guint64 errors;
   guint64 warnings;
   /* Queues: counted from their signals and BUFFERING messages. */
@@ -48,6 +52,19 @@ struct _PmPad
   /* Gives the pad back while it exists, without keeping it alive. */
   GWeakRef ref;
 };
+
+/* A link that could not be made, with what each pad could handle. */
+typedef struct
+{
+  gpointer src, sink;
+  gchar *src_path, *sink_path;
+  gchar *result;
+  gchar *src_caps, *sink_caps;
+} PmFailedLink;
+
+#define MAX_FAILED_LINKS 20
+
+static void failed_link_free (PmFailedLink * f);
 
 typedef struct _PmLink PmLink;
 
@@ -90,6 +107,8 @@ struct _PmModel
   GHashTable *pads;
   GHashTable *links_by_src;
   GHashTable *links_by_sink;
+  /* PmFailedLink, oldest first. */
+  GQueue failed_links;
 
   PmModelChangedFunc changed_func;
   gpointer changed_data;
@@ -110,6 +129,8 @@ pm_element_free (PmElement * element)
   g_free (element->type);
   g_ptr_array_unref (element->children);
   g_ptr_array_unref (element->pads);
+  if (element->missing != NULL)
+    g_ptr_array_unref (element->missing);
   g_weak_ref_clear (&element->ref);
   g_free (element);
 }
@@ -160,6 +181,7 @@ pm_model_new (void)
 void
 pm_model_free (PmModel * model)
 {
+  g_queue_clear_full (&model->failed_links, (GDestroyNotify) failed_link_free);
   g_hash_table_unref (model->links_by_src);
   g_hash_table_unref (model->links_by_sink);
   g_hash_table_unref (model->pads);
@@ -209,11 +231,42 @@ remove_links_of (PmModel * model, gpointer pad)
 }
 
 static void
+failed_link_free (PmFailedLink * f)
+{
+  g_free (f->src_path);
+  g_free (f->sink_path);
+  g_free (f->result);
+  g_free (f->src_caps);
+  g_free (f->sink_caps);
+  g_free (f);
+}
+
+/* Forgets failed links of a pad: it is gone, or linked now. */
+static void
+forget_failed_links (PmModel * model, gpointer pad)
+{
+  GList *l = model->failed_links.head;
+
+  while (l != NULL) {
+    GList *next = l->next;
+    PmFailedLink *f = l->data;
+
+    if (f->src == pad || f->sink == pad) {
+      failed_link_free (f);
+      g_queue_delete_link (&model->failed_links, l);
+      changed (model);
+    }
+    l = next;
+  }
+}
+
+static void
 remove_pad (PmModel * model, gpointer object)
 {
   PmPad *pad = g_hash_table_lookup (model->pads, object);
 
   remove_links_of (model, object);
+  forget_failed_links (model, object);
   if (pad == NULL)
     return;
   g_ptr_array_remove (pad->element->pads, object);
@@ -313,6 +366,8 @@ store_state (PmModel * model, gpointer object, GstState state,
 
   if (element != NULL && (element->state != state ||
           element->pending != pending)) {
+    if (state != element->state)
+      element->state_since = g_get_monotonic_time ();
     if (pending == GST_STATE_VOID_PENDING)
       element->pending_since = 0;
     else if (pending != element->pending)
@@ -435,6 +490,8 @@ pm_model_link (PmModel * model, gpointer src, gpointer sink)
   if ((link = g_hash_table_lookup (model->links_by_sink, sink)))
     remove_link (model, link);
 
+  forget_failed_links (model, src);
+  forget_failed_links (model, sink);
   link = g_new0 (PmLink, 1);
   link->src = src;
   link->sink = sink;
@@ -1021,4 +1078,452 @@ pm_model_log_to_json (PmModel * model, guint64 since, guint64 * seq)
   g_string_append (json, "]}");
 
   return g_string_free (json, FALSE);
+}
+
+/* Problems in the structure of the graph, for the findings. */
+
+void
+pm_spot_free (PmSpot * spot)
+{
+  g_free (spot->path);
+  g_free (spot->detail);
+  g_free (spot);
+}
+
+static PmSpot *
+spot_new (PmElement * element, PmPad * pad, const gchar * detail)
+{
+  PmSpot *spot = g_new0 (PmSpot, 1);
+  gchar *path = element_path (element);
+
+  spot->element = element->id;
+  spot->pad = pad ? pad->id : 0;
+  spot->path = pad ? g_strdup_printf ("%s:%s", path, pad->name) :
+      g_strdup (path);
+  spot->detail = g_strdup (detail);
+  g_free (path);
+  return spot;
+}
+
+static GPtrArray *
+spots_new (void)
+{
+  return g_ptr_array_new_with_free_func ((GDestroyNotify) pm_spot_free);
+}
+
+static gboolean
+is_queue (PmElement * element)
+{
+  return g_strcmp0 (element->factory, "queue") == 0 ||
+      g_strcmp0 (element->factory, "queue2") == 0 ||
+      g_strcmp0 (element->factory, "multiqueue") == 0;
+}
+
+static guint
+count_pads (PmModel * model, PmElement * element, GstPadDirection direction)
+{
+  guint i, n = 0;
+
+  for (i = 0; i < element->pads->len; i++) {
+    PmPad *pad = g_hash_table_lookup (model->pads,
+        g_ptr_array_index (element->pads, i));
+
+    if (pad != NULL && pad->direction == direction)
+      n++;
+  }
+  return n;
+}
+
+static gboolean
+is_sink (PmModel * model, PmElement * element)
+{
+  return !element->is_bin && count_pads (model, element, GST_PAD_SINK) > 0 &&
+      count_pads (model, element, GST_PAD_SRC) == 0;
+}
+
+static PmElement *
+top_level (PmElement * element)
+{
+  while (element->parent != NULL)
+    element = element->parent;
+  return element;
+}
+
+/* The pads data goes to from pad: its peer, the inside of a ghost pad, or
+ * for an element's sink pad, the element's src pads. */
+static void
+downstream_of (PmModel * model, gpointer pad, GPtrArray * out)
+{
+  PmPad *p = g_hash_table_lookup (model->pads, pad);
+  PmLink *link = g_hash_table_lookup (model->links_by_src, pad);
+  guint i;
+
+  if (link != NULL) {
+    g_ptr_array_add (out, link->sink);
+    return;
+  }
+  if (p == NULL || p->direction != GST_PAD_SINK || p->element->is_bin)
+    return;
+  for (i = 0; i < p->element->pads->len; i++) {
+    gpointer other = g_ptr_array_index (p->element->pads, i);
+    PmPad *o = g_hash_table_lookup (model->pads, other);
+
+    if (o != NULL && o->direction == GST_PAD_SRC)
+      g_ptr_array_add (out, other);
+  }
+}
+
+/* The pads data comes from into pad: the reverse of downstream_of. */
+static void
+upstream_of (PmModel * model, gpointer pad, GPtrArray * out)
+{
+  PmPad *p = g_hash_table_lookup (model->pads, pad);
+  PmLink *link = g_hash_table_lookup (model->links_by_sink, pad);
+  guint i;
+
+  if (link != NULL) {
+    g_ptr_array_add (out, link->src);
+    return;
+  }
+  if (p == NULL || p->direction != GST_PAD_SRC || p->element->is_bin)
+    return;
+  for (i = 0; i < p->element->pads->len; i++) {
+    gpointer other = g_ptr_array_index (p->element->pads, i);
+    PmPad *o = g_hash_table_lookup (model->pads, other);
+
+    if (o != NULL && o->direction == GST_PAD_SINK)
+      g_ptr_array_add (out, other);
+  }
+}
+
+/* Walks downstream from pad; returns the first sink reached without
+ * passing a queue, or NULL. */
+static PmElement *
+sink_without_queue (PmModel * model, gpointer start)
+{
+  GHashTable *seen = g_hash_table_new (NULL, NULL);
+  GPtrArray *level = g_ptr_array_new ();
+  PmElement *found = NULL;
+
+  g_ptr_array_add (level, start);
+  while (level->len > 0 && found == NULL) {
+    GPtrArray *next = g_ptr_array_new ();
+    guint i, j;
+
+    for (i = 0; i < level->len && found == NULL; i++) {
+      GPtrArray *out = g_ptr_array_new ();
+
+      downstream_of (model, g_ptr_array_index (level, i), out);
+      for (j = 0; j < out->len; j++) {
+        gpointer pad = g_ptr_array_index (out, j);
+        PmPad *p = g_hash_table_lookup (model->pads, pad);
+
+        if (p == NULL || g_hash_table_contains (seen, pad))
+          continue;
+        g_hash_table_add (seen, pad);
+        if (is_queue (p->element))
+          continue;
+        if (is_sink (model, p->element)) {
+          found = p->element;
+          break;
+        }
+        g_ptr_array_add (next, pad);
+      }
+      g_ptr_array_unref (out);
+    }
+    g_ptr_array_unref (level);
+    level = next;
+  }
+  g_ptr_array_unref (level);
+  g_hash_table_unref (seen);
+  return found;
+}
+
+/* Elements that split data into several branches (tee, demuxers): each
+ * branch needs a queue before its sink, or all branches share one
+ * streaming thread and wait for each other (a pipeline stuck in PAUSED).
+ * One spot per branch reaching a sink without a queue. */
+GPtrArray *
+pm_model_unqueued_branches (PmModel * model)
+{
+  GPtrArray *found = spots_new ();
+  GHashTableIter iter;
+  gpointer value;
+
+  g_mutex_lock (&model->lock);
+  g_hash_table_iter_init (&iter, model->elements);
+  while (g_hash_table_iter_next (&iter, NULL, &value)) {
+    PmElement *element = value;
+    guint i, linked = 0;
+
+    if (element->is_bin || is_queue (element))
+      continue;
+    for (i = 0; i < element->pads->len; i++) {
+      gpointer pad = g_ptr_array_index (element->pads, i);
+
+      if (g_hash_table_contains (model->links_by_src, pad))
+        linked++;
+    }
+    if (linked < 2)
+      continue;
+    for (i = 0; i < element->pads->len; i++) {
+      gpointer pad = g_ptr_array_index (element->pads, i);
+      PmElement *sink;
+      gchar *path;
+
+      if (!g_hash_table_contains (model->links_by_src, pad))
+        continue;
+      sink = sink_without_queue (model, pad);
+      if (sink == NULL)
+        continue;
+      path = element_path (sink);
+      g_ptr_array_add (found, spot_new (element,
+              g_hash_table_lookup (model->pads, pad), path));
+      g_free (path);
+    }
+  }
+  g_mutex_unlock (&model->lock);
+  return found;
+}
+
+/* src pads with no link while their element runs: data on them has
+ * nowhere to go. Always pads count too: a link the program tried with
+ * gst_element_link and that failed leaves them unlinked. */
+GPtrArray *
+pm_model_unlinked_pads (PmModel * model)
+{
+  GPtrArray *found = spots_new ();
+  GHashTableIter iter;
+  gpointer key, value;
+
+  g_mutex_lock (&model->lock);
+  g_hash_table_iter_init (&iter, model->pads);
+  while (g_hash_table_iter_next (&iter, &key, &value)) {
+    PmPad *pad = value;
+
+    if (pad->direction != GST_PAD_SRC || pad->is_ghost ||
+        pad->element->state < GST_STATE_PAUSED ||
+        g_hash_table_contains (model->links_by_src, key))
+      continue;
+    g_ptr_array_add (found, spot_new (pad->element, pad, NULL));
+  }
+  g_mutex_unlock (&model->lock);
+  return found;
+}
+
+/* Sinks of a pipeline whose sink pads have no caps: no data reached them.
+ * detail: the pad nearest upstream that has caps (how far data got), or
+ * NULL if none. */
+GPtrArray *
+pm_model_starved_sinks (PmModel * model, guint64 pipeline)
+{
+  GPtrArray *found = spots_new ();
+  GHashTableIter iter;
+  gpointer value;
+
+  g_mutex_lock (&model->lock);
+  g_hash_table_iter_init (&iter, model->elements);
+  while (g_hash_table_iter_next (&iter, NULL, &value)) {
+    PmElement *element = value;
+    guint i;
+
+    if (!is_sink (model, element) || top_level (element)->id != pipeline)
+      continue;
+    for (i = 0; i < element->pads->len; i++) {
+      gpointer start = g_ptr_array_index (element->pads, i);
+      PmPad *pad = g_hash_table_lookup (model->pads, start);
+      GHashTable *seen;
+      GPtrArray *level;
+      gchar *reached = NULL;
+
+      if (pad == NULL || pad->caps != NULL)
+        continue;
+      seen = g_hash_table_new (NULL, NULL);
+      level = g_ptr_array_new ();
+      g_ptr_array_add (level, start);
+      while (level->len > 0 && reached == NULL) {
+        GPtrArray *next = g_ptr_array_new ();
+        guint j, k;
+
+        for (j = 0; j < level->len && reached == NULL; j++) {
+          GPtrArray *in = g_ptr_array_new ();
+
+          upstream_of (model, g_ptr_array_index (level, j), in);
+          for (k = 0; k < in->len; k++) {
+            gpointer up = g_ptr_array_index (in, k);
+            PmPad *u = g_hash_table_lookup (model->pads, up);
+            gchar *path;
+
+            if (u == NULL || g_hash_table_contains (seen, up))
+              continue;
+            g_hash_table_add (seen, up);
+            if (u->caps != NULL) {
+              path = element_path (u->element);
+              reached = g_strdup_printf ("%s:%s", path, u->name);
+              g_free (path);
+              break;
+            }
+            g_ptr_array_add (next, up);
+          }
+          g_ptr_array_unref (in);
+        }
+        g_ptr_array_unref (level);
+        level = next;
+      }
+      g_ptr_array_unref (level);
+      g_hash_table_unref (seen);
+      g_ptr_array_add (found, spot_new (element, pad, reached));
+      g_free (reached);
+    }
+  }
+  g_mutex_unlock (&model->lock);
+  return found;
+}
+
+/* Sources in PLAYING for at least min_us whose src pads have no caps yet:
+ * they have not produced anything. */
+GPtrArray *
+pm_model_silent_sources (PmModel * model, gint64 min_us)
+{
+  GPtrArray *found = spots_new ();
+  GHashTableIter iter;
+  gpointer value;
+  gint64 now = g_get_monotonic_time ();
+
+  g_mutex_lock (&model->lock);
+  g_hash_table_iter_init (&iter, model->elements);
+  while (g_hash_table_iter_next (&iter, NULL, &value)) {
+    PmElement *element = value;
+    guint i, srcs = 0, with_caps = 0;
+
+    if (element->is_bin || element->state != GST_STATE_PLAYING ||
+        now - element->state_since < min_us ||
+        count_pads (model, element, GST_PAD_SINK) > 0)
+      continue;
+    for (i = 0; i < element->pads->len; i++) {
+      PmPad *pad = g_hash_table_lookup (model->pads,
+          g_ptr_array_index (element->pads, i));
+
+      if (pad == NULL || pad->direction != GST_PAD_SRC)
+        continue;
+      srcs++;
+      if (pad->caps != NULL)
+        with_caps++;
+    }
+    if (srcs > 0 && with_caps == 0)
+      g_ptr_array_add (found, spot_new (element, NULL, NULL));
+  }
+  g_mutex_unlock (&model->lock);
+  return found;
+}
+
+/* A link that failed while building. src_name and sink_name are used when
+ * the pads are not in the model (pads of elements outside a pipeline). */
+void
+pm_model_record_failed_link (PmModel * model, gpointer src, gpointer sink,
+    const gchar * src_name, const gchar * sink_name, const gchar * result,
+    const gchar * src_caps, const gchar * sink_caps)
+{
+  PmFailedLink *f = g_new0 (PmFailedLink, 1);
+  PmPad *pad;
+
+  g_mutex_lock (&model->lock);
+  forget_failed_links (model, src);
+  f->src = src;
+  f->sink = sink;
+  pad = g_hash_table_lookup (model->pads, src);
+  f->src_path = pad ? g_strdup_printf ("%s:%s", pad->element->name,
+      pad->name) : g_strdup (src_name);
+  pad = g_hash_table_lookup (model->pads, sink);
+  f->sink_path = pad ? g_strdup_printf ("%s:%s", pad->element->name,
+      pad->name) : g_strdup (sink_name);
+  f->result = g_strdup (result);
+  f->src_caps = g_strdup (src_caps);
+  f->sink_caps = g_strdup (sink_caps);
+  g_queue_push_tail (&model->failed_links, f);
+  if (model->failed_links.length > MAX_FAILED_LINKS)
+    failed_link_free (g_queue_pop_head (&model->failed_links));
+  changed (model);
+  g_mutex_unlock (&model->lock);
+}
+
+void
+pm_link_failure_free (PmLinkFailure * f)
+{
+  g_free (f->src_path);
+  g_free (f->sink_path);
+  g_free (f->result);
+  g_free (f->src_caps);
+  g_free (f->sink_caps);
+  g_free (f);
+}
+
+GPtrArray *
+pm_model_failed_links (PmModel * model)
+{
+  GPtrArray *found = g_ptr_array_new_with_free_func ((GDestroyNotify)
+      pm_link_failure_free);
+  GList *l;
+
+  g_mutex_lock (&model->lock);
+  for (l = model->failed_links.head; l != NULL; l = l->next) {
+    PmFailedLink *f = l->data;
+    PmLinkFailure *copy = g_new0 (PmLinkFailure, 1);
+    PmPad *src = g_hash_table_lookup (model->pads, f->src);
+    PmPad *sink = g_hash_table_lookup (model->pads, f->sink);
+
+    copy->src = src ? src->id : 0;
+    copy->sink = sink ? sink->id : 0;
+    copy->element = src ? src->element->id : sink ? sink->element->id : 0;
+    copy->src_path = g_strdup (f->src_path);
+    copy->sink_path = g_strdup (f->sink_path);
+    copy->result = g_strdup (f->result);
+    copy->src_caps = g_strdup (f->src_caps);
+    copy->sink_caps = g_strdup (f->sink_caps);
+    g_ptr_array_add (found, copy);
+  }
+  g_mutex_unlock (&model->lock);
+  return found;
+}
+
+/* A missing-plugin message: what could not be found (a decoder for some
+ * caps, a URI handler...). */
+void
+pm_model_record_missing (PmModel * model, gpointer object, const gchar * what)
+{
+  PmElement *element;
+
+  g_mutex_lock (&model->lock);
+  element = g_hash_table_lookup (model->elements, object);
+  if (element != NULL) {
+    if (element->missing == NULL)
+      element->missing = g_ptr_array_new_with_free_func (g_free);
+    if (!g_ptr_array_find_with_equal_func (element->missing, what,
+            g_str_equal, NULL)) {
+      g_ptr_array_add (element->missing, g_strdup (what));
+      changed (model);
+    }
+  }
+  g_mutex_unlock (&model->lock);
+}
+
+GPtrArray *
+pm_model_missing_plugins (PmModel * model)
+{
+  GPtrArray *found = spots_new ();
+  GHashTableIter iter;
+  gpointer value;
+
+  g_mutex_lock (&model->lock);
+  g_hash_table_iter_init (&iter, model->elements);
+  while (g_hash_table_iter_next (&iter, NULL, &value)) {
+    PmElement *element = value;
+    guint i;
+
+    for (i = 0; element->missing && i < element->missing->len; i++)
+      g_ptr_array_add (found, spot_new (element, NULL,
+              g_ptr_array_index (element->missing, i)));
+  }
+  g_mutex_unlock (&model->lock);
+  return found;
 }

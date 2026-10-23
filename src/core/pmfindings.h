@@ -11,7 +11,11 @@ G_BEGIN_DECLS
  * this long. */
 #define PM_STUCK_AFTER_US (3 * G_USEC_PER_SEC)
 
-gchar *pm_findings_to_json (PmModel * model, gint64 stuck_after_us);
+typedef struct _PmFindings PmFindings;
+
+PmFindings *pm_findings_new (PmModel * model);
+void pm_findings_free (PmFindings * findings);
+gchar *pm_findings_tick (PmFindings * findings, gint64 stuck_after_us);
 
 G_END_DECLS
 
