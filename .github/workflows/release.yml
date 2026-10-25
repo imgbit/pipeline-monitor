@@ -90,7 +90,7 @@ jobs:
       - name: Install the latest published package first
         run: |
           url=$(curl -fsS https://api.github.com/repos/imgbit/pipeline-monitor/releases/latest |
-            sed -n "s/.*\"browser_download_url\": \"\(.*~${DISTRO}_${{ matrix.arch }}\.deb\)\".*/\1/p")
+            sed -n "s/.*\"browser_download_url\": \"\(.*[.~]${DISTRO}_${{ matrix.arch }}\.deb\)\".*/\1/p")
           if [ -z "$url" ]; then
             echo "No published package yet: upgrade not checked" | tee -a "$GITHUB_STEP_SUMMARY"
             exit 0

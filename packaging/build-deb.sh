@@ -50,7 +50,8 @@ Description: See a running GStreamer pipeline live in your browser
  values, queues, properties, latency, errors and pipeline issues.
 EOF
 
+# "." in the file name, not "~": GitHub replaces it in release files.
 mkdir -p "$out"
 dpkg-deb --root-owner-group --build "$root" \
-  "$out/pipeline-monitor_$version-1~${distro}_$arch.deb"
+  "$out/pipeline-monitor_$version-1.${distro}_$arch.deb"
 rm -rf "$stage"
