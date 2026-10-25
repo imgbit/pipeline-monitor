@@ -31,6 +31,10 @@ variable, without changing your application, and open http://127.0.0.1:8765/.
   one button measures every element, with a built-in load limit. Pinned
   pads show the time from a pad upstream, and A/V sync between an audio and
   a video sink
+- Pipeline issue detection: data stopped or blocked, failed format
+  negotiation and links, a pipeline stuck in a state (with sinks that have
+  not prerolled), missing decoders, full or dropping queues, sinks dropping
+  late buffers and sources sending nothing
 - Element details, collapsible bins, light and dark theme
 - Local only: listens on 127.0.0.1 and loads nothing from the internet
 
@@ -99,6 +103,12 @@ Then open the address it prints, by default http://127.0.0.1:8765/.
   `GST_TRACERS="pipeline-monitor(log=false)"` turns that off (your application
   still receives them as usual). Options can be combined, e.g.
   `pipeline-monitor(port=9000,log=false)`.
+- Data flow tracking for issue detection costs about 60 ns per buffer push;
+  `pipeline-monitor(flow=false)` turns it off.
+- For a program that fails or ends at once, `pipeline-monitor(wait=true)`
+  holds it at start until the page is open. When the program ends, the page
+  keeps its last state (graph, problems, errors and warnings) and connects
+  again by itself when the program runs again.
 - Click a pad to pin it, click it again (or ×) to unpin. Pins are
   remembered in the browser. The "time" button switches how times are shown
   (auto, ns, ms, s); hover a value for the exact nanoseconds.
@@ -112,10 +122,10 @@ machine and only from its own page.
 
 ## Status
 
-Version 0.6 shows the pipeline graph, errors and warnings, negotiated caps,
+Version 0.7 shows the pipeline graph, errors and warnings, negotiated caps,
 live values of pinned pads, queue fill, the pipeline's clock and times,
-element properties, live when pinned, and latency per element and between
-pads.
+element properties, live when pinned, latency per element and between pads,
+and detects pipeline issues.
 It is tested on macOS (Apple Silicon) with GStreamer 1.28.8, and in CI on
 Ubuntu 24.04 (GStreamer 1.24), Debian 12 (GStreamer 1.22), macOS (Homebrew)
 and Windows (official GStreamer 1.28.8, MSVC).
