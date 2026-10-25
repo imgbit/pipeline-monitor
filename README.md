@@ -38,7 +38,40 @@ variable, without changing your application, and open http://127.0.0.1:8765/.
 - Element details, collapsible bins, light and dark theme
 - Local only: listens on 127.0.0.1 and loads nothing from the internet
 
-## Build
+## Install
+
+Packages are attached to every [release](https://github.com/imgbit/pipeline-monitor/releases/latest)
+from 0.8.0 on.
+
+On Ubuntu 24.04 or Debian 12 (amd64, arm64), download the `.deb` for your
+system, then:
+
+```sh
+sudo apt install ./pipeline-monitor_0.8.0-1~ubuntu24.04_amd64.deb
+```
+
+It goes where the system's GStreamer finds it. To update, install a newer
+`.deb` the same way.
+
+On macOS with Homebrew:
+
+```sh
+brew install imgbit/tap/pipeline-monitor
+export GST_PLUGIN_PATH="$(brew --prefix)/lib/gstreamer-1.0"
+```
+
+Homebrew's GStreamer finds plugins only through `GST_PLUGIN_PATH`. Update
+with `brew upgrade`.
+
+On macOS with the official GStreamer.framework (Apple Silicon and Intel)
+or on Windows with the official GStreamer MSVC package (x86_64), both 1.28
+or newer: download the zip, unpack it and set `GST_PLUGIN_PATH` to its
+folder. To update, replace it with a newer zip.
+
+For anything else (other distributions, an older GStreamer, a GStreamer
+built yourself, e.g. with Cerbero), build from source.
+
+## Build from source
 
 Requires GStreamer 1.22 or newer, libsoup 3, json-glib and Meson.
 
@@ -81,17 +114,20 @@ Studio compiler.
 ## Use
 
 ```sh
-GST_PLUGIN_PATH=$PWD/build/src GST_TRACERS=pipeline-monitor \
+GST_TRACERS=pipeline-monitor \
   gst-launch-1.0 videotestsrc is-live=true ! videoconvert ! autovideosink
 ```
 
 On Windows:
 
 ```bat
-set GST_PLUGIN_PATH=%CD%\build\src
 set GST_TRACERS=pipeline-monitor
 gst-launch-1.0 videotestsrc is-live=true ! videoconvert ! autovideosink
 ```
+
+If you built it yourself, also set `GST_PLUGIN_PATH` to the `build/src`
+folder (`GST_PLUGIN_PATH=$PWD/build/src`, on Windows
+`set GST_PLUGIN_PATH=%CD%\build\src`).
 
 Then open the address it prints, by default http://127.0.0.1:8765/.
 
@@ -122,7 +158,7 @@ machine and only from its own page.
 
 ## Status
 
-Version 0.7 shows the pipeline graph, errors and warnings, negotiated caps,
+Version 0.8 shows the pipeline graph, errors and warnings, negotiated caps,
 live values of pinned pads, queue fill, the pipeline's clock and times,
 element properties, live when pinned, latency per element and between pads,
 and detects pipeline issues.
