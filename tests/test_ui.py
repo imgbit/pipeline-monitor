@@ -253,15 +253,20 @@ class Browser:
         self.log.close()
 
 
-def start_server(serve, pipeline, *args):
+def start_server(serve, pipeline, *args, debug=None):
     env = dict(os.environ, GST_TRACERS="pipeline-monitor(port=0)")
+    if debug:
+        env["GST_DEBUG"] = debug
     proc = subprocess.Popen([serve, *args, pipeline], env=env,
                             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                             text=True)
     found = {}
+    # The last lines it printed, shown when a check fails.
+    proc.lines = []
 
     def read():
         for line in proc.stderr:
+            proc.lines = proc.lines[-199:] + [line.rstrip()]
             m = re.match(r"pipeline-monitor: (http://\S+)", line)
             if m and "url" not in found:
                 found["url"] = m.group(1)
@@ -899,6 +904,21 @@ def screenshot(browser, url, path):
     browser.screenshot(path)
 
 
+# What the page and the example program show when the first check fails.
+def diagnose(browser, server):
+    graph = ("fetch('/api/graph').then(r => r.json()).then(g => "
+             "JSON.stringify(g.pipelines.map(p => [p.name, p.state, "
+             "p.children.length])))")
+    print("api/graph pipelines:", browser.eval(graph), file=sys.stderr)
+    drawn = browser.wait(f"{NODES} > 0", timeout=20)
+    print(f"graph drawn after 20 s more: {drawn}", file=sys.stderr)
+    print("api/graph pipelines:", browser.eval(graph), file=sys.stderr)
+    print(f"example running: {server.poll() is None}; its last output:",
+          file=sys.stderr)
+    for line in server.lines[-80:]:
+        print("  " + line, file=sys.stderr)
+
+
 def pad_id_expression(element, pad):
     return ("fetch('/api/graph').then(r => r.json()).then(g => { "
             "let id = null; const v = (e) => { if (e.name === "
@@ -920,14 +940,18 @@ def main():
     if shot:
         server, url = start_server(serve, SHOT_PIPELINE)
     else:
-        server, url = start_server(serve, PIPELINE, "--warnings")
+        server, url = start_server(serve, PIPELINE, "--warnings", debug="2")
     browser = None
     try:
         browser = Browser(chrome, profile)
         if shot:
             screenshot(browser, url, shot)
         else:
-            check(browser, url)
+            try:
+                check(browser, url)
+            except AssertionError:
+                diagnose(browser, server)
+                raise
             check_findings(browser, serve)
             check_ended(browser, serve)
     finally:
