@@ -1,0 +1,248 @@
+name: Release
+
+# On a version tag: build the packages, check that each one loads, and
+# attach them to the tag's draft release. Run by hand to only build them.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  deb:
+    name: .deb (${{ matrix.image }}, ${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    container: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ['ubuntu:24.04', 'debian:12']
+        arch: [amd64, arm64]
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Install dependencies
+        timeout-minutes: 15
+        run: |
+          apt() { timeout 480 apt-get -o Acquire::Retries=3 \
+            -o Acquire::http::Timeout=30 "$@"; }
+          for try in 1 2; do
+            apt update && apt install -y --no-install-recommends \
+              git ca-certificates meson ninja-build pkg-config gcc \
+              dpkg-dev libglib2.0-dev-bin libgstreamer1.0-dev \
+              libsoup-3.0-dev libjson-glib-dev python3 && exit 0
+            echo "apt-get failed or hung (try $try)"
+          done
+          exit 1
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          meson setup build --prefix=/usr --buildtype=release
+          meson compile -C build
+      - name: Package
+        run: packaging/build-deb.sh build dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb-${{ matrix.image == 'debian:12' && 'debian12' || 'ubuntu24.04' }}-${{ matrix.arch }}
+          path: dist/*.deb
+
+  # Installed where nothing was built: apt must find every dependency.
+  deb-check:
+    name: Check .deb (${{ matrix.image }}, ${{ matrix.arch }})
+    needs: deb
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    container: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ['ubuntu:24.04', 'debian:12']
+        arch: [amd64, arm64]
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: deb-${{ matrix.image == 'debian:12' && 'debian12' || 'ubuntu24.04' }}-${{ matrix.arch }}
+      - name: Install
+        timeout-minutes: 10
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ./*.deb gstreamer1.0-tools
+      - name: Load
+        run: |
+          gst-inspect-1.0 pipeline-monitor
+          GST_TRACERS=pipeline-monitor gst-launch-1.0 fakesrc num-buffers=1 ! \
+            fakesink 2>&1 | tee run.log
+          grep -q "pipeline-monitor: http://127.0.0.1:" run.log
+
+  # Built against the official GStreamer.framework, for arm64 and x86_64.
+  macos-framework:
+    name: macOS (GStreamer.framework, universal)
+    runs-on: macos-latest
+    timeout-minutes: 25
+    env:
+      GST_VERSION: 1.28.8
+      GST_SHA256: d371ab04a7632713626836c2fc234e863cc98484c74c473eba99b0fbd9b3a3fe
+      GST_DEVEL_SHA256: e6d380bc17be7eccf13e0154567d4718fc9321da822408c7ca0cd808b3d4a3f7
+      FW: /Library/Frameworks/GStreamer.framework/Versions/1.0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install GStreamer.framework
+        timeout-minutes: 15
+        run: |
+          base=https://gstreamer.freedesktop.org/data/pkg/osx/$GST_VERSION
+          for p in "gstreamer-1.0-$GST_VERSION-universal.pkg:$GST_SHA256" \
+                   "gstreamer-1.0-devel-$GST_VERSION-universal.pkg:$GST_DEVEL_SHA256"; do
+            f=${p%%:*}
+            curl -fsSL --retry 3 -o "$f" "$base/$f"
+            echo "${p##*:}  $f" | shasum -a 256 -c
+            sudo installer -pkg "$f" -target /
+            rm "$f"
+          done
+      - name: Install Meson
+        run: brew install meson ninja pkgconf
+      - name: Build
+        run: |
+          # Only the framework's libraries, never Homebrew's.
+          export PKG_CONFIG_LIBDIR=$FW/lib/pkgconfig
+          export PATH=$FW/bin:$PATH
+          arch="-arch arm64 -arch x86_64"
+          meson setup build --buildtype=release \
+            -Dc_args="$arch" \
+            -Dc_link_args="$arch -Wl,-rpath,$FW -Wl,-rpath,$FW/lib"
+          meson compile -C build
+      - name: Check
+        run: |
+          lib=build/src/libgstpipelinemonitor.dylib
+          lipo -archs $lib
+          lipo -archs $lib | grep -q arm64
+          lipo -archs $lib | grep -q x86_64
+          otool -L $lib
+          ! otool -L $lib | grep -q /opt/homebrew
+          export PATH=$FW/bin:$PATH GST_PLUGIN_PATH=$PWD/build/src
+          gst-inspect-1.0 pipeline-monitor
+          if arch -x86_64 /usr/bin/true 2>/dev/null; then
+            arch -x86_64 $FW/bin/gst-inspect-1.0 pipeline-monitor
+          else
+            echo "No Rosetta here: x86_64 not loaded"
+          fi
+      - name: Package
+        run: |
+          version=$(meson introspect build --projectinfo |
+            python3 -c 'import json, sys; print(json.load(sys.stdin)["version"])')
+          name=pipeline-monitor-$version-macos-framework-universal
+          mkdir -p dist/$name
+          cp build/src/libgstpipelinemonitor.dylib LICENSE dist/$name/
+          cat > dist/$name/README.txt <<EOF
+          pipeline-monitor $version for the official GStreamer.framework
+          (macOS, Apple Silicon and Intel), GStreamer 1.28 or newer.
+
+          Not for Homebrew's GStreamer: use brew install imgbit/tap/pipeline-monitor
+
+          Use:
+            export GST_PLUGIN_PATH=/path/to/this/folder
+            export GST_TRACERS=pipeline-monitor
+            gst-launch-1.0 videotestsrc ! autovideosink
+          then open the address it prints.
+
+          https://github.com/imgbit/pipeline-monitor
+          EOF
+          (cd dist && zip -r $name.zip $name)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-framework
+          path: dist/*.zip
+
+  windows:
+    name: Windows (MSVC, official GStreamer)
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      GST_VERSION: 1.28.8
+      GST_SHA256: e4c41ee6ee9c6c32a45d198463ec08d79bac3bd5fa58adc93d13fe4a08abc9d9
+      GST_ROOT: C:\gstreamer
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install GStreamer
+        shell: pwsh
+        run: |
+          $exe = "gstreamer-1.0-msvc-x86_64-$env:GST_VERSION.exe"
+          Invoke-WebRequest "https://gstreamer.freedesktop.org/data/pkg/windows/$env:GST_VERSION/msvc/$exe" -OutFile $exe
+          if ((Get-FileHash $exe -Algorithm SHA256).Hash -ne $env:GST_SHA256) { throw "checksum mismatch" }
+          Start-Process -Wait -FilePath ".\$exe" -ArgumentList "/VERYSILENT","/NORESTART","/ALLUSERS","/TYPE=devel","/DIR=$env:GST_ROOT"
+          Remove-Item $exe
+          Add-Content $env:GITHUB_PATH "$env:GST_ROOT\bin"
+          Add-Content $env:GITHUB_ENV "PKG_CONFIG_PATH=$env:GST_ROOT\lib\pkgconfig"
+      - name: Install Meson
+        run: pip install meson ninja
+      - name: Build
+        run: |
+          meson setup build --vsenv --buildtype=release
+          meson compile -C build
+      - name: Package
+        shell: pwsh
+        run: |
+          $version = (meson introspect build --projectinfo | ConvertFrom-Json).version
+          $name = "pipeline-monitor-$version-windows-msvc-x86_64"
+          New-Item -ItemType Directory -Force "dist\$name" | Out-Null
+          Copy-Item build\src\gstpipelinemonitor.dll, LICENSE "dist\$name"
+          @"
+          pipeline-monitor $version for the official GStreamer MSVC x86_64
+          package, GStreamer 1.28 or newer.
+
+          Use, in a command prompt:
+            set GST_PLUGIN_PATH=C:\path\to\this\folder
+            set GST_TRACERS=pipeline-monitor
+            gst-launch-1.0 videotestsrc ! autovideosink
+          then open the address it prints. Or copy gstpipelinemonitor.dll
+          into GStreamer's lib\gstreamer-1.0 folder and skip GST_PLUGIN_PATH.
+
+          https://github.com/imgbit/pipeline-monitor
+          "@ | Set-Content "dist\$name\README.txt"
+          Compress-Archive -Path "dist\$name" -DestinationPath "dist\$name.zip"
+      - name: Check
+        shell: pwsh
+        run: |
+          $dir = (Get-ChildItem dist -Directory | Select-Object -First 1).FullName
+          $env:GST_PLUGIN_PATH = $dir
+          gst-inspect-1.0 pipeline-monitor
+          if ($LASTEXITCODE -ne 0) { throw "plugin did not load" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*.zip
+
+  release:
+    name: Attach to the draft release
+    if: github.ref_type == 'tag'
+    needs: [deb-check, macos-framework, windows]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Check the tag matches the version
+        run: |
+          version=$(sed -n "s/^  version : '\(.*\)',$/\1/p" meson.build)
+          [ "v$version" = "$TAG" ]
+      - name: Upload
+        run: |
+          ls -l dist
+          gh release view "$TAG" > /dev/null 2>&1 ||
+            gh release create "$TAG" --draft --verify-tag \
+              --title "pipeline-monitor ${TAG#v}" --notes "Draft"
+          gh release upload "$TAG" dist/* --clobber
