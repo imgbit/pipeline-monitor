@@ -1,15 +1,20 @@
 name: Release
 
-# On a version tag: build the packages, check that each one loads, and
-# attach them to the tag's draft release. Run by hand to only build them.
+# Builds the packages, then installs each one on a fresh machine the way a
+# user would and checks that the tracer serves its page. On a version tag,
+# and only if every check passed, attaches them to the tag's draft release.
 on:
   push:
     tags: ['v*']
+    branches: [main]
+    paths: ['packaging/**', '.github/workflows/release.yml', 'meson.build']
+  pull_request:
+    paths: ['packaging/**', '.github/workflows/release.yml', 'meson.build']
   workflow_dispatch:
 
 jobs:
   deb:
-    name: .deb (${{ matrix.image }}, ${{ matrix.arch }})
+    name: Build .deb (${{ matrix.image }}, ${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 25
     container: ${{ matrix.image }}
@@ -49,7 +54,7 @@ jobs:
           name: deb-${{ matrix.image == 'debian:12' && 'debian12' || 'ubuntu24.04' }}-${{ matrix.arch }}
           path: dist/*.deb
 
-  # Installed where nothing was built: apt must find every dependency.
+  # Where nothing was built: apt must find every dependency.
   deb-check:
     name: Check .deb (${{ matrix.image }}, ${{ matrix.arch }})
     needs: deb
@@ -66,25 +71,52 @@ jobs:
             runner: ubuntu-24.04
           - arch: arm64
             runner: ubuntu-24.04-arm
+    env:
+      DISTRO: ${{ matrix.image == 'debian:12' && 'debian12' || 'ubuntu24.04' }}
     steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: deb-${{ matrix.image == 'debian:12' && 'debian12' || 'ubuntu24.04' }}-${{ matrix.arch }}
-      - name: Install
+      - name: Install tools
         timeout-minutes: 10
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends ./*.deb gstreamer1.0-tools
+          apt-get install -y --no-install-recommends ca-certificates curl git \
+            gstreamer1.0-tools
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: packaging
+      - uses: actions/download-artifact@v4
+        with:
+          name: deb-${{ env.DISTRO }}-${{ matrix.arch }}
+          path: new
+      - name: Install the latest published package first
+        run: |
+          url=$(curl -fsS https://api.github.com/repos/imgbit/pipeline-monitor/releases/latest |
+            sed -n "s/.*\"browser_download_url\": \"\(.*~${DISTRO}_${{ matrix.arch }}\.deb\)\".*/\1/p")
+          if [ -z "$url" ]; then
+            echo "No published package yet: upgrade not checked" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          curl -fsSL -o old.deb "$url"
+          apt-get install -y --no-install-recommends ./old.deb
+          dpkg-query -W pipeline-monitor
+      - name: Install (or upgrade to) this package
+        run: |
+          apt-get install -y --no-install-recommends ./new/*.deb
+          dpkg-query -W pipeline-monitor
+          [ "$(dpkg-query -W -f '${Version}' pipeline-monitor)" = \
+            "$(dpkg-deb -f new/*.deb Version)" ]
       - name: Load
         run: |
+          export GST_REGISTRY=$RUNNER_TEMP/registry.bin
           gst-inspect-1.0 pipeline-monitor
-          GST_TRACERS=pipeline-monitor gst-launch-1.0 fakesrc num-buffers=1 ! \
-            fakesink 2>&1 | tee run.log
-          grep -q "pipeline-monitor: http://127.0.0.1:" run.log
+          packaging/smoke-test.sh
+      - name: Remove
+        run: |
+          plugin=$(dpkg -L pipeline-monitor | grep 'libgstpipelinemonitor\.so$')
+          apt-get remove -y pipeline-monitor
+          [ ! -e "$plugin" ]
 
-  # Built against the official GStreamer.framework, for arm64 and x86_64.
   macos-framework:
-    name: macOS (GStreamer.framework, universal)
+    name: Build macOS zip (GStreamer.framework, universal)
     runs-on: macos-latest
     timeout-minutes: 25
     env:
@@ -118,28 +150,17 @@ jobs:
             -Dc_args="$arch" \
             -Dc_link_args="$arch -Wl,-rpath,$FW -Wl,-rpath,$FW/lib"
           meson compile -C build
-      - name: Check
-        run: |
-          lib=build/src/libgstpipelinemonitor.dylib
-          lipo -archs $lib
-          lipo -archs $lib | grep -q arm64
-          lipo -archs $lib | grep -q x86_64
-          otool -L $lib
-          ! otool -L $lib | grep -q /opt/homebrew
-          export PATH=$FW/bin:$PATH GST_PLUGIN_PATH=$PWD/build/src
-          gst-inspect-1.0 pipeline-monitor
-          if arch -x86_64 /usr/bin/true 2>/dev/null; then
-            arch -x86_64 $FW/bin/gst-inspect-1.0 pipeline-monitor
-          else
-            echo "No Rosetta here: x86_64 not loaded"
-          fi
       - name: Package
         run: |
+          lib=build/src/libgstpipelinemonitor.dylib
+          lipo -archs $lib | grep -q arm64
+          lipo -archs $lib | grep -q x86_64
+          ! otool -L $lib | grep -q /opt/homebrew
           version=$(meson introspect build --projectinfo |
             python3 -c 'import json, sys; print(json.load(sys.stdin)["version"])')
           name=pipeline-monitor-$version-macos-framework-universal
           mkdir -p dist/$name
-          cp build/src/libgstpipelinemonitor.dylib LICENSE dist/$name/
+          cp $lib LICENSE dist/$name/
           cat > dist/$name/README.txt <<EOF
           pipeline-monitor $version for the official GStreamer.framework
           (macOS, Apple Silicon and Intel), GStreamer 1.28 or newer.
@@ -152,6 +173,10 @@ jobs:
             gst-launch-1.0 videotestsrc ! autovideosink
           then open the address it prints.
 
+          A library downloaded with a browser is marked as quarantined, and
+          macOS may refuse to load it. Remove the mark with:
+            xattr -d com.apple.quarantine libgstpipelinemonitor.dylib
+
           https://github.com/imgbit/pipeline-monitor
           EOF
           (cd dist && zip -r $name.zip $name)
@@ -160,8 +185,68 @@ jobs:
           name: macos-framework
           path: dist/*.zip
 
+  # Only the framework's runtime package, as a user would have it.
+  macos-framework-check:
+    name: Check macOS zip
+    needs: macos-framework
+    runs-on: macos-latest
+    timeout-minutes: 20
+    env:
+      GST_VERSION: 1.28.8
+      GST_SHA256: d371ab04a7632713626836c2fc234e863cc98484c74c473eba99b0fbd9b3a3fe
+      FW: /Library/Frameworks/GStreamer.framework/Versions/1.0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: packaging
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-framework
+      - name: Install GStreamer.framework (runtime only)
+        timeout-minutes: 15
+        run: |
+          f=gstreamer-1.0-$GST_VERSION-universal.pkg
+          curl -fsSL --retry 3 -o "$f" \
+            "https://gstreamer.freedesktop.org/data/pkg/osx/$GST_VERSION/$f"
+          echo "$GST_SHA256  $f" | shasum -a 256 -c
+          sudo installer -pkg "$f" -target /
+          rm "$f"
+      - name: Unpack
+        run: |
+          unzip -q pipeline-monitor-*.zip
+          echo "PLUGIN_DIR=$PWD/$(ls -d pipeline-monitor-*/ | head -n 1)" >> "$GITHUB_ENV"
+      - name: Load (Apple Silicon)
+        run: |
+          export PATH=$FW/bin:$PATH GST_PLUGIN_PATH=$PLUGIN_DIR
+          export GST_REGISTRY=$RUNNER_TEMP/arm64.bin
+          gst-inspect-1.0 pipeline-monitor
+          packaging/smoke-test.sh
+      - name: Load (Intel, through Rosetta)
+        run: |
+          if ! arch -x86_64 /usr/bin/true 2> /dev/null; then
+            echo "No Rosetta on this runner: Intel not checked" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          export GST_PLUGIN_PATH=$PLUGIN_DIR GST_REGISTRY=$RUNNER_TEMP/x86_64.bin
+          arch -x86_64 $FW/bin/gst-inspect-1.0 pipeline-monitor
+          LAUNCH="arch -x86_64 $FW/bin/gst-launch-1.0" packaging/smoke-test.sh
+      # Reports only: shows whether the xattr step in README.txt is needed.
+      - name: Load when quarantined
+        run: |
+          q=$RUNNER_TEMP/quarantined
+          cp -R "$PLUGIN_DIR" "$q"
+          xattr -w com.apple.quarantine "0083;$(printf '%x' "$(date +%s)");Safari;" \
+            "$q/libgstpipelinemonitor.dylib"
+          xattr -l "$q/libgstpipelinemonitor.dylib"
+          if GST_PLUGIN_PATH=$q GST_REGISTRY=$RUNNER_TEMP/q.bin \
+              $FW/bin/gst-inspect-1.0 pipeline-monitor > /dev/null 2>&1; then
+            echo "Quarantined library: loads" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Quarantined library: does not load" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
   windows:
-    name: Windows (MSVC, official GStreamer)
+    name: Build Windows zip (MSVC, official GStreamer)
     runs-on: windows-latest
     timeout-minutes: 25
     env:
@@ -207,22 +292,79 @@ jobs:
           https://github.com/imgbit/pipeline-monitor
           "@ | Set-Content "dist\$name\README.txt"
           Compress-Archive -Path "dist\$name" -DestinationPath "dist\$name.zip"
-      - name: Check
-        shell: pwsh
-        run: |
-          $dir = (Get-ChildItem dist -Directory | Select-Object -First 1).FullName
-          $env:GST_PLUGIN_PATH = $dir
-          gst-inspect-1.0 pipeline-monitor
-          if ($LASTEXITCODE -ne 0) { throw "plugin did not load" }
       - uses: actions/upload-artifact@v4
         with:
           name: windows
           path: dist/*.zip
 
+  # The runtime installer only, as a user would have it.
+  windows-check:
+    name: Check Windows zip
+    needs: windows
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      GST_VERSION: 1.28.8
+      GST_RUNTIME_SHA256: e4c41ee6ee9c6c32a45d198463ec08d79bac3bd5fa58adc93d13fe4a08abc9d9
+      GST_ROOT: C:\gstreamer
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows
+      - name: Install GStreamer (runtime only)
+        shell: pwsh
+        run: |
+          $exe = "gstreamer-1.0-msvc-x86_64-$env:GST_VERSION.exe"
+          Invoke-WebRequest "https://gstreamer.freedesktop.org/data/pkg/windows/$env:GST_VERSION/msvc/$exe" -OutFile $exe
+          if ((Get-FileHash $exe -Algorithm SHA256).Hash -ne $env:GST_RUNTIME_SHA256) { throw "checksum mismatch" }
+          Start-Process -Wait -FilePath ".\$exe" -ArgumentList "/VERYSILENT","/NORESTART","/ALLUSERS","/DIR=$env:GST_ROOT"
+          Remove-Item $exe
+          Add-Content $env:GITHUB_PATH "$env:GST_ROOT\bin"
+      - name: Unpack
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem pipeline-monitor-*.zip | Select-Object -First 1
+          Expand-Archive $zip.FullName -DestinationPath unpacked
+          $dir = (Get-ChildItem unpacked -Directory | Select-Object -First 1).FullName
+          Add-Content $env:GITHUB_ENV "GST_PLUGIN_PATH=$dir"
+          Add-Content $env:GITHUB_ENV "GST_REGISTRY=$env:RUNNER_TEMP\registry.bin"
+      - name: Load
+        shell: pwsh
+        run: |
+          gst-inspect-1.0 pipeline-monitor
+          if ($LASTEXITCODE -ne 0) { throw "plugin did not load" }
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          $env:GST_TRACERS = "pipeline-monitor(port=0)"
+          $err = "$env:RUNNER_TEMP\launch.log"
+          $p = Start-Process gst-launch-1.0 -PassThru -NoNewWindow -RedirectStandardError $err `
+            -ArgumentList "fakesrc","sizetype=fixed","!","identity","name=smoke","sleep-time=10000","!","fakesink"
+          try {
+            $url = $null
+            for ($i = 0; $i -lt 150 -and -not $url; $i++) {
+              Start-Sleep -Milliseconds 200
+              $m = Select-String -Path $err -Pattern '^pipeline-monitor: (http://\S+)' -ErrorAction SilentlyContinue
+              if ($m) { $url = $m.Matches[0].Groups[1].Value }
+            }
+            if (-not $url) { Get-Content $err; throw "the tracer printed no address" }
+            $page = Invoke-WebRequest -UseBasicParsing $url
+            if ($page.Content -notmatch '<title>pipeline-monitor</title>') { throw "no page at $url" }
+            $found = $false
+            for ($i = 0; $i -lt 50 -and -not $found; $i++) {
+              $found = (Invoke-WebRequest -UseBasicParsing "${url}api/graph").Content -match '"name":"smoke"'
+              if (-not $found) { Start-Sleep -Milliseconds 200 }
+            }
+            if (-not $found) { throw "the pipeline is not in ${url}api/graph" }
+            Write-Output "smoke test passed: $url"
+          } finally {
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          }
+
   release:
     name: Attach to the draft release
     if: github.ref_type == 'tag'
-    needs: [deb-check, macos-framework, windows]
+    needs: [deb-check, macos-framework-check, windows-check]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
