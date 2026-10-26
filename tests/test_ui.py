@@ -297,6 +297,20 @@ def check(browser, url):
         == "connected"
     assert browser.eval("document.getElementById('empty').hidden")
 
+    # The About box under the name: maker and links, closed by Esc and by
+    # a click elsewhere.
+    about = "document.getElementById('about')"
+    browser.click("#brand")
+    assert browser.wait(f"!{about}.hidden"), "About box did not open"
+    assert browser.eval(f"{about}.querySelector('a[href=\"https://"
+                        "imaginarybit.com\"]') !== null")
+    browser.call("Input.dispatchKeyEvent", type="keyDown", key="Escape")
+    assert browser.wait(f"{about}.hidden"), "Esc did not close About"
+    browser.click("#brand")
+    assert browser.wait(f"!{about}.hidden")
+    browser.click("#graph")
+    assert browser.wait(f"{about}.hidden"), "a click elsewhere did not close it"
+
     mq = browser.eval(f"{element_selector('multiqueue0')}?.dataset.id")
     assert mq, "multiqueue0 not drawn"
     assert browser.click_until(

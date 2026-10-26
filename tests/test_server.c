@@ -199,6 +199,10 @@ test_ui_files (void)
       200);
   g_assert_cmpstr (type, ==, "text/css");
   g_free (type);
+  g_assert_cmpuint (get_status ("icon.svg", "GET", NULL, NULL, &type), ==,
+      200);
+  g_assert_cmpstr (type, ==, "image/svg+xml");
+  g_free (type);
 
   g_assert_cmpuint (get_status ("missing.js", "GET", NULL, NULL, NULL), ==,
       404);

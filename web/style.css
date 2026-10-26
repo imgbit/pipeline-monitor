@@ -76,7 +76,30 @@ header {
   overflow: hidden;
 }
 
-.brand { font-weight: 600; }
+.brand {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 0; border: none; background: none; color: inherit;
+  font: 600 13px var(--font); cursor: pointer; flex: none;
+}
+
+/* About box, under the name in the header */
+.about {
+  position: fixed;
+  z-index: 20;
+  top: 40px;
+  left: 12px;
+  width: 280px;
+  padding: 14px 16px;
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+  font-size: 13px;
+}
+.about p { margin: 6px 0 0; }
+.about a { color: var(--accent); }
+.about-name { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 600; margin-bottom: 4px; }
 .spacer { flex: 1; }
 .muted { color: var(--muted); }
 

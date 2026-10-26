@@ -2,6 +2,7 @@
 <gresources>
   <gresource prefix="/pipeline-monitor/ui">
     <file>index.html</file>
+    <file>icon.svg</file>
     <file>style.css</file>
     <file>app.js</file>
     <file>layout.js</file>

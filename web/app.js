@@ -848,6 +848,20 @@ $("caps-labels").addEventListener("click", () => {
 window.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && state.picking)
     stopPicking();
+  if (e.key === "Escape")
+    setAbout(false);
+});
+
+// The About box under the name in the header.
+function setAbout(open) {
+  $("about").hidden = !open;
+  $("brand").setAttribute("aria-expanded", String(open));
+}
+$("brand").addEventListener("click", () => setAbout($("about").hidden));
+document.addEventListener("pointerdown", (e) => {
+  if (!$("about").hidden && !$("about").contains(e.target) &&
+      !$("brand").contains(e.target))
+    setAbout(false);
 });
 $("measure-all").addEventListener("click", () => {
   state.measureAll = !state.measureAll;

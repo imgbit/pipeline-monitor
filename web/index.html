@@ -6,14 +6,16 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>pipeline-monitor</title>
-<link rel="icon" href="data:,">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="style.css">
 <script src="vendor/elkjs/elk-api.js"></script>
 <script type="module" src="app.js"></script>
 </head>
 <body>
 <header>
-  <span class="brand">pipeline-monitor</span>
+  <button id="brand" class="brand" aria-controls="about" aria-expanded="false"
+    title="About pipeline-monitor"><img src="icon.svg" width="16" height="16"
+    alt="">pipeline-monitor</button>
   <select id="pipeline-select" aria-label="Pipeline" hidden></select>
   <span id="pipeline-name"></span>
   <span id="pipeline-state" class="state"></span>
@@ -26,6 +28,17 @@
     aria-expanded="false" hidden>No errors</button>
   <span id="connection" class="connection">connecting</span>
 </header>
+<div id="about" class="about" role="dialog" aria-label="About pipeline-monitor"
+  hidden>
+  <div class="about-name"><img src="icon.svg" width="32" height="32"
+    alt="">pipeline-monitor</div>
+  <p>See a running GStreamer pipeline live in your browser.</p>
+  <p>by <a href="https://imaginarybit.com" target="_blank"
+    rel="noopener">imaginarybit</a></p>
+  <p><a href="https://github.com/imgbit/pipeline-monitor" target="_blank"
+    rel="noopener">Source, help and updates</a></p>
+  <p class="muted">LGPL-2.1-or-later</p>
+</div>
 <main>
   <svg id="graph" role="img" aria-label="Pipeline graph"></svg>
   <svg id="pin-lines" aria-hidden="true"></svg>

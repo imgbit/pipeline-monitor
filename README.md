@@ -1,4 +1,4 @@
-# pipeline-monitor
+# <img src=".github/icon.svg" width="32" height="32" alt=""> pipeline-monitor
 
 See a running GStreamer pipeline live in your browser.
 
@@ -170,9 +170,17 @@ and Windows (official GStreamer 1.28.8, MSVC).
 
 LGPL-2.1-or-later, see [LICENSE](LICENSE).
 
+The pipeline-monitor and imaginarybit names and logos are not covered by the
+LGPL: all rights reserved.
+
 A commercial license, support and GStreamer consulting are available from the
 author, Łukasz Huńczak: lukasz.hunczak@imaginarybit.com,
 [imaginarybit.com](https://imaginarybit.com)
+
+<a href="https://imaginarybit.com"><picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/imaginarybit-logo-dark.svg">
+  <img src=".github/imaginarybit-logo-light.svg" height="32" alt="imaginarybit">
+</picture></a>
 
 The web page includes [elkjs](https://github.com/kieler/elkjs) for graph
 layout, under the Eclipse Public License 2.0. See
