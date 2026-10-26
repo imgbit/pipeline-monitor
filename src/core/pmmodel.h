@@ -48,6 +48,8 @@ typedef struct
   guint64 overruns;
   guint64 underruns;
   gint buffering;
+  /* Its pipeline is live (its change to PAUSED returned NO_PREROLL). */
+  gboolean live;
 } PmElementRef;
 
 typedef gboolean (*PmElementFilter) (GstElement * element, gboolean top_level);
@@ -55,6 +57,7 @@ typedef gboolean (*PmElementFilter) (GstElement * element, gboolean top_level);
 void pm_model_count_queue_event (PmModel * model, gpointer element,
     gboolean overrun);
 void pm_model_set_buffering (PmModel * model, gpointer element, gint percent);
+void pm_model_set_live (PmModel * model, gpointer pipeline, gboolean live);
 GPtrArray *pm_model_find_elements (PmModel * model, PmElementFilter filter);
 void pm_element_ref_free (PmElementRef * ref);
 guint64 pm_model_pad_id (PmModel * model, gpointer pad);

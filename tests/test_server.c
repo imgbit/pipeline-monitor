@@ -1579,7 +1579,8 @@ test_check_failed_link (void)
       GST_PAD_LINK_NOFORMAT);
   gst_object_unref (src_pad);
   gst_object_unref (sink_pad);
-  f = expect_finding ("link:fl-src:src>fl-conv:sink", 5, &node);
+  /* The previous test ends with an error: findings can be held 5 s. */
+  f = expect_finding ("link:fl-src:src>fl-conv:sink", 8, &node);
   caps = json_object_get_object_member (f, "caps");
   g_assert_true (g_str_has_prefix (json_object_get_string_member (caps,
               "upstream"), "video/x-raw"));
@@ -1741,6 +1742,9 @@ test_check_quiet (void)
     /* A leaky queue that is not full. */
     "videotestsrc is-live=true name=q4-src ! "
         "queue name=q4-leaky leaky=downstream ! fakesink",
+    /* Not live: full queues are the usual pace, not a stall. */
+    "videotestsrc name=q5-src ! tee name=q5-tee ! queue name=q5-a ! "
+        "fakesink sync=true q5-tee. ! queue name=q5-b ! fakesink sync=true",
   };
   GstElement *running[G_N_ELEMENTS (pipelines)];
   gchar *text;
@@ -1847,6 +1851,65 @@ test_check_silent_source (void)
   g_free (id);
 }
 
+/* Polls /api/findings until it contains every one of texts, up to
+ * timeout_s. */
+static gboolean
+findings_contain (const gchar * const *texts, gint timeout_s)
+{
+  gint64 end = g_get_monotonic_time () + timeout_s * G_USEC_PER_SEC;
+
+  while (g_get_monotonic_time () < end) {
+    gchar *text;
+    gboolean all = TRUE;
+    guint i;
+
+    get_status ("api/findings", "GET", NULL, &text, NULL);
+    for (i = 0; texts[i] != NULL; i++)
+      all = all && strstr (text, texts[i]) != NULL;
+    g_free (text);
+    if (all)
+      return TRUE;
+    g_usleep (100 * G_TIME_SPAN_MILLISECOND);
+  }
+  return FALSE;
+}
+
+/* As gst-launch does it: the capsfilter made for decodebin's output is
+ * removed when the link fails, decodebin's pad when the pipeline stops.
+ * The failed link, with both sides' caps, stays reported through both. */
+static void
+test_check_link_after_error (void)
+{
+  const gchar *texts[] = { "le-dec:src_0 could not link to",
+    "no common format", "no format in common", "RGBA", NULL
+  };
+  GstElement *next;
+  gchar *text = NULL;
+  gint i;
+  GstElement *pipeline = run_pipeline ("videotestsrc is-live=true ! "
+      "jpegenc ! decodebin name=le-dec ! video/x-raw,format=RGBA ! "
+      "fakesink");
+
+  g_assert_true (findings_contain (texts, 8));
+  gst_element_set_state (pipeline, GST_STATE_NULL);
+  g_usleep (G_USEC_PER_SEC);
+  g_assert_true (findings_contain (texts, 1));
+  gst_object_unref (pipeline);
+
+  /* A pipeline starting makes them current again, before the 5 s. */
+  next = run_pipeline ("fakesrc ! fakesink");
+  for (i = 0; i < 30; i++) {
+    g_free (text);
+    get_status ("api/findings", "GET", NULL, &text, NULL);
+    if (strstr (text, "le-dec") == NULL)
+      break;
+    g_usleep (100 * G_TIME_SPAN_MILLISECOND);
+  }
+  g_assert_null (strstr (text, "le-dec"));
+  g_free (text);
+  stop_pipeline (next);
+}
+
 /* A watched pad that goes away is reported once, then dropped. */
 static void
 test_monitor_pad_gone (void)
@@ -1912,6 +1975,8 @@ main (int argc, char **argv)
   g_test_add_func ("/server/check-blocked", test_check_blocked);
   g_test_add_func ("/server/check-quiet", test_check_quiet);
   g_test_add_func ("/server/check-preroll", test_check_preroll);
+  g_test_add_func ("/server/check-link-after-error",
+      test_check_link_after_error);
   g_test_add_func ("/server/check-missing-plugin",
       test_check_missing_plugin);
   g_test_add_func ("/server/check-leaky", test_check_leaky);

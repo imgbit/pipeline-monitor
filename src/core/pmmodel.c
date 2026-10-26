@@ -27,6 +27,7 @@ struct _PmElement
   guint64 underruns;
   gint buffering;
   PmPreroll preroll;
+  gboolean live;
   /* Gives the element back while it exists, without keeping it alive. */
   GWeakRef ref;
   PmElement *parent;
@@ -243,6 +244,9 @@ failed_link_free (PmFailedLink * f)
 }
 
 /* Forgets failed links of a pad: it is gone, or linked now. */
+/* A failed link stays while its src pad is there and not linked: the
+ * other side may be gone already (gst-launch removes the capsfilter it
+ * made for the link), its name and caps are kept as text. */
 static void
 forget_failed_links (PmModel * model, gpointer pad)
 {
@@ -252,10 +256,12 @@ forget_failed_links (PmModel * model, gpointer pad)
     GList *next = l->next;
     PmFailedLink *f = l->data;
 
-    if (f->src == pad || f->sink == pad) {
+    if (f->src == pad) {
       failed_link_free (f);
       g_queue_delete_link (&model->failed_links, l);
       changed (model);
+    } else if (f->sink == pad) {
+      f->sink = NULL;
     }
     l = next;
   }
@@ -758,6 +764,18 @@ pm_model_count_queue_event (PmModel * model, gpointer object,
 }
 
 void
+pm_model_set_live (PmModel * model, gpointer object, gboolean live)
+{
+  PmElement *element;
+
+  g_mutex_lock (&model->lock);
+  element = g_hash_table_lookup (model->elements, object);
+  if (element != NULL)
+    element->live = live;
+  g_mutex_unlock (&model->lock);
+}
+
+void
 pm_model_set_buffering (PmModel * model, gpointer object, gint percent)
 {
   PmElement *element;
@@ -793,6 +811,7 @@ pm_model_find_elements (PmModel * model, PmElementFilter filter)
     PmElement *element = value;
     GstElement *object = g_weak_ref_get (&element->ref);
     PmElementRef *ref;
+    PmElement *top;
 
     if (object == NULL)
       continue;
@@ -807,6 +826,8 @@ pm_model_find_elements (PmModel * model, PmElementFilter filter)
     ref->overruns = element->overruns;
     ref->underruns = element->underruns;
     ref->buffering = element->buffering;
+    for (top = element; top->parent != NULL; top = top->parent);
+    ref->live = top->live;
     g_ptr_array_add (found, ref);
   }
   g_mutex_unlock (&model->lock);

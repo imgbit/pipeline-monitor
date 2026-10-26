@@ -427,9 +427,11 @@ do_element_post_message_pre (GstTracer * tracer, GstClockTime ts,
       if (GST_MESSAGE_TYPE (message) == GST_MESSAGE_ERROR) {
         record_stopped (self, element, message);
         /* The program may end right after an error: send what is known
-         * now. */
-        if (self->server != NULL)
+         * now, and keep the findings as they are while it stops. */
+        if (self->server != NULL) {
+          pm_server_hold_findings (self->server);
           pm_server_flush (self->server, FALSE);
+        }
       }
       break;
     case GST_MESSAGE_ELEMENT:
@@ -497,6 +499,18 @@ do_element_change_state_post (GstTracer * tracer, GstClockTime ts,
     pm_model_add_log (self->model, element, PM_LOG_ERROR, "state-change", text,
         NULL, NULL, 0);
     g_free (text);
+  }
+
+  if (GST_IS_PIPELINE (element) && GST_OBJECT_PARENT (element) == NULL) {
+    if (transition == GST_STATE_CHANGE_READY_TO_PAUSED && self->server != NULL)
+      pm_server_release_findings (self->server);
+    if (transition == GST_STATE_CHANGE_PAUSED_TO_READY) {
+      sync_element (self, element);
+      pm_model_set_live (self->model, element, FALSE);
+    } else if (result == GST_STATE_CHANGE_NO_PREROLL) {
+      sync_element (self, element);
+      pm_model_set_live (self->model, element, TRUE);
+    }
   }
 
   if (has_preroll (element)) {

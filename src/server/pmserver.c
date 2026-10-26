@@ -52,11 +52,17 @@ struct _PmServer
   gchar *last_levels;
   /* The findings last sent, to send them again only when they change. */
   gchar *last_findings;
+  /* Until then the findings are not updated (monotonic µs). */
+  gint64 findings_held_until;
   guint64 ticks;
   /* Watched properties: client -> set of "<element id>\n<property>". */
   GHashTable *watches;
 
   gint update_scheduled;
+  /* Set by pm_server_hold_findings, taken by the next flush; and by
+   * pm_server_release_findings, taken by the next update. */
+  gint hold_findings;
+  gint release_findings;
 };
 
 static gboolean
@@ -585,11 +591,21 @@ send_properties (PmServer * self)
 
 static void send_to_all (PmServer * self, const gchar * text);
 
+/* After an error the findings are kept as they were for a while: the
+ * program usually stops its pipeline right after, and the pads and states
+ * the findings are about go away. */
+#define FINDINGS_HELD_US (5 * G_USEC_PER_SEC)
+
 static void
 send_findings (PmServer * self)
 {
-  gchar *findings = pm_findings_tick (self->findings, PM_STUCK_AFTER_US);
-  gchar *text;
+  gchar *findings, *text;
+
+  if (g_atomic_int_compare_and_exchange (&self->release_findings, 1, 0))
+    self->findings_held_until = 0;
+  if (g_get_monotonic_time () < self->findings_held_until)
+    return;
+  findings = pm_findings_tick (self->findings, PM_STUCK_AFTER_US);
 
   if (g_strcmp0 (findings, self->last_findings) == 0) {
     g_free (findings);
@@ -782,6 +798,8 @@ flush_now (gpointer user_data)
 
   send_update (self);
   send_findings (self);
+  if (g_atomic_int_compare_and_exchange (&self->hold_findings, 1, 0))
+    self->findings_held_until = g_get_monotonic_time () + FINDINGS_HELD_US;
   if (flush->bye)
     send_to_all (self, "{\"type\":\"bye\"}");
   source = g_timeout_source_new (100);
@@ -790,6 +808,21 @@ flush_now (gpointer user_data)
   g_source_attach (source, self->context);
   g_source_unref (source);
   return G_SOURCE_REMOVE;
+}
+
+/* The next flush keeps the findings it sends for FINDINGS_HELD_US, or
+ * until pm_server_release_findings. */
+void
+pm_server_hold_findings (PmServer * self)
+{
+  g_atomic_int_set (&self->hold_findings, 1);
+}
+
+/* A pipeline is starting: findings are current again. */
+void
+pm_server_release_findings (PmServer * self)
+{
+  g_atomic_int_set (&self->release_findings, 1);
 }
 
 /* Sends the current state to the pages at once, and with bye, tells them

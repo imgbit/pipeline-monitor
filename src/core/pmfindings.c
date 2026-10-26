@@ -431,7 +431,8 @@ add_structure (PmFindings * self, GPtrArray * findings)
     f->id = g_strdup_printf ("link:%s>%s", l->src_path, l->sink_path);
     f->text = g_strdup_printf ("%s could not link to %s: %s", l->src_path,
         l->sink_path, l->result);
-    f->hint = g_strdup (g_strcmp0 (l->result, "no format") == 0 ?
+    f->hint = g_strdup (g_strcmp0 (l->result,
+            gst_pad_link_get_name (GST_PAD_LINK_NOFORMAT)) == 0 ?
         "The two pads have no format in common; what each side handles is "
         "below." : "What each side handles is below.");
     f->upstream = g_strdup (l->src_caps);
@@ -546,13 +547,16 @@ add_queues (PmFindings * self, GPtrArray * findings, GHashTable * seen)
       q->full_since = 0;
     }
     q->leaky = is_leaky (ref->element);
-    /* A full leaky queue drops instead of waiting: reported below. */
-    if (!q->leaky && q->full_since != 0 &&
+    /* A full leaky queue drops instead of waiting: reported below. Not
+     * live, a full queue is the usual pace: the source waits, nothing is
+     * lost. */
+    if (!q->leaky && ref->live && q->full_since != 0 &&
         now - q->full_since >= FULL_AFTER_US) {
       f = finding_new ("full", ref->id, PM_WARNING, ref->id, 0);
       f->text = g_strdup_printf ("%s has been full for %" G_GINT64_FORMAT
           " s", ref->path, (now - q->full_since) / G_USEC_PER_SEC);
-      f->hint = g_strdup ("Elements before it wait until it has room.");
+      f->hint = g_strdup ("The pipeline is live; elements before it wait "
+          "until it has room.");
       g_ptr_array_add (findings, f);
     }
 

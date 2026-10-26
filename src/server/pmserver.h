@@ -17,6 +17,8 @@ const gchar *pm_server_get_url (PmServer * server);
 void pm_server_notify (PmServer * server);
 void pm_server_wait_for_page (PmServer * server);
 void pm_server_flush (PmServer * server, gboolean bye);
+void pm_server_hold_findings (PmServer * server);
+void pm_server_release_findings (PmServer * server);
 
 G_END_DECLS
 
