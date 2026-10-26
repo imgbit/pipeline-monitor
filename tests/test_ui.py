@@ -742,10 +742,16 @@ def check_findings(browser, serve):
         browser.click("#findings-close")
         browser.click("#details .close")
         sink = browser.eval(f"{element_selector('fakesink1')}?.dataset.id")
+        box = f'#graph .node[data-id="{sink}"] > rect.box'
+        # On a slow machine the graph can still be moving: click once it
+        # is in the window.
+        assert browser.wait(f"(r => r.width > 0 && r.left >= 0 && r.top >= 0 "
+                            f"&& r.right <= innerWidth && r.bottom <= "
+                            f"innerHeight)(document.querySelector('{box}')"
+                            ".getBoundingClientRect())"), "fakesink1 not in view"
         assert browser.click_until(
-            f'#graph .node[data-id="{sink}"] > rect.box',
-            "document.querySelector('#details h2')?.textContent === "
-            "'fakesink1'"), "could not select fakesink1"
+            box, "document.querySelector('#details h2')?.textContent === "
+            "'fakesink1'", tries=5), "could not select fakesink1"
         assert browser.wait("document.querySelector('#details dl')"
                             "?.textContent.includes('prerollwaiting for "
                             "data')"), "no preroll in the details"
