@@ -1881,14 +1881,15 @@ static void
 test_check_link_after_error (void)
 {
   const gchar *texts[] = { "le-dec:src_0 could not link to",
-    "no common format", "no format in common", "RGBA", NULL
+    "no common format", "no format in common", "rate=(int)8000", NULL
   };
   GstElement *next;
   gchar *text = NULL;
   gint i;
-  GstElement *pipeline = run_pipeline ("videotestsrc is-live=true ! "
-      "jpegenc ! decodebin name=le-dec ! video/x-raw,format=RGBA ! "
-      "fakesink");
+  /* Audio: on macOS a JPEG decoder sets up GL, which warns without an
+   * NSApplication. */
+  GstElement *pipeline = run_pipeline ("audiotestsrc is-live=true ! "
+      "wavenc ! decodebin name=le-dec ! audio/x-raw,rate=8000 ! fakesink");
 
   g_assert_true (findings_contain (texts, 8));
   gst_element_set_state (pipeline, GST_STATE_NULL);
