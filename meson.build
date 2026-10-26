@@ -1,5 +1,5 @@
 project('pipeline-monitor', 'c',
-  version : '0.8.0',
+  version : '0.8.1',
   license : 'LGPL-2.1-or-later',
   meson_version : '>= 0.63',
   default_options : ['c_std=gnu11', 'warning_level=2', 'buildtype=debugoptimized'])
