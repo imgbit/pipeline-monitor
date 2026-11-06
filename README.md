@@ -4,6 +4,9 @@ See a running GStreamer pipeline live in your browser.
 
 ![pipeline-monitor measuring latency: a label under every element, the audio queue's details with its measured and reported latency, and its properties](.github/screenshot.png)
 
+Short videos: [Fix your GStreamer pipeline](https://www.youtube.com/playlist?list=PLHYOr70akpmI)
+on YouTube, one problem per episode.
+
 pipeline-monitor is a GStreamer tracer plugin. Enable it with one environment
 variable, without changing your application, and open http://127.0.0.1:8765/.
 
