@@ -1071,7 +1071,7 @@ def pin_row(name):
 
 
 def watched():
-    return ("fetch('/api/monitors').then(r => r.json())"
+    return ("fetch('/api/pads').then(r => r.json())"
             ".then(j => j.pads.length)")
 
 

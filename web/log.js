@@ -178,10 +178,12 @@ export class LogView {
     row.className = `log-row ${e.level}`;
     row.dataset.id = e.id;
     row.title = [e.debug, e.domain && `${e.domain} ${e.code}`,
-      `${e.source}, first at ${new Date(e.first).toLocaleTimeString()}`]
+      `${e.source}, first at ` +
+      new Date(e.first / 1000).toLocaleTimeString()]
       .filter(Boolean).join("\n");
 
-    add(row, "span", new Date(e.last).toLocaleTimeString(), "log-time");
+    add(row, "span", new Date(e.last / 1000).toLocaleTimeString(),
+      "log-time");
     add(row, "span", e.level, "log-level");
     const where = add(row, "button", e.path.split("/").pop(), "log-path");
     where.title = `${e.path}\nShow in the graph`;

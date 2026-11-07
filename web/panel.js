@@ -36,7 +36,7 @@ function showLog(aside, log) {
   const list = add(aside, "ul", undefined, "log-list");
   for (const e of log.entries.slice(0, 20)) {
     const li = add(list, "li", undefined, e.level);
-    li.textContent = `${new Date(e.last).toLocaleTimeString()} ${e.text}` +
+    li.textContent = `${new Date(e.last / 1000).toLocaleTimeString()} ${e.text}` +
       (e.count > 1 ? ` ×${e.count}` : "");
     li.title = e.debug || "";
   }

@@ -1077,12 +1077,12 @@ append_log_entry (GString * json, PmLogEntry * entry)
   }
   g_string_append_printf (json, ",\"count\":%" G_GUINT64_FORMAT
       ",\"first\":%" G_GINT64_FORMAT ",\"last\":%" G_GINT64_FORMAT "}",
-      entry->count, entry->first / 1000, entry->last / 1000);
+      entry->count, entry->first, entry->last);
 }
 
 /* Entries added or repeated after sequence number "since", oldest first.
  * "seq" receives the sequence number to pass as "since" next time.
- * Times are milliseconds since the Unix epoch. */
+ * Times are µs since the Unix epoch. */
 gchar *
 pm_model_log_to_json (PmModel * model, guint64 since, guint64 * seq)
 {

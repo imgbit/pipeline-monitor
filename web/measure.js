@@ -68,7 +68,7 @@ export class Measuring {
     this.pathsSent = new Set();
     // From the "latency" message.
     this.results = new Map();
-    this.allState = { on: false, buffers_per_s: 0, stopped_at: null };
+    this.allState = { on: false, buffers_per_s: 0, stopped_rate: null };
     this.pathResults = new Map();
   }
 
@@ -98,7 +98,7 @@ export class Measuring {
   toggleAll() {
     this.all = !this.all;
     save(MEASURE_ALL_KEY, this.all);
-    this.allState.stopped_at = null;
+    this.allState.stopped_rate = null;
     this.send({ type: this.all ? "measure-all" : "unmeasure-all" });
   }
 
@@ -110,13 +110,13 @@ export class Measuring {
       if (this.paths.has(path) && now === id)
         continue;
       if (now === id)
-        this.send({ type: "unmeasure-latency", element: id });
+        this.send({ type: "unmeasure-element", element: id });
       this.sent.delete(path);
     }
     for (const path of this.paths) {
       const id = elementPaths.get(path)?.id;
       if (id !== undefined && !this.sent.has(path)) {
-        this.send({ type: "measure-latency", element: id });
+        this.send({ type: "measure-element", element: id });
         this.sent.set(path, id);
       }
     }
@@ -127,7 +127,7 @@ export class Measuring {
     this.pathResults = new Map(latency.paths.map((p) =>
       [`${p.from}>${p.to}`, p.measured]));
     this.allState = latency.all;
-    if (this.all && !latency.all.on && latency.all.stopped_at) {
+    if (this.all && !latency.all.on && latency.all.stopped_rate) {
       this.all = false;
       save(MEASURE_ALL_KEY, false);
     }
@@ -163,9 +163,9 @@ export class Measuring {
       return { pressed: true,
         text: `latency · ${all.buffers_per_s.toLocaleString()} buf/s`,
         title: "Measuring every element; click to stop" };
-    if (all.stopped_at)
+    if (all.stopped_rate)
       return { pressed: this.all, text: "latency stopped: too busy",
-        title: `Stopped by itself at ${all.stopped_at.toLocaleString()} ` +
+        title: `Stopped by itself at ${all.stopped_rate.toLocaleString()} ` +
           "buffers/s, to protect the pipeline. Measure single elements " +
           "from their details instead." };
     return { pressed: this.all, text: "latency",

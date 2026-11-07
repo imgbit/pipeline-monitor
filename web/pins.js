@@ -126,11 +126,11 @@ export class Pins {
   }
 
   watch(pin) {
-    this.handlers.send({ type: "monitor", pad: pin.id });
+    this.handlers.send({ type: "watch-pad", pad: pin.id });
   }
 
   unwatch(pin) {
-    this.handlers.send({ type: "unmonitor", pad: pin.id });
+    this.handlers.send({ type: "unwatch-pad", pad: pin.id });
   }
 
   // What is remembered of a pin.
@@ -232,7 +232,7 @@ export class Pins {
     this.fill(pin);
   }
 
-  // A pad-stats message.
+  // A "pads" message.
   apply(stats) {
     for (const entry of stats.pads) {
       const pin = [...this.pins.values()].find((p) => p.id === entry.pad);
@@ -583,7 +583,7 @@ export class ElementPins extends Pins {
         continue;
       }
       pin.gone = false;
-      pin.stats = { ...entry.values, time: message.time };
+      pin.stats = { ...entry, time: message.time };
       this.fill(pin);
     }
     this.place();

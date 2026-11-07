@@ -109,7 +109,7 @@ append_queue (GString * json, PmModel * model, PmElementRef * ref)
       "max-size-bytes", &max_bytes, "max-size-time", &max_time, NULL);
 
   g_string_append_c (json, '{');
-  pm_json_append_value (json, "id", ref->id);
+  pm_json_append_value (json, "element", ref->id);
   append_string (json, "path", ref->path);
   append_string (json, "kind", queue_kind (element));
   append_leaky (json, element);
@@ -173,7 +173,7 @@ append_pipeline (GString * json, PmModel * model, PmElementRef * ref)
   }
 
   g_string_append_c (json, '{');
-  pm_json_append_value (json, "id", ref->id);
+  pm_json_append_value (json, "element", ref->id);
   append_string (json, "path", ref->path);
   append_string (json, "state", gst_element_state_get_name (state));
   append_string (json, "clock", clock ? GST_OBJECT_NAME (clock) : NULL);

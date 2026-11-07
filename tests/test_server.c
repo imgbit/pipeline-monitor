@@ -9,8 +9,9 @@
 #include <string.h>
 
 #include "envelope.h"
-
 #include "pmserver.h"
+
+static JsonNode *parse (const gchar * text);
 
 #define EMPTY_GRAPH "{\"pipelines\":[],\"links\":[]}"
 
@@ -387,6 +388,7 @@ test_websocket_log (void)
   GstBus *bus = gst_element_get_bus (pipeline);
   WsClient client;
   gchar *message;
+  JsonNode *root;
 
   gst_bus_set_flushing (bus, TRUE);
   gst_bin_add (GST_BIN (pipeline), element);
@@ -401,6 +403,12 @@ test_websocket_log (void)
   message = ws_next (&client, "log");
   g_assert_nonnull (strstr (message, "\"text\":\"ws first\""));
   g_assert_nonnull (strstr (message, "\"count\":1,"));
+  /* Times on the wall clock are µs since 1970 (2026: about 1.8e15). */
+  root = parse (message);
+  g_assert_cmpint (json_object_get_int_member (json_array_get_object_element
+          (json_object_get_array_member (json_node_get_object (root),
+                  "entries"), 0), "first"), >, G_GINT64_CONSTANT (1000000000000000));
+  json_node_unref (root);
   g_free (message);
 
   post_warning (element, "ws second");
@@ -422,8 +430,6 @@ test_websocket_log (void)
   g_free (url);
   g_object_unref (session);
 }
-
-static JsonNode *parse (const gchar * text);
 
 /* Text that is not valid UTF-8 (GStreamer passes it on) still reaches the
  * page, with replacement characters. */
@@ -663,12 +669,12 @@ ws_send (WsClient * client, const gchar * format, ...)
   g_free (text);
 }
 
-/* The next pad-stats entry for pad: buffers, or -1 if it is gone. */
+/* The next pads entry for pad: buffers, or -1 if it is gone. */
 static gint64
 next_stats (WsClient * client, gint64 pad)
 {
   while (TRUE) {
-    gchar *message = ws_next (client, "pad-stats");
+    gchar *message = ws_next (client, "pads");
     JsonNode *root = parse (message);
     JsonArray *pads = json_object_get_array_member (json_node_get_object
         (root), "pads");
@@ -689,7 +695,7 @@ next_stats (WsClient * client, gint64 pad)
   }
 }
 
-/* Number of viewers of pad according to /api/monitors, 0 if not watched. */
+/* Number of viewers of pad according to /api/pads, 0 if not watched. */
 static gint64
 viewers (gint64 pad)
 {
@@ -699,7 +705,7 @@ viewers (gint64 pad)
   gint64 n = 0;
   guint i;
 
-  get_status ("api/monitors", "GET", NULL, &text, NULL);
+  get_status ("api/pads", "GET", NULL, &text, NULL);
   root = parse (text);
   pads = json_object_get_array_member (json_node_get_object (root), "pads");
   for (i = 0; i < json_array_get_length (pads); i++) {
@@ -741,7 +747,7 @@ test_monitor (void)
   ws_connect (&a, session, url, NULL);
   ws_connect (&b, session, url, NULL);
 
-  ws_send (&a, "{\"type\":\"monitor\",\"pad\":%" G_GINT64_FORMAT "}", pad);
+  ws_send (&a, "{\"type\":\"watch-pad\",\"pad\":%" G_GINT64_FORMAT "}", pad);
   first = next_stats (&a, pad);
   second = next_stats (&a, pad);
   g_assert_cmpint (first, >=, 0);
@@ -749,11 +755,11 @@ test_monitor (void)
   g_assert_true (wait_viewers (pad, 1));
 
   /* A second viewer shares the probe. */
-  ws_send (&b, "{\"type\":\"monitor\",\"pad\":%" G_GINT64_FORMAT "}", pad);
+  ws_send (&b, "{\"type\":\"watch-pad\",\"pad\":%" G_GINT64_FORMAT "}", pad);
   g_assert_cmpint (next_stats (&b, pad), >=, 0);
   g_assert_true (wait_viewers (pad, 2));
 
-  ws_send (&a, "{\"type\":\"unmonitor\",\"pad\":%" G_GINT64_FORMAT "}",
+  ws_send (&a, "{\"type\":\"unwatch-pad\",\"pad\":%" G_GINT64_FORMAT "}",
       pad);
   g_assert_true (wait_viewers (pad, 1));
   g_assert_cmpint (next_stats (&b, pad), >, 0);
@@ -838,9 +844,9 @@ test_monitor_bad_commands (void)
   ws_connect (&client, session, url, NULL);
   ws_send (&client, "not json");
   ws_send (&client, "[1, 2]");
-  ws_send (&client, "{\"type\":\"monitor\",\"pad\":\"%" G_GINT64_FORMAT
+  ws_send (&client, "{\"type\":\"watch-pad\",\"pad\":\"%" G_GINT64_FORMAT
       "\"}", pad);
-  ws_send (&client, "{\"type\":\"monitor\",\"pad\":-1}");
+  ws_send (&client, "{\"type\":\"watch-pad\",\"pad\":-1}");
   ws_send (&client, "{\"type\":\"explode\",\"pad\":%" G_GINT64_FORMAT "}",
       pad);
   /* Fields of the wrong type, for every command. */
@@ -848,16 +854,16 @@ test_monitor_bad_commands (void)
   ws_send (&client, "{\"type\":null}");
   ws_send (&client, "{\"type\":[\"monitor\"],\"pad\":%" G_GINT64_FORMAT
       "}", pad);
-  ws_send (&client, "{\"type\":\"monitor\",\"pad\":%" G_GINT64_FORMAT
+  ws_send (&client, "{\"type\":\"watch-pad\",\"pad\":%" G_GINT64_FORMAT
       ".5}", pad);
-  ws_send (&client, "{\"type\":\"measure-latency\",\"element\":\"1\"}");
-  ws_send (&client, "{\"type\":\"measure-latency\",\"element\":{}}");
-  ws_send (&client, "{\"type\":\"measure-latency\",\"element\":1.5}");
-  ws_send (&client, "{\"type\":\"measure-latency\",\"element\":true}");
+  ws_send (&client, "{\"type\":\"measure-element\",\"element\":\"1\"}");
+  ws_send (&client, "{\"type\":\"measure-element\",\"element\":{}}");
+  ws_send (&client, "{\"type\":\"measure-element\",\"element\":1.5}");
+  ws_send (&client, "{\"type\":\"measure-element\",\"element\":true}");
   ws_send (&client, "{\"type\":\"measure-path\",\"from\":\"1\",\"to\":2}");
   ws_send (&client, "{\"type\":\"measure-path\",\"from\":1,\"to\":[2]}");
   ws_send (&client, "{\"type\":\"measure-\"}");
-  ws_send (&client, "{\"type\":\"unmeasure-latency\"}");
+  ws_send (&client, "{\"type\":\"unmeasure-element\"}");
   ws_send (&client, "{\"type\":\"watch-property\",\"element\":1,"
       "\"property\":5}");
   ws_send (&client, "{\"type\":\"watch-property\",\"element\":\"1\","
@@ -865,7 +871,7 @@ test_monitor_bad_commands (void)
   ws_send (&client, "{\"type\":\"watch-property\",\"element\":1,"
       "\"property\":\"a b\"}");
   /* Things that do not exist. */
-  ws_send (&client, "{\"type\":\"measure-latency\",\"element\":999999}");
+  ws_send (&client, "{\"type\":\"measure-element\",\"element\":999999}");
   ws_send (&client, "{\"type\":\"watch-property\",\"element\":%"
       G_GINT64_FORMAT ",\"property\":\"no-such-property\"}",
       element_id ("bad-sink"));
@@ -885,16 +891,16 @@ test_monitor_bad_commands (void)
   g_assert_cmpstr (json_object_get_string_member (error, "reason"), ==,
       "Not valid JSON.");
   json_object_unref (error);
-  ws_send (&client, "{\"type\":\"monitor\",\"pad\":\"x\"}");
+  ws_send (&client, "{\"type\":\"watch-pad\",\"pad\":\"x\"}");
   error = next_error (&client);
   g_assert_cmpstr (json_object_get_string_member (error, "command"), ==,
-      "monitor");
+      "watch-pad");
   g_assert_cmpstr (json_object_get_string_member (error, "reason"), ==,
       "\"pad\" must be a positive whole number.");
   json_object_unref (error);
 
   /* Unknown pads are answered with "gone", not an error. */
-  ws_send (&client, "{\"type\":\"monitor\",\"pad\":999999999}");
+  ws_send (&client, "{\"type\":\"watch-pad\",\"pad\":999999999}");
   g_assert_cmpint (next_stats (&client, 999999999), ==, -1);
   g_assert_cmpint (viewers (pad), ==, 0);
   g_assert_cmpuint (count_messages (&client, "error", 300), ==, 0);
@@ -905,12 +911,12 @@ test_monitor_bad_commands (void)
   g_object_unref (session);
 }
 
-/* The next pad-stats entry for pad, which must not be gone. */
+/* The next pads entry for pad, which must not be gone. */
 static JsonNode *
 next_entry (WsClient * client, gint64 pad)
 {
   while (TRUE) {
-    gchar *message = ws_next (client, "pad-stats");
+    gchar *message = ws_next (client, "pads");
     JsonNode *root = parse (message);
     JsonArray *pads = json_object_get_array_member (json_node_get_object
         (root), "pads");
@@ -942,7 +948,7 @@ test_monitor_values (void)
   gint tries;
 
   ws_connect (&client, session, url, NULL);
-  ws_send (&client, "{\"type\":\"monitor\",\"pad\":%" G_GINT64_FORMAT "}",
+  ws_send (&client, "{\"type\":\"watch-pad\",\"pad\":%" G_GINT64_FORMAT "}",
       pad);
   /* Wait for a full window. */
   for (tries = 0; tries < 8; tries++) {
@@ -1068,7 +1074,7 @@ test_levels (void)
   for (i = 0; i < json_array_get_length (pipelines); i++) {
     JsonObject *candidate = json_array_get_object_element (pipelines, i);
 
-    if (json_object_get_int_member (candidate, "id") > 0 &&
+    if (json_object_get_int_member (candidate, "element") > 0 &&
         g_strcmp0 (json_object_get_string_member (candidate, "path"),
             GST_OBJECT_NAME (pipeline)) == 0)
       p = candidate;
@@ -1245,8 +1251,10 @@ element_id (const gchar * name)
 static JsonObject *
 property (JsonNode * root, const gchar * name)
 {
-  JsonArray *props = json_object_get_array_member (json_node_get_object
-      (root), "properties");
+  JsonObject *element = json_array_get_object_element
+      (json_object_get_array_member (json_node_get_object (root), "elements"),
+      0);
+  JsonArray *props = json_object_get_array_member (element, "properties");
   guint i;
 
   for (i = 0; i < json_array_get_length (props); i++) {
@@ -1378,8 +1386,9 @@ test_properties_not_answering (void)
   start = g_get_monotonic_time ();
   root = get_properties (id);
   g_assert_cmpint (g_get_monotonic_time () - start, <, 3 * G_USEC_PER_SEC);
-  g_assert_cmpstr (json_object_get_string_member (json_node_get_object (root),
-          "not_answering"), ==, "slow");
+  g_assert_cmpstr (json_object_get_string_member (json_array_get_object_element
+          (json_object_get_array_member (json_node_get_object (root),
+                  "elements"), 0), "not_answering"), ==, "slow");
   json_node_unref (root);
 
   root = get_properties (id);
@@ -1398,8 +1407,10 @@ test_properties_not_answering (void)
     gboolean back;
 
     root = get_properties (id);
-    back = json_object_has_member (json_node_get_object (root),
-        "properties") && !json_object_get_boolean_member_with_default
+    back = json_object_has_member (json_array_get_object_element
+        (json_object_get_array_member (json_node_get_object (root),
+                "elements"), 0), "properties") &&
+        !json_object_get_boolean_member_with_default
         (property (root, "slow"), "not_answering", FALSE);
     if (back)
       g_assert_cmpint (json_object_get_int_member (property (root, "slow"),
@@ -1435,8 +1446,7 @@ next_rendered (WsClient * client, gint64 element)
       result = -1;
       break;
     }
-    props = json_object_get_array_member (json_object_get_object_member (e,
-            "values"), "properties");
+    props = json_object_get_array_member (e, "properties");
     g_assert_cmpuint (json_array_get_length (props), ==, 1);
     result = json_object_get_int_member (json_object_get_object_member
         (json_object_get_object_member (json_array_get_object_element (props,
@@ -1595,7 +1605,7 @@ test_latency_element (void)
   gint64 avg;
 
   ws_connect (&client, session, url, NULL);
-  ws_send (&client, "{\"type\":\"measure-latency\",\"element\":%"
+  ws_send (&client, "{\"type\":\"measure-element\",\"element\":%"
       G_GINT64_FORMAT "}", id);
   avg = measured_avg (&client, id);
   g_assert_cmpint (avg, >=, 4 * GST_MSECOND);
@@ -1619,7 +1629,7 @@ test_latency_element (void)
       "queue name=lat-queue max-size-time=500000000 ! fakesink sync=true "
       "ts-offset=200000000 async=false");
   id = element_id ("lat-queue");
-  ws_send (&client, "{\"type\":\"measure-latency\",\"element\":%"
+  ws_send (&client, "{\"type\":\"measure-element\",\"element\":%"
       G_GINT64_FORMAT "}", id);
   avg = measured_avg (&client, id);
   g_assert_cmpint (avg, >=, 120 * GST_MSECOND);
@@ -1655,9 +1665,9 @@ test_latency_all_limit (void)
     if (entry != NULL)
       json_node_unref (entry);
     stopped = !json_object_get_boolean_member (a, "on") &&
-        !json_object_get_null_member (a, "stopped_at");
+        !json_object_get_null_member (a, "stopped_rate");
     if (stopped)
-      g_assert_cmpint (json_object_get_int_member (a, "stopped_at"), >, 50);
+      g_assert_cmpint (json_object_get_int_member (a, "stopped_rate"), >, 50);
     json_node_unref (all);
   }
   g_assert_true (stopped);
@@ -1731,13 +1741,13 @@ test_pages_latency (void)
   ws_connect (&two, session, url, NULL);
 
   /* One measures a, two nothing: two gets no latency at all. */
-  ws_send (&one, "{\"type\":\"measure-latency\",\"element\":%"
+  ws_send (&one, "{\"type\":\"measure-element\",\"element\":%"
       G_GINT64_FORMAT "}", a);
   g_assert_true (latency_has (&one, a, NULL));
   g_assert_cmpuint (count_messages (&two, "latency", 1500), ==, 0);
 
   /* Two measures b: each gets only its own. */
-  ws_send (&two, "{\"type\":\"measure-latency\",\"element\":%"
+  ws_send (&two, "{\"type\":\"measure-element\",\"element\":%"
       G_GINT64_FORMAT "}", b);
   count_messages (&one, "latency", 600);
   count_messages (&two, "latency", 0);
@@ -1748,9 +1758,9 @@ test_pages_latency (void)
 
   /* Both measure a; one stops: two still gets it, one gets an empty
    * message, then nothing. */
-  ws_send (&two, "{\"type\":\"measure-latency\",\"element\":%"
+  ws_send (&two, "{\"type\":\"measure-element\",\"element\":%"
       G_GINT64_FORMAT "}", a);
-  ws_send (&one, "{\"type\":\"unmeasure-latency\",\"element\":%"
+  ws_send (&one, "{\"type\":\"unmeasure-element\",\"element\":%"
       G_GINT64_FORMAT "}", a);
   for (tries = 0; tries < 5 && latency_has (&one, a, NULL); tries++);
   g_assert_cmpint (tries, <, 5);
@@ -1793,7 +1803,7 @@ test_pages_all_stopped (void)
 
   ws_connect (&one, session, url, NULL);
   ws_connect (&two, session, url, NULL);
-  ws_send (&two, "{\"type\":\"measure-latency\",\"element\":%"
+  ws_send (&two, "{\"type\":\"measure-element\",\"element\":%"
       G_GINT64_FORMAT "}", id);
   ws_send (&one, "{\"type\":\"measure-all\"}");
   for (tries = 0; tries < 20 && !stopped; tries++) {
@@ -1801,7 +1811,7 @@ test_pages_all_stopped (void)
     JsonNode *entry = next_latency (&one, 0, &all);
 
     stopped = !json_object_get_null_member (json_node_get_object (all),
-        "stopped_at");
+        "stopped_rate");
     if (entry != NULL)
       json_node_unref (entry);
     json_node_unref (all);
@@ -1815,7 +1825,7 @@ test_pages_all_stopped (void)
 
     g_assert_nonnull (entry);
     g_assert_true (json_object_get_null_member (json_node_get_object (all),
-            "stopped_at"));
+            "stopped_rate"));
     json_node_unref (entry);
     json_node_unref (all);
   }
@@ -1846,10 +1856,9 @@ next_property_names (WsClient * client, gint64 element)
       JsonArray *props;
 
       if (json_object_get_int_member (e, "element") != element ||
-          !json_object_has_member (e, "values"))
+          !json_object_has_member (e, "properties"))
         continue;
-      props = json_object_get_array_member (json_object_get_object_member (e,
-              "values"), "properties");
+      props = json_object_get_array_member (e, "properties");
       for (j = 0; j < json_array_get_length (props); j++)
         g_string_append_printf (names, "%s%s", names->len ? "," : "",
             json_object_get_string_member (json_array_get_object_element
@@ -1910,16 +1919,16 @@ test_pages_pads (void)
 
   ws_connect (&one, session, url, NULL);
   ws_connect (&two, session, url, NULL);
-  ws_send (&one, "{\"type\":\"monitor\",\"pad\":%" G_GINT64_FORMAT "}", pad);
-  ws_send (&two, "{\"type\":\"monitor\",\"pad\":%" G_GINT64_FORMAT "}", pad);
+  ws_send (&one, "{\"type\":\"watch-pad\",\"pad\":%" G_GINT64_FORMAT "}", pad);
+  ws_send (&two, "{\"type\":\"watch-pad\",\"pad\":%" G_GINT64_FORMAT "}", pad);
   g_assert_cmpint (next_stats (&one, pad), >=, 0);
   g_assert_cmpint (next_stats (&two, pad), >=, 0);
 
-  ws_send (&one, "{\"type\":\"unmonitor\",\"pad\":%" G_GINT64_FORMAT "}",
+  ws_send (&one, "{\"type\":\"unwatch-pad\",\"pad\":%" G_GINT64_FORMAT "}",
       pad);
-  count_messages (&one, "pad-stats", 600);
-  g_assert_cmpuint (count_messages (&one, "pad-stats", 1500), ==, 0);
-  count_messages (&two, "pad-stats", 0);
+  count_messages (&one, "pads", 600);
+  g_assert_cmpuint (count_messages (&one, "pads", 1500), ==, 0);
+  count_messages (&two, "pads", 0);
   g_assert_cmpint (next_stats (&two, pad), >=, 0);
 
   ws_disconnect (&one);
@@ -2562,7 +2571,7 @@ test_monitor_pad_gone (void)
   guint i;
 
   ws_connect (&client, session, url, NULL);
-  ws_send (&client, "{\"type\":\"monitor\",\"pad\":%" G_GINT64_FORMAT "}",
+  ws_send (&client, "{\"type\":\"watch-pad\",\"pad\":%" G_GINT64_FORMAT "}",
       pad);
   g_assert_cmpint (next_stats (&client, pad), >=, 0);
 

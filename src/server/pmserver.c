@@ -262,13 +262,13 @@ handle_graph (SoupServer * soup, SoupServerMessage * msg, const char *path,
 }
 
 static void
-handle_monitors (SoupServer * soup, SoupServerMessage * msg,
+handle_watched_pads (SoupServer * soup, SoupServerMessage * msg,
     const char *path, GHashTable * query, gpointer user_data)
 {
   PmServer *self = user_data;
 
   if (check_request (self, msg))
-    set_message_response (msg, "monitors",
+    set_message_response (msg, "watched-pads",
         pm_monitor_list_json (self->monitor));
 }
 
@@ -308,11 +308,15 @@ handle_properties (SoupServer * soup, SoupServerMessage * msg,
   }
   {
     gchar *props = pm_props_read (element, NULL, PROPERTIES_TIMEOUT_US);
-    GString *json = g_string_new_len (props, strlen (props) - 1);
+    GString *json = g_string_new (NULL);
     gboolean live;
     GstClockTime min, max;
 
-    /* With the latency the element reports, for its details. */
+    /* As in a "properties" message, with the latency the element reports,
+     * for its details. */
+    g_string_append_printf (json, "{\"elements\":[{\"element\":%"
+        G_GUINT64_FORMAT ",", element_id);
+    g_string_append_len (json, props + 1, strlen (props) - 2);
     if (pm_latency_reported (element, &live, &min, &max)) {
       g_string_append_printf (json, ",\"reported\":{\"live\":%s,\"min\":%"
           G_GUINT64_FORMAT, live ? "true" : "false", min);
@@ -322,7 +326,7 @@ handle_properties (SoupServer * soup, SoupServerMessage * msg,
         g_string_append (json, ",\"max\":null");
       g_string_append_c (json, '}');
     }
-    g_string_append_c (json, '}');
+    g_string_append (json, "}]}");
     g_free (props);
     set_message_response (msg, "properties", g_string_free (json, FALSE));
   }
@@ -426,7 +430,7 @@ on_ws_closed (SoupWebsocketConnection * conn, PmServer * self)
 static void
 send_stats (SoupWebsocketConnection * conn, const gchar * stats)
 {
-  gchar *text = pm_json_message ("pad-stats", stats);
+  gchar *text = pm_json_message ("pads", stats);
 
   send_text (conn, text);
   g_free (text);
@@ -518,8 +522,8 @@ run_command (PmServer * self, SoupWebsocketConnection * conn,
     return NULL;
   }
 
-  /* {"type":"measure-latency","element":12} */
-  if (g_strcmp0 (verb, "measure-latency") == 0) {
+  /* {"type":"measure-element","element":12} */
+  if (g_strcmp0 (verb, "measure-element") == 0) {
     gint64 element = id_member (object, "element");
     const gchar *reason;
 
@@ -560,9 +564,9 @@ run_command (PmServer * self, SoupWebsocketConnection * conn,
     return NULL;
   }
 
-  /* {"type":"monitor","pad":12}: a pad that does not exist is answered
-   * with "gone" in pad stats. */
-  if (g_strcmp0 (verb, "monitor") == 0) {
+  /* {"type":"watch-pad","pad":12}: a pad that does not exist is answered
+   * with "gone" in "pads". */
+  if (g_strcmp0 (verb, "watch-pad") == 0) {
     gint64 pad = id_member (object, "pad");
 
     if (pad == 0)
@@ -582,7 +586,7 @@ run_command (PmServer * self, SoupWebsocketConnection * conn,
   return "Unknown command.";
 }
 
-/* Commands from the page, {"type":"monitor","pad":12} and so on; one that
+/* Commands from the page, {"type":"watch-pad","pad":12} and so on; one that
  * fails is answered with an error. */
 static void
 on_ws_message (SoupWebsocketConnection * conn, gint type, GBytes * message,
@@ -718,8 +722,9 @@ send_watched (SoupWebsocketConnection * conn, GHashTable * set,
     } else {
       gchar *values = watched_values (result, value);
 
+      /* {"element":12,"properties":[...]} */
       g_string_append_printf (json, "{\"element\":%" G_GINT64_FORMAT
-          ",\"values\":%s}", id, values);
+          ",%s", id, values + 1);
       g_free (values);
     }
   }
@@ -1132,7 +1137,7 @@ server_thread (gpointer user_data)
       NULL);
   soup_server_add_handler (self->soup, "/api/properties", handle_properties,
       self, NULL);
-  soup_server_add_handler (self->soup, "/api/monitors", handle_monitors, self,
+  soup_server_add_handler (self->soup, "/api/pads", handle_watched_pads, self,
       NULL);
   soup_server_add_handler (self->soup, "/ws", handle_ws_request, self, NULL);
   soup_server_add_websocket_handler (self->soup, "/ws", NULL, NULL,

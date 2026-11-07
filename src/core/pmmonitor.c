@@ -631,7 +631,7 @@ pm_monitor_stats_json (PmMonitor * monitor, gpointer client)
   return g_string_free (json, FALSE);
 }
 
-/* All watched pads with their number of clients, for GET /api/monitors. */
+/* All watched pads with their number of clients, for GET /api/pads. */
 gchar *
 pm_monitor_list_json (PmMonitor * monitor)
 {

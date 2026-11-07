@@ -784,7 +784,7 @@ pm_latency_message (PmLatency * latency, gpointer client)
   g_string_append_printf (json, "\"all\":{\"on\":%s,",
       all ? "true" : "false");
   pm_json_append_value (json, "buffers_per_s", all ? latency->all_rate : 0);
-  pm_json_append_value (json, "stopped_at",
+  pm_json_append_value (json, "stopped_rate",
       stopped ? latency->all_stopped_rate : G_MAXUINT64);
   pm_json_close (json, '}');
   g_string_append_c (json, '}');

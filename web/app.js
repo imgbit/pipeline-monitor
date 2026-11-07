@@ -498,7 +498,7 @@ async function refreshProperties() {
     let data = null;
     try {
       const r = await fetch(`/api/properties?element=${id}`);
-      data = r.ok ? await r.json() : null;
+      data = r.ok ? (await r.json()).elements[0] : null;
     } catch {
       // Disconnected; the next round tries again.
     }
@@ -655,8 +655,9 @@ function applyLatency(latency) {
 }
 
 function applyLevels(levels) {
-  state.queues = new Map(levels.queues.map((q) => [q.id, q]));
-  state.pipelineTimes = new Map(levels.pipelines.map((p) => [p.id, p]));
+  state.queues = new Map(levels.queues.map((q) => [q.element, q]));
+  state.pipelineTimes = new Map(levels.pipelines.map((p) =>
+    [p.element, p]));
   view.setLevels(state.queues);
   showTimes(currentPipeline());
   const index = buildIndex(state.graph);
@@ -712,7 +713,7 @@ function connect(delay = 1000) {
       applyLevels(message);
     } else if (message.type === "properties") {
       elementPins.apply(message);
-    } else if (message.type === "pad-stats") {
+    } else if (message.type === "pads") {
       pins.apply(message);
     } else if (message.type === "log") {
       log.apply(message);
