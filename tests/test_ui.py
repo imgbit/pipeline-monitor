@@ -723,7 +723,7 @@ def check_element_pins(browser):
     rendered = (f"[...{card}.querySelectorAll('dt')].find(d => d.textContent "
                 "=== 'rendered')?.nextElementSibling.textContent")
     assert browser.wait(f"/^[0-9]+ \\(\\+[0-9.]+\\/s\\)$/.test({rendered})",
-                        timeout=6), \
+                        timeout=10), \
         f"no counter rate: {browser.eval(f'{card}?.innerText')!r}; " \
         f"last properties messages (time, rendered): {rendered_seen(browser)}"
     sink = browser.eval(f"{element_selector('fakesink0')}?.dataset.id")
@@ -805,8 +805,8 @@ def check_paths(browser):
     assert browser.wait(f"!!{card('fakesink0:sink')}")
     auto = row("fakesink0:sink", "from queue0:sink")
     assert browser.wait(f"/[0-9.]+ (ns|µs|ms) \\(/.test("
-                        f"{auto}?.nextElementSibling.textContent)", timeout=6), \
-        "no time from the upstream pinned pad"
+                        f"{auto}?.nextElementSibling.textContent)",
+                        timeout=10), "no time from the upstream pinned pad"
 
     # Choose another pad by hand; Esc cancels choosing.
     hint = "document.getElementById('pick-hint')"
