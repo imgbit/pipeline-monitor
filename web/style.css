@@ -582,8 +582,9 @@ main {
 .latency-text.high { fill: var(--warning); font-weight: 600; }
 .latency-text.unknown { fill: var(--muted); font-style: italic; }
 #details .measure-toggle { margin: 0 0 6px; }
-/* Nothing left to act on once the program has ended. */
-body.ended #details .measure-toggle, body.ended #details .mute-toggle { display: none; }
+/* A note in place of a value; the state shown when not connected. */
+#details .latency-note { grid-column: 1 / -1; color: var(--muted); }
+.state.stale { opacity: 0.6; }
 #details .latency-section dl { margin-bottom: 4px; }
 
 .pick-hint {
@@ -655,10 +656,9 @@ body.ended #details .measure-toggle, body.ended #details .mute-toggle { display:
 .connection.ended::before { background: var(--muted); }
 .ended-banner {
   position: absolute;
-  top: 12px;
-  left: 50%;
-  transform: translateX(-50%);
-  max-width: calc(100% - 32px);
+  top: 16px;
+  left: 16px;
+  max-width: max(200px, calc(100% - 468px));
   padding: 6px 12px;
   background: var(--panel);
   color: var(--fg);

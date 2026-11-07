@@ -253,8 +253,8 @@ class Browser:
         self.log.close()
 
 
-def start_server(serve, pipeline, *args, debug=None):
-    env = dict(os.environ, GST_TRACERS="pipeline-monitor(port=0)")
+def start_server(serve, pipeline, *args, debug=None, port=0):
+    env = dict(os.environ, GST_TRACERS=f"pipeline-monitor(port={port})")
     if debug:
         env["GST_DEBUG"] = debug
     proc = subprocess.Popen([serve, *args, pipeline], env=env,
@@ -799,12 +799,84 @@ def check_ended(browser, serve):
             f'#graph .node[data-id="{queue}"] > rect.box',
             "document.querySelector('#details h2')?.textContent === "
             "'queue0'"), "could not select queue0"
-        assert browser.wait("!!document.querySelector('#details "
-                            ".measure-toggle')")
-        assert browser.eval("[...document.querySelectorAll('#details "
-                            ".measure-toggle, #details .mute-toggle')]"
-                            ".every(b => !b.offsetParent)"), \
-            "buttons shown after the program ended"
+        # Buttons stay usable; what they turn on starts with the next run.
+        toggle = "document.querySelector('#details .measure-toggle')"
+        assert browser.wait(f"!!{toggle}?.offsetParent")
+        assert browser.eval("!!document.querySelector('#details "
+                            ".mute-toggle')?.offsetParent")
+        browser.eval(f"{toggle}.click()")
+        assert browser.wait("document.querySelector('#details "
+                            ".latency-section').textContent.includes("
+                            "'starts when the program runs')"), \
+            "no note that measuring starts with the next run"
+        browser.eval(f"{toggle}.click()")
+        assert browser.wait(f"{toggle}.textContent === 'Measure'")
+    finally:
+        if server.poll() is None:
+            server.terminate()
+            server.wait()
+
+
+# Measurements are kept by element path: they come back with a new run,
+# also when turned on while no program is connected.
+RESTART_PIPELINE = ("audiotestsrc is-live=true ! queue name=q-r ! "
+                    "identity name=i-r ! fakesink sync=true")
+
+
+def check_measure_restart(browser, serve):
+    port = free_port()
+    section = "document.querySelector('#details .latency-section')"
+    measured = f"/[0-9.]+ (ns|µs|ms) avg/.test({section}?.textContent)"
+
+    def select(name):
+        node = browser.eval(f"{element_selector(name)}?.dataset.id")
+        assert browser.click_until(
+            f'#graph .node[data-id="{node}"] > rect.box',
+            "document.querySelector('#details h2')?.textContent === "
+            f"{json.dumps(name)}", tries=5), f"could not select {name}"
+
+    server, url = start_server(serve, RESTART_PIPELINE, port=port)
+    try:
+        browser.call("Page.navigate", url=url)
+        assert browser.wait(f"!!{element_selector('q-r')}", timeout=10)
+        select("q-r")
+        browser.eval(f"{section}.querySelector('.measure-toggle').click()")
+        assert browser.wait(measured, timeout=8), "queue not measured"
+
+        # Killed: no goodbye. The last state stays, marked as such.
+        server.kill()
+        server.wait()
+        assert browser.wait("!document.getElementById('lost').hidden"), \
+            "no connection-lost banner"
+        assert browser.wait("document.getElementById('pipeline-state')"
+                            ".textContent.includes('(last known)')")
+        assert browser.wait(f"{section}.textContent.includes("
+                            "'starts when the program runs')")
+        # Turned on while nothing is connected.
+        browser.click("#details .close")
+        select("i-r")
+        browser.eval(f"{section}.querySelector('.measure-toggle').click()")
+        assert browser.wait(f"{section}.textContent.includes("
+                            "'starts when the program runs')")
+
+        # A new run on the same address: both are measured again, by path.
+        server, url = start_server(serve, RESTART_PIPELINE, port=port)
+        assert browser.wait("document.getElementById('connection')"
+                            ".textContent === 'connected'", timeout=15), \
+            "page did not reconnect"
+        assert browser.wait("document.getElementById('lost').hidden")
+        assert browser.wait(measured, timeout=8), "identity not measured " \
+            "after the restart"
+        browser.click("#details .close")
+        select("q-r")
+        assert browser.wait(measured, timeout=8), "queue not measured " \
+            "after the restart"
+        for name in ("q-r", "i-r"):
+            browser.click("#details .close")
+            select(name)
+            browser.eval(f"{section}.querySelector('.measure-toggle')"
+                         ".click()")
+        assert not browser.errors, f"errors in the page: {browser.errors}"
     finally:
         if server.poll() is None:
             server.terminate()
@@ -974,6 +1046,7 @@ def main():
                 raise
             check_findings(browser, serve)
             check_ended(browser, serve)
+            check_measure_restart(browser, serve)
     finally:
         if browser:
             browser.close()

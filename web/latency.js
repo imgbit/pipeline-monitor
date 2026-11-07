@@ -38,18 +38,22 @@ export function latencyLabel(entry, unit) {
 // Rows for the details panel; pads: the element's pads, to explain why a
 // source or a sink is not measured before any data came.
 // reported: what the element reports, from its properties answer, when
-// it is not being measured.
-export function latencyRows(entry, unit, pads, reported) {
+// it is not being measured. pending: measuring is on, but no program is
+// connected. A row with a null label is a note.
+export function latencyRows(entry, unit, pads, reported, pending) {
   const rows = [];
   const m = entry?.measured;
   const inputs = entry ? entry.inputs : pads.some((p) => p.direction === "sink");
   const outputs = entry ? entry.outputs : pads.some((p) => p.direction === "src");
   if (!inputs)
-    rows.push(["measured", "nothing to measure: a source has no input"]);
+    rows.push([null, "A source has no input, so there is nothing to " +
+      "measure here."]);
   else if (!outputs)
-    rows.push(["measured", "nothing to measure: a sink has no output. " +
-      "Click its sink pad in the graph: the pad card's \"delay\" shows how " +
-      "late buffers reach it"]);
+    rows.push([null, "A sink has no output, so there is nothing to measure " +
+      "here. Click its sink pad in the graph: the pad card's \"delay\" " +
+      "shows how late buffers reach it."]);
+  else if (pending)
+    rows.push(["measured", "starts when the program runs"]);
   else if (!m)
     rows.push(["measured", "—"]);
   else if (cannotMeasure(m))

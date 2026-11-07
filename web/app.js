@@ -19,6 +19,8 @@ const $ = (id) => document.getElementById(id);
 const COLLAPSED_KEY = "pipeline-monitor.collapsed";
 const CAPS_LABELS_KEY = "pipeline-monitor.caps-labels";
 const TIME_UNIT_KEY = "pipeline-monitor.time-unit";
+const MEASURING_KEY = "pipeline-monitor.measuring";
+const MEASURE_ALL_KEY = "pipeline-monitor.measure-all";
 
 const elk = new ELK({ workerUrl: "vendor/elkjs/elk-worker.min.js" });
 
@@ -32,9 +34,13 @@ const state = {
   // From the "latency" message: entries by element id, and "measure all".
   latency: new Map(),
   latencyAll: { on: false, buffers_per_s: 0, stopped_at: null },
-  // Elements this page asked to measure, and whether it wants all.
-  measuring: new Set(),
-  measureAll: false,
+  // Elements this page measures, by path (kept across reloads and runs),
+  // whether it wants all, and the ids sent on this connection.
+  measuring: loadMeasuring(),
+  measureAll: loadFlag(MEASURE_ALL_KEY),
+  measuringSent: new Map(),
+  // A program is connected: measurements and pins are applied.
+  connected: false,
   // Pad to pad: "from>to" -> measured, and the keys sent to the server.
   pathLatency: new Map(),
   pathsSent: new Set(),
@@ -290,6 +296,22 @@ function loadCollapsed() {
   }
 }
 
+function loadMeasuring() {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(MEASURING_KEY)) || []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveMeasuring() {
+  try {
+    localStorage.setItem(MEASURING_KEY, JSON.stringify([...state.measuring]));
+  } catch {
+    // Storage may be unavailable; measuring still works for this page.
+  }
+}
+
 function saveCollapsed() {
   try {
     localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...state.collapsed]));
@@ -365,8 +387,11 @@ function updateHeader(pipeline) {
     }));
   }
   $("pipeline-name").textContent = pipeline ? pipeline.name : "";
-  $("pipeline-state").textContent = pipeline ? pipeline.state : "";
-  $("pipeline-state").className = `state ${pipeline ? pipeline.state : ""}`;
+  // Without a connection it is the last state known, not the current one.
+  $("pipeline-state").textContent = pipeline
+    ? `${pipeline.state}${state.connected ? "" : " (last known)"}` : "";
+  $("pipeline-state").className = `state ${pipeline ? pipeline.state : ""}` +
+    (state.connected ? "" : " stale");
   $("element-count").textContent = pipeline
     ? `${countElements(pipeline)} elements` : "";
   showTimes(pipeline);
@@ -542,20 +567,21 @@ function latencyDetails(selection) {
   if (!selection)
     return null;
   const id = selection.element.id;
+  const on = state.measuring.has(selection.path);
   return {
-    on: state.measuring.has(id),
+    on,
     toggle() {
-      const on = !state.measuring.has(id);
-      if (on)
-        state.measuring.add(id);
+      if (state.measuring.has(selection.path))
+        state.measuring.delete(selection.path);
       else
-        state.measuring.delete(id);
-      send({ type: on ? "measure-latency" : "unmeasure-latency", element: id });
+        state.measuring.add(selection.path);
+      saveMeasuring();
+      syncMeasuring();
       updateLatencyDetails($("details"), latencyDetails(selection));
     },
     rows: latencyRows(state.latency.get(id), pins.unit,
       selection.element.pads, propsLast.id === id ? propsLast.data?.reported
-        : null),
+        : null, on && !state.connected),
     // Only with data going in and out is there a time in between.
     measurable: selection.element.pads.some((p) => p.direction === "sink") &&
       selection.element.pads.some((p) => p.direction === "src"),
@@ -566,7 +592,11 @@ function showMeasureAll() {
   const button = $("measure-all");
   const all = state.latencyAll;
   button.setAttribute("aria-pressed", String(state.measureAll));
-  if (state.measureAll && all.on) {
+  if (state.measureAll && !state.connected) {
+    button.textContent = "latency · starts when the program runs";
+    button.title = "Measures every element once a program is connected; " +
+      "click to stop";
+  } else if (state.measureAll && all.on) {
     button.textContent = `latency · ${all.buffers_per_s.toLocaleString()} ` +
       "buf/s";
     button.title = "Measuring every element; click to stop";
@@ -578,6 +608,30 @@ function showMeasureAll() {
   } else {
     button.textContent = "latency";
     button.title = "Measure how long data takes through every element";
+  }
+}
+
+// Measurements are kept by element path, so they survive reloads and new
+// runs; each connection gets them with that run's element ids. Called
+// with the run's graph, never with an older one.
+function syncMeasuring() {
+  if (socket?.readyState !== WebSocket.OPEN)
+    return;
+  const { elementPaths } = buildIndex(state.graph);
+  for (const [path, id] of state.measuringSent) {
+    const now = elementPaths.get(path)?.id;
+    if (state.measuring.has(path) && now === id)
+      continue;
+    if (now === id)
+      send({ type: "unmeasure-latency", element: id });
+    state.measuringSent.delete(path);
+  }
+  for (const path of state.measuring) {
+    const id = elementPaths.get(path)?.id;
+    if (id !== undefined && !state.measuringSent.has(path)) {
+      send({ type: "measure-latency", element: id });
+      state.measuringSent.set(path, id);
+    }
   }
 }
 
@@ -725,8 +779,10 @@ function applyLatency(latency) {
   state.pathLatency = new Map(latency.paths.map((p) => [`${p.from}>${p.to}`,
     p.measured]));
   state.latencyAll = latency.all;
-  if (state.measureAll && !latency.all.on && latency.all.stopped_at)
+  if (state.measureAll && !latency.all.on && latency.all.stopped_at) {
     state.measureAll = false;
+    saveFlag(MEASURE_ALL_KEY, false);
+  }
   showLatencyLabels();
   showMeasureAll();
   const index = buildIndex(state.graph);
@@ -753,18 +809,20 @@ function connect(delay = 1000) {
     status.textContent = "connected";
     status.className = "connection connected";
     $("ended").hidden = true;
+    $("lost").hidden = true;
     ended = false;
-    document.body.classList.remove("ended");
+    state.connected = true;
     delay = 1000;
     log.reset();
     pins.connected();
     elementPins.connected();
-    // A new connection knows nothing of what this page measures.
-    for (const id of state.measuring)
-      send({ type: "measure-latency", element: id });
+    // A new connection knows nothing of what this page measures; elements
+    // are measured again when this run's graph comes (syncMeasuring).
+    state.measuringSent = new Map();
     if (state.measureAll)
       send({ type: "measure-all" });
     state.pathsSent = new Set();
+    showMeasureAll();
   };
   ws.onmessage = (event) => {
     const message = JSON.parse(event.data);
@@ -776,6 +834,7 @@ function connect(delay = 1000) {
       pins.sync(index.padPaths);
       elementPins.sync(index.elementPaths);
       updatePaths();
+      syncMeasuring();
       update();
     } else if (message.type === "findings") {
       findings.apply(message.findings);
@@ -796,7 +855,6 @@ function connect(delay = 1000) {
         update();
     } else if (message.type === "bye") {
       ended = true;
-      document.body.classList.add("ended");
       // A program usually destroys its pipeline before it exits: show the
       // last state in which there was one.
       if (!state.graph.pipelines.length && lastAlive.graph) {
@@ -809,8 +867,14 @@ function connect(delay = 1000) {
     }
   };
   ws.onclose = () => {
-    // After "bye" the program has ended: its last state stays on screen,
-    // and the page quietly looks for a new run on the same address.
+    // Its last state stays on screen; what the page measures and pins is
+    // applied again when a program connects.
+    state.connected = false;
+    state.latency = new Map();
+    showMeasureAll();
+    update();
+    // After "bye" the program has ended, and the page quietly looks for a
+    // new run on the same address.
     if (ended) {
       status.textContent = "program ended";
       status.className = "connection ended";
@@ -820,6 +884,7 @@ function connect(delay = 1000) {
     }
     status.textContent = "disconnected, retrying";
     status.className = "connection disconnected";
+    $("lost").hidden = !state.graph.pipelines.length;
     setTimeout(() => connect(Math.min(delay * 2, 5000)), delay);
   };
 }
@@ -865,6 +930,7 @@ document.addEventListener("pointerdown", (e) => {
 });
 $("measure-all").addEventListener("click", () => {
   state.measureAll = !state.measureAll;
+  saveFlag(MEASURE_ALL_KEY, state.measureAll);
   state.latencyAll.stopped_at = null;
   send({ type: state.measureAll ? "measure-all" : "unmeasure-all" });
   showMeasureAll();

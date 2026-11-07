@@ -110,6 +110,10 @@ export function updateLatencyDetails(aside, latency) {
   button.setAttribute("aria-pressed", String(latency.on));
   const dl = document.createElement("dl");
   for (const [k, v] of latency.rows) {
+    if (k === null) {
+      add(dl, "dd", v, "latency-note");
+      continue;
+    }
     add(dl, "dt", k);
     add(dl, "dd", v);
   }
