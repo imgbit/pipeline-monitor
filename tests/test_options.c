@@ -191,7 +191,6 @@ typedef struct
   guint port;
   guint delay_ms;
   GString *received;
-  gint64 connected_at;
 } PageThread;
 
 static gboolean
@@ -228,7 +227,6 @@ page_thread (gpointer data)
   g_output_stream_write_all (g_io_stream_get_output_stream (G_IO_STREAM
           (conn)), request, strlen (request), NULL, NULL, NULL);
   g_free (request);
-  page->connected_at = g_get_monotonic_time ();
 
   /* Skip the response headers, then read frames until the end. */
   in = g_io_stream_get_input_stream (G_IO_STREAM (conn));
@@ -304,14 +302,17 @@ static void
 test_wait (void)
 {
   if (g_test_subprocess ()) {
-    PageThread page = { free_port (), 300, g_string_new (NULL), 0 };
+    PageThread page = { free_port (), 300, g_string_new (NULL) };
     gchar *tracers = g_strdup_printf ("pipeline-monitor(port=%u,wait=true)",
         page.port);
+    gint64 before = g_get_monotonic_time ();
     GThread *thread = g_thread_new ("page", page_thread, &page);
     gchar *url = start_tracer (tracers);
 
-    /* gst_init returned only once the page was there. */
-    g_assert_cmpint (page.connected_at, >, 0);
+    /* gst_init returned only once the page was there: the page connects
+     * after its delay. */
+    g_assert_cmpint (g_get_monotonic_time () - before, >=,
+        page.delay_ms * G_TIME_SPAN_MILLISECOND);
     g_assert_cmpuint (url_port (url), ==, page.port);
     gst_deinit ();
     g_thread_join (thread);
@@ -329,7 +330,7 @@ static void
 test_final_state (void)
 {
   if (g_test_subprocess ()) {
-    PageThread page = { free_port (), 0, g_string_new (NULL), 0 };
+    PageThread page = { free_port (), 0, g_string_new (NULL) };
     gchar *tracers = g_strdup_printf ("pipeline-monitor(port=%u,wait=true)",
         page.port);
     GThread *thread = g_thread_new ("page", page_thread, &page);
