@@ -402,6 +402,30 @@ send_stats (SoupWebsocketConnection * conn, const gchar * stats)
   g_free (text);
 }
 
+/* A member that is a string, or NULL. */
+static const gchar *
+string_member (JsonObject * object, const gchar * name)
+{
+  JsonNode *node = json_object_get_member (object, name);
+
+  if (node == NULL || !JSON_NODE_HOLDS_VALUE (node) ||
+      json_node_get_value_type (node) != G_TYPE_STRING)
+    return NULL;
+  return json_node_get_string (node);
+}
+
+/* A member that is a positive whole number (an id), or 0. */
+static gint64
+id_member (JsonObject * object, const gchar * name)
+{
+  JsonNode *node = json_object_get_member (object, name);
+
+  if (node == NULL || !JSON_NODE_HOLDS_VALUE (node) ||
+      json_node_get_value_type (node) != G_TYPE_INT64)
+    return 0;
+  return MAX (json_node_get_int (node), 0);
+}
+
 /* Commands from the page: {"type":"monitor","pad":12} starts watching a
  * pad, {"type":"unmonitor","pad":12} stops. Anything else is ignored. */
 static void
@@ -409,7 +433,7 @@ on_ws_message (SoupWebsocketConnection * conn, gint type, GBytes * message,
     PmServer * self)
 {
   JsonParser *parser;
-  JsonNode *root, *pad_node;
+  JsonNode *root;
   JsonObject *object;
   const gchar *command;
   gint64 pad;
@@ -426,7 +450,9 @@ on_ws_message (SoupWebsocketConnection * conn, gint type, GBytes * message,
   if (!JSON_NODE_HOLDS_OBJECT (root))
     goto done;
   object = json_node_get_object (root);
-  command = json_object_get_string_member_with_default (object, "type", "");
+  command = string_member (object, "type");
+  if (command == NULL)
+    goto done;
 
   /* {"type":"measure-latency","element":12}, {"type":"measure-all"},
    * {"type":"measure-path","from":3,"to":9} and their "un" forms. */
@@ -434,10 +460,9 @@ on_ws_message (SoupWebsocketConnection * conn, gint type, GBytes * message,
       g_str_has_prefix (command, "unmeasure-")) {
     gboolean on = command[0] == 'm';
     const gchar *what = strchr (command, '-') + 1;
-    gint64 element = json_object_get_int_member_with_default (object,
-        "element", 0);
-    gint64 from = json_object_get_int_member_with_default (object, "from", 0);
-    gint64 to = json_object_get_int_member_with_default (object, "to", 0);
+    gint64 element = id_member (object, "element");
+    gint64 from = id_member (object, "from");
+    gint64 to = id_member (object, "to");
 
     if (g_strcmp0 (what, "all") == 0)
       pm_latency_measure_all (self->latency, conn, on);
@@ -451,24 +476,16 @@ on_ws_message (SoupWebsocketConnection * conn, gint type, GBytes * message,
   /* {"type":"watch-property","element":12,"property":"stats"} */
   if (g_strcmp0 (command, "watch-property") == 0 ||
       g_strcmp0 (command, "unwatch-property") == 0) {
-    JsonNode *element = json_object_get_member (object, "element");
-    const gchar *property = json_object_get_string_member_with_default
-        (object, "property", NULL);
+    gint64 element = id_member (object, "element");
+    const gchar *property = string_member (object, "property");
 
-    if (element != NULL && JSON_NODE_HOLDS_VALUE (element) &&
-        json_node_get_value_type (element) == G_TYPE_INT64 &&
-        json_node_get_int (element) > 0 && valid_property_name (property))
-      watch_property (self, conn, json_node_get_int (element), property,
-          command[0] == 'w');
+    if (element > 0 && valid_property_name (property))
+      watch_property (self, conn, element, property, command[0] == 'w');
     goto done;
   }
 
-  pad_node = json_object_get_member (object, "pad");
-  if (pad_node == NULL || !JSON_NODE_HOLDS_VALUE (pad_node) ||
-      json_node_get_value_type (pad_node) != G_TYPE_INT64)
-    goto done;
-  pad = json_node_get_int (pad_node);
-  if (pad <= 0)
+  pad = id_member (object, "pad");
+  if (pad == 0)
     goto done;
 
   if (g_strcmp0 (command, "monitor") == 0) {

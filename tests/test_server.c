@@ -767,6 +767,8 @@ test_monitor (void)
   g_object_unref (session);
 }
 
+static guint count_messages (WsClient * client, const gchar * type, gint ms);
+
 static void
 test_monitor_bad_commands (void)
 {
@@ -785,7 +787,32 @@ test_monitor_bad_commands (void)
   ws_send (&client, "{\"type\":\"monitor\",\"pad\":-1}");
   ws_send (&client, "{\"type\":\"explode\",\"pad\":%" G_GINT64_FORMAT "}",
       pad);
-  /* Unknown pads are answered with "gone". */
+  /* Fields of the wrong type, for every command. */
+  ws_send (&client, "{\"type\":5}");
+  ws_send (&client, "{\"type\":null}");
+  ws_send (&client, "{\"type\":[\"monitor\"],\"pad\":%" G_GINT64_FORMAT
+      "}", pad);
+  ws_send (&client, "{\"type\":\"monitor\",\"pad\":%" G_GINT64_FORMAT
+      ".5}", pad);
+  ws_send (&client, "{\"type\":\"measure-latency\",\"element\":\"1\"}");
+  ws_send (&client, "{\"type\":\"measure-latency\",\"element\":{}}");
+  ws_send (&client, "{\"type\":\"measure-latency\",\"element\":1.5}");
+  ws_send (&client, "{\"type\":\"measure-latency\",\"element\":true}");
+  ws_send (&client, "{\"type\":\"measure-path\",\"from\":\"1\",\"to\":2}");
+  ws_send (&client, "{\"type\":\"measure-path\",\"from\":1,\"to\":[2]}");
+  ws_send (&client, "{\"type\":\"measure-\"}");
+  ws_send (&client, "{\"type\":\"unmeasure-latency\"}");
+  ws_send (&client, "{\"type\":\"watch-property\",\"element\":1,"
+      "\"property\":5}");
+  ws_send (&client, "{\"type\":\"watch-property\",\"element\":\"1\","
+      "\"property\":\"name\"}");
+  ws_send (&client, "{\"type\":\"watch-property\",\"element\":1,"
+      "\"property\":\"a b\"}");
+  /* None of them started a measurement or a watch. */
+  g_assert_cmpuint (count_messages (&client, "latency", 600), ==, 0);
+  g_assert_cmpuint (count_messages (&client, "properties", 600), ==, 0);
+
+  /* Unknown pads are answered with "gone"; the server still answers. */
   ws_send (&client, "{\"type\":\"monitor\",\"pad\":999999999}");
   g_assert_cmpint (next_stats (&client, 999999999), ==, -1);
   g_assert_cmpint (viewers (pad), ==, 0);
