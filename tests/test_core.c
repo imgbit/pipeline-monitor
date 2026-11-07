@@ -670,6 +670,10 @@ test_latency_path (PathFixture * f, gconstpointer data)
 
   pm_latency_measure_path (latency, CLIENT, a, b, TRUE);
 
+  /* Buffers that went in before measuring started: not counted. */
+  push_out (f->b, 5 * GST_SECOND, 40 * GST_MSECOND);
+  push_out (f->b, 5 * GST_SECOND + 40 * GST_MSECOND, 40 * GST_MSECOND);
+
   /* Three frames in, then out in another order (a decoder with B-frames),
    * 30 ms later. */
   for (i = 0; i < 3; i++)

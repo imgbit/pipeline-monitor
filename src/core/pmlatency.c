@@ -17,6 +17,9 @@
 /* Marks older than this are not matched (a stream that loops or seeks
  * repeats running times). */
 #define MAX_AGE (5 * GST_SECOND)
+/* Buffers already inside when measuring starts come out without a known
+ * input: not counted until one matches, or for this long. */
+#define SETTLE_TIME (2 * GST_SECOND)
 #define SAMPLE_GAP (10 * GST_MSECOND)
 #define WINDOW_SLOTS 4
 /* Reported latency is queried every REPORT_TICKS ticks (250 ms each). */
@@ -44,6 +47,8 @@ struct _PmMeasure
   guint head, count;
   PmSlot slot;
   GstClockTime last;
+  GstClockTime started;
+  gboolean settled;
   /* Probe calls since the last tick. */
   gint calls;
 
@@ -146,6 +151,7 @@ measure_new (gboolean is_path, guint64 a, guint64 b)
   m->a = a;
   m->b = b;
   m->last = GST_CLOCK_TIME_NONE;
+  m->started = gst_util_get_timestamp ();
   m->probes = g_ptr_array_new_with_free_func ((GDestroyNotify)
       probe_ref_free);
   m->clients = g_hash_table_new (NULL, NULL);
@@ -217,10 +223,16 @@ match (PmMeasure * m, GstClockTime start, GstClockTime now)
       slot->sum += t;
       slot->matched++;
       m->last = t;
+      m->settled = TRUE;
       g_mutex_unlock (&m->lock);
       return;
     }
   }
+  if (!m->settled && now - m->started < SETTLE_TIME) {
+    g_mutex_unlock (&m->lock);
+    return;
+  }
+  m->settled = TRUE;
   slot->unmatched++;
   g_mutex_unlock (&m->lock);
 }
