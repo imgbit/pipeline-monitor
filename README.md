@@ -165,10 +165,12 @@ e.g. `curl -s http://127.0.0.1:8765/api/findings`; see
 
 ## Status
 
-Version 0.8 shows the pipeline graph, errors and warnings, negotiated caps,
+Version 0.9 shows the pipeline graph, errors and warnings, negotiated caps,
 live values of pinned pads, queue fill, the pipeline's clock and times,
 element properties, live when pinned, latency per element and between pads,
-and detects pipeline issues.
+and detects pipeline issues. Each open page is independent, and the
+interface it uses is documented for other tools
+([docs/protocol.md](docs/protocol.md), protocol 1).
 It is tested on macOS (Apple Silicon) with GStreamer 1.28.8, and in CI on
 Ubuntu 24.04 (GStreamer 1.24), Debian 12 (GStreamer 1.22), macOS (Homebrew)
 and Windows (official GStreamer 1.28.8, MSVC).
