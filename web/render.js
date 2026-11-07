@@ -314,7 +314,7 @@ export class GraphView {
           this.drawNode(nodes, node, meta, info, view);
       });
 
-    this.levelLayer = el("g");
+    this.levelLayer = el("g", { class: "levels" });
     this.latencyLayer = el("g");
     this.viewport.replaceChildren(bins, edges, nodes, labels, this.levelLayer,
       this.latencyLayer);

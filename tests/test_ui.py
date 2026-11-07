@@ -581,6 +581,14 @@ def check_levels(browser):
         "no queue tooltip"
     browser.call("Input.dispatchMouseEvent", type="mouseMoved", x=2, y=2)
 
+    # The level text sits on the queue; a click there selects the queue.
+    assert browser.eval(
+        "[...document.querySelectorAll('#graph .level-text')].every(t => {"
+        " const r = t.getBoundingClientRect();"
+        " const n = document.elementFromPoint(r.x + r.width / 2,"
+        " r.y + r.height / 2);"
+        " return !!n?.closest('.node[data-level]'); })"), \
+        "the level text takes clicks meant for the queue"
     qid = browser.eval(f"{queue}?.dataset.id")
     assert browser.click_until(
         f'#graph .node[data-id="{qid}"] > rect.box',

@@ -533,6 +533,8 @@ main {
 
 /* Queue levels and pipeline times */
 
+/* Clicks and the levels tooltip go to the queue underneath. */
+.levels { pointer-events: none; }
 .level-track { fill: var(--border); }
 .level-fill.ok { fill: var(--playing); }
 .level-fill.high { fill: var(--paused); }
