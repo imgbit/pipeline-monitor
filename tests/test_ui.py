@@ -114,6 +114,10 @@ class Browser:
         self.errors = []
         self.call("Runtime.enable")
         self.call("Page.enable")
+        # The last "properties" messages, shown when a check about them
+        # fails.
+        self.frames = []
+        self.call("Network.enable")
         self.coverage_file = os.environ.get("PM_JS_COVERAGE")
         self.coverage = {}
         if self.coverage_file:
@@ -165,6 +169,10 @@ class Browser:
                 details = msg["params"]["exceptionDetails"]
                 self.errors.append(details.get("exception", {})
                                    .get("description", details.get("text")))
+            elif msg.get("method") == "Network.webSocketFrameReceived":
+                data = msg["params"]["response"]["payloadData"]
+                if data.startswith('{"type":"properties"'):
+                    self.frames = self.frames[-11:] + [data]
             elif (msg.get("method") == "Runtime.consoleAPICalled"
                   and msg["params"]["type"] in ("error", "warning")):
                 self.errors.append(" ".join(
@@ -689,6 +697,17 @@ def check_properties(browser):
     assert browser.eval("!!document.querySelector('#details dl.fields')")
 
 
+def rendered_seen(browser):
+    seen = []
+    for data in browser.frames:
+        message = json.loads(data)
+        rendered = [p["value"]["fields"].get("rendered")
+                    for e in message.get("elements", [])
+                    for p in e.get("properties", []) if p["name"] == "stats"]
+        seen.append((message["time"], rendered))
+    return seen
+
+
 def check_element_pins(browser):
     # The panel is open on fakesink0 (check_properties).
     rows = "[...document.querySelectorAll('#details table.props tr')]"
@@ -705,7 +724,8 @@ def check_element_pins(browser):
                 "=== 'rendered')?.nextElementSibling.textContent")
     assert browser.wait(f"/^[0-9]+ \\(\\+[0-9.]+\\/s\\)$/.test({rendered})",
                         timeout=6), \
-        f"no counter rate: {browser.eval(f'{card}?.innerText')!r}"
+        f"no counter rate: {browser.eval(f'{card}?.innerText')!r}; " \
+        f"last properties messages (time, rendered): {rendered_seen(browser)}"
     sink = browser.eval(f"{element_selector('fakesink0')}?.dataset.id")
     assert browser.eval(f"document.querySelector('#graph .node[data-id="
                         f"\"{sink}\"]').classList.contains('pinned')")
