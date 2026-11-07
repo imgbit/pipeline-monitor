@@ -642,8 +642,11 @@ push_out (GstPad * pad, GstClockTime pts, GstClockTime duration)
 static JsonObject *
 path_measured (PmLatency * latency, JsonParser * parser)
 {
-  gchar *json = pm_latency_tick (latency);
+  gchar *json;
   JsonArray *paths;
+
+  pm_latency_tick (latency);
+  json = pm_latency_message (latency, CLIENT);
 
   g_assert_true (json_parser_load_from_data (parser, json, -1, NULL));
   g_free (json);
@@ -698,10 +701,12 @@ test_latency_path (PathFixture * f, gconstpointer data)
 
   /* After the last measurement, one empty message, then none. */
   pm_latency_measure_path (latency, CLIENT, a, b, FALSE);
-  json = pm_latency_tick (latency);
+  pm_latency_tick (latency);
+  json = pm_latency_message (latency, CLIENT);
   g_assert_nonnull (strstr (json, "\"paths\":[]"));
   g_free (json);
-  g_assert_null (pm_latency_tick (latency));
+  pm_latency_tick (latency);
+  g_assert_null (pm_latency_message (latency, CLIENT));
 
   g_object_unref (parser);
   pm_latency_free (latency);

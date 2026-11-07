@@ -502,44 +502,106 @@ add_name (GHashTable * by_element, gint64 id, const gchar * name)
     g_ptr_array_add (names, g_strdup (name));
 }
 
-/* Sends one page the elements it watches; results: element id -> JSON
- * from pm_props_read, or NULL if the element is gone (its watches are then
- * dropped). */
+/* The values of only the properties one page watches: result (from
+ * pm_props_read, parsed) with its "properties" filtered to names. */
+static gchar *
+watched_values (JsonNode * result, GPtrArray * names)
+{
+  JsonObject *in = json_node_get_object (result);
+  JsonObject *out = json_object_new ();
+  GList *members = json_object_get_members (in), *l;
+  JsonNode *node;
+  gchar *text;
+
+  for (l = members; l != NULL; l = l->next) {
+    const gchar *member = l->data;
+    JsonNode *value = json_object_get_member (in, member);
+    JsonArray *all, *mine;
+    guint i;
+
+    if (g_strcmp0 (member, "properties") != 0 ||
+        !JSON_NODE_HOLDS_ARRAY (value)) {
+      json_object_set_member (out, member, json_node_copy (value));
+      continue;
+    }
+    all = json_node_get_array (value);
+    mine = json_array_new ();
+    for (i = 0; i < json_array_get_length (all); i++) {
+      JsonObject *p = json_array_get_object_element (all, i);
+      const gchar *name = json_object_get_string_member_with_default (p,
+          "name", "");
+
+      if (g_ptr_array_find_with_equal_func (names, name, g_str_equal, NULL))
+        json_array_add_element (mine,
+            json_node_copy (json_array_get_element (all, i)));
+    }
+    json_object_set_array_member (out, member, mine);
+  }
+  g_list_free (members);
+  node = json_node_init_object (json_node_alloc (), out);
+  text = json_to_string (node, FALSE);
+  json_node_unref (node);
+  json_object_unref (out);
+  return text;
+}
+
+/* Sends one page the properties it watches, and only those; results:
+ * element id -> pm_props_read result (parsed), or NULL if the element is
+ * gone (its watches are then dropped). */
 static void
 send_watched (SoupWebsocketConnection * conn, GHashTable * set,
     GHashTable * results)
 {
-  GHashTable *sent = g_hash_table_new (g_int64_hash, g_int64_equal);
+  GHashTable *mine = g_hash_table_new_full (g_int64_hash, g_int64_equal,
+      g_free, (GDestroyNotify) g_ptr_array_unref);
   GString *json = g_string_new ("{\"type\":\"properties\",\"elements\":[");
   GHashTableIter iter;
-  gpointer watch;
+  gpointer key, value;
 
   g_hash_table_iter_init (&iter, set);
-  while (g_hash_table_iter_next (&iter, &watch, NULL)) {
-    gint64 id = g_ascii_strtoll (watch, NULL, 10);
-    gpointer id_key, result;
+  while (g_hash_table_iter_next (&iter, &key, NULL)) {
+    gchar **parts = g_strsplit (key, "\n", 2);
+    gint64 id = g_ascii_strtoll (parts[0], NULL, 10);
+    gpointer result;
 
-    if (!g_hash_table_lookup_extended (results, &id, &id_key, &result))
-      continue;
-    if (!g_hash_table_contains (sent, id_key)) {
-      g_hash_table_add (sent, id_key);
-      if (json->str[json->len - 1] != '[')
-        g_string_append_c (json, ',');
+    if (g_hash_table_lookup_extended (results, &id, NULL, &result)) {
+      add_name (mine, id, parts[1]);
       if (result == NULL)
-        g_string_append_printf (json, "{\"element\":%" G_GINT64_FORMAT
-            ",\"gone\":true}", id);
-      else
-        g_string_append_printf (json, "{\"element\":%" G_GINT64_FORMAT
-            ",\"values\":%s}", id, (gchar *) result);
+        g_hash_table_iter_remove (&iter);
     }
-    if (result == NULL)
-      g_hash_table_iter_remove (&iter);
+    g_strfreev (parts);
+  }
+
+  g_hash_table_iter_init (&iter, mine);
+  while (g_hash_table_iter_next (&iter, &key, &value)) {
+    gint64 id = *(gint64 *) key;
+    JsonNode *result = g_hash_table_lookup (results, &id);
+
+    if (json->str[json->len - 1] != '[')
+      g_string_append_c (json, ',');
+    if (result == NULL) {
+      g_string_append_printf (json, "{\"element\":%" G_GINT64_FORMAT
+          ",\"gone\":true}", id);
+    } else {
+      gchar *values = watched_values (result, value);
+
+      g_string_append_printf (json, "{\"element\":%" G_GINT64_FORMAT
+          ",\"values\":%s}", id, values);
+      g_free (values);
+    }
   }
   g_string_append (json, "]}");
-  if (g_hash_table_size (sent) > 0)
+  if (g_hash_table_size (mine) > 0)
     send_text (conn, json->str);
   g_string_free (json, TRUE);
-  g_hash_table_unref (sent);
+  g_hash_table_unref (mine);
+}
+
+static void
+result_free (JsonNode * node)
+{
+  if (node != NULL)
+    json_node_unref (node);
 }
 
 /* Reads the watched properties, once per element however many pages watch
@@ -551,7 +613,7 @@ send_properties (PmServer * self)
   GHashTable *by_element = g_hash_table_new_full (g_int64_hash,
       g_int64_equal, g_free, (GDestroyNotify) g_ptr_array_unref);
   GHashTable *results = g_hash_table_new_full (g_int64_hash, g_int64_equal,
-      NULL, g_free);
+      NULL, (GDestroyNotify) result_free);
   GHashTableIter iter, inner;
   gpointer key, value;
 
@@ -571,14 +633,17 @@ send_properties (PmServer * self)
     GPtrArray *names = value;
     GstElement *element = pm_model_get_element (self->model,
         *(gint64 *) key);
+    gchar *read;
 
     if (element == NULL) {
       g_hash_table_insert (results, key, NULL);
       continue;
     }
     g_ptr_array_add (names, NULL);
-    g_hash_table_insert (results, key, pm_props_read (element,
-            (const gchar * const *) names->pdata, PROPERTIES_TIMEOUT_US));
+    read = pm_props_read (element, (const gchar * const *) names->pdata,
+        PROPERTIES_TIMEOUT_US);
+    g_hash_table_insert (results, key, json_from_string (read, NULL));
+    g_free (read);
     gst_object_unref (element);
   }
 
@@ -648,15 +713,20 @@ send_all_stats (gpointer user_data)
   if (self->ticks++ % 4 == 0)
     send_findings (self);
 
-  latency = pm_latency_tick (self->latency);
-  if (latency != NULL) {
-    gchar *text = g_strdup_printf ("{\"type\":\"latency\",\"latency\":%s}",
-        latency);
+  /* Measured once, sent to each page only what it measures. */
+  pm_latency_tick (self->latency);
+  for (i = 0; i < self->clients->len; i++) {
+    SoupWebsocketConnection *conn = g_ptr_array_index (self->clients, i);
 
-    for (i = 0; i < self->clients->len; i++)
-      send_text (g_ptr_array_index (self->clients, i), text);
-    g_free (text);
-    g_free (latency);
+    latency = pm_latency_message (self->latency, conn);
+    if (latency != NULL) {
+      gchar *text = g_strdup_printf ("{\"type\":\"latency\","
+          "\"latency\":%s}", latency);
+
+      send_text (conn, text);
+      g_free (text);
+      g_free (latency);
+    }
   }
   return G_SOURCE_CONTINUE;
 }

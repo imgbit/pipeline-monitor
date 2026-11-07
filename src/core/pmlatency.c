@@ -61,6 +61,8 @@ struct _PmMeasure
   gboolean have_reported;
   gboolean reported_live;
   GstClockTime reported_min, reported_max;
+  /* This tick's result as a JSON object, for the pages that asked. */
+  gchar *json;
 };
 
 typedef struct
@@ -85,14 +87,17 @@ struct _PmLatency
   GHashTable *elements;
   GHashTable *paths;
   GHashTable *all_clients;
+  /* Clients that had "measure all" on when the limit stopped it. */
+  GHashTable *stopped_clients;
+  /* Clients sent results at the last tick: when theirs end, one more
+   * (empty) message tells them. */
+  GHashTable *active_clients;
+  gint64 time;
   guint all_limit;
   /* Buffers/s seen by "measure all" probes, and why it last stopped. */
   guint64 all_rate;
   guint64 all_stopped_rate;
   guint64 tick;
-  /* Something was measured at the last tick: when that ends, one more
-   * message (empty) tells the pages. */
-  gboolean active;
 };
 
 static void
@@ -105,6 +110,7 @@ measure_unref (PmMeasure * m)
     g_ptr_array_unref (m->probes);
   if (m->clients != NULL)
     g_hash_table_unref (m->clients);
+  g_free (m->json);
   g_free (m);
 }
 
@@ -423,6 +429,8 @@ pm_latency_new (PmModel * model)
   latency->paths = g_hash_table_new_full (g_str_hash, g_str_equal, g_free,
       (GDestroyNotify) measure_free);
   latency->all_clients = g_hash_table_new (NULL, NULL);
+  latency->stopped_clients = g_hash_table_new (NULL, NULL);
+  latency->active_clients = g_hash_table_new (NULL, NULL);
   latency->all_limit = DEFAULT_ALL_LIMIT;
   return latency;
 }
@@ -433,6 +441,8 @@ pm_latency_free (PmLatency * latency)
   g_hash_table_unref (latency->elements);
   g_hash_table_unref (latency->paths);
   g_hash_table_unref (latency->all_clients);
+  g_hash_table_unref (latency->stopped_clients);
+  g_hash_table_unref (latency->active_clients);
   g_free (latency);
 }
 
@@ -522,9 +532,9 @@ stop_all (PmLatency * latency)
 void
 pm_latency_measure_all (PmLatency * latency, gpointer client, gboolean on)
 {
+  g_hash_table_remove (latency->stopped_clients, client);
   if (on) {
     g_hash_table_add (latency->all_clients, client);
-    latency->all_stopped_rate = 0;
   } else {
     g_hash_table_remove (latency->all_clients, client);
     if (g_hash_table_size (latency->all_clients) == 0)
@@ -554,6 +564,7 @@ pm_latency_remove_client (PmLatency * latency, gpointer client)
   remove_client_from (latency->elements, client);
   remove_client_from (latency->paths, client);
   pm_latency_measure_all (latency, client, FALSE);
+  g_hash_table_remove (latency->active_clients, client);
 }
 
 /* Elements worth measuring with "measure all": not bins (their children
@@ -638,13 +649,22 @@ append_measured (GString * json, PmMeasure * m)
   g_string_append_c (json, ',');
 }
 
+/* Keeps this tick's result of m as a JSON object without its closing
+ * brace: the element or path, and "measured". */
+static void
+keep_result (PmMeasure * m, GString * json)
+{
+  g_free (m->json);
+  close_json (json, '}');
+  m->json = g_string_free (json, FALSE);
+}
+
 /* Every 250 ms on the server thread: keeps probes up to date, applies the
- * "measure all" limit and returns the "latency" data, or NULL when nothing
- * is measured. */
-gchar *
+ * "measure all" limit and computes this tick's results, once however many
+ * pages want them; pm_latency_message then picks each page's. */
+void
 pm_latency_tick (PmLatency * latency)
 {
-  GString *json;
   GHashTableIter iter;
   gpointer key, value;
   guint64 all_calls = 0;
@@ -654,26 +674,13 @@ pm_latency_tick (PmLatency * latency)
     sync_all (latency);
   else if (latency->all_rate != 0)
     stop_all (latency);
+  latency->time = g_get_real_time ();
 
-  if (g_hash_table_size (latency->elements) == 0 &&
-      g_hash_table_size (latency->paths) == 0 &&
-      latency->all_stopped_rate == 0) {
-    if (!latency->active)
-      return NULL;
-    latency->active = FALSE;
-  } else {
-    latency->active = TRUE;
-  }
-
-  json = g_string_new ("{");
-  append_value (json, "schema", PM_SCHEMA);
-  append_value (json, "time", g_get_real_time ());
-
-  g_string_append (json, "\"elements\":[");
   g_hash_table_iter_init (&iter, latency->elements);
   while (g_hash_table_iter_next (&iter, &key, &value)) {
     PmMeasure *m = value;
     gint calls = g_atomic_int_and (&m->calls, 0);
+    GString *json;
 
     if (!update_probes (latency, m)) {
       g_hash_table_iter_remove (&iter);
@@ -683,61 +690,113 @@ pm_latency_tick (PmLatency * latency)
       all_calls += calls;
     if (report)
       update_reported (latency, m);
-    g_string_append (json, "{");
+    json = g_string_new ("{");
     append_value (json, "element", m->a);
     g_string_append_printf (json, "\"inputs\":%s,\"outputs\":%s,",
         m->inputs ? "true" : "false", m->outputs ? "true" : "false");
     append_measured (json, m);
-    if (m->have_reported)
+    if (m->have_reported) {
       g_string_append_printf (json, "\"reported\":{\"live\":%s,",
           m->reported_live ? "true" : "false");
-    else
-      g_string_append (json, "\"reported\":null,");
-    if (m->have_reported) {
       append_value (json, "min", m->reported_min);
       append_value (json, "max", m->reported_max);
       close_json (json, '}');
       g_string_append_c (json, ',');
+    } else {
+      g_string_append (json, "\"reported\":null,");
     }
-    close_json (json, '}');
-    g_string_append_c (json, ',');
+    keep_result (m, json);
   }
-  close_json (json, ']');
-  g_string_append_c (json, ',');
 
-  g_string_append (json, "\"paths\":[");
   g_hash_table_iter_init (&iter, latency->paths);
   while (g_hash_table_iter_next (&iter, &key, &value)) {
     PmMeasure *m = value;
+    GString *json;
 
     g_atomic_int_set (&m->calls, 0);
     if (!update_probes (latency, m)) {
       g_hash_table_iter_remove (&iter);
       continue;
     }
-    g_string_append (json, "{");
+    json = g_string_new ("{");
     append_value (json, "from", m->a);
     append_value (json, "to", m->b);
     append_measured (json, m);
-    close_json (json, '}');
-    g_string_append_c (json, ',');
+    keep_result (m, json);
   }
-  close_json (json, ']');
-  g_string_append_c (json, ',');
 
   /* Calls in this tick, as a rate per second. */
   if (g_hash_table_size (latency->all_clients) > 0) {
     latency->all_rate = all_calls * (1000 / 250);
     if (latency->all_rate > latency->all_limit) {
       latency->all_stopped_rate = latency->all_rate;
+      g_hash_table_iter_init (&iter, latency->all_clients);
+      while (g_hash_table_iter_next (&iter, &key, NULL))
+        g_hash_table_add (latency->stopped_clients, key);
       stop_all (latency);
     }
   }
+}
+
+/* Appends the results of table that client wants, as a JSON array. */
+static gboolean
+append_wanted (GString * json, GHashTable * table, gpointer client,
+    gboolean all)
+{
+  GHashTableIter iter;
+  gpointer value;
+  gboolean any = FALSE;
+
+  g_string_append_c (json, '[');
+  g_hash_table_iter_init (&iter, table);
+  while (g_hash_table_iter_next (&iter, NULL, &value)) {
+    PmMeasure *m = value;
+
+    if (m->json == NULL || !(g_hash_table_contains (m->clients, client) ||
+            (all && m->all)))
+      continue;
+    if (any)
+      g_string_append_c (json, ',');
+    g_string_append (json, m->json);
+    any = TRUE;
+  }
+  g_string_append (json, "],");
+  return any;
+}
+
+/* The "latency" data for one page, after pm_latency_tick: only the
+ * elements and paths it measures (all elements with "measure all"), and
+ * the "measure all" state only if it had it on. NULL when it measures
+ * nothing; once, when its last measurement ends, an empty one. */
+gchar *
+pm_latency_message (PmLatency * latency, gpointer client)
+{
+  gboolean all = g_hash_table_contains (latency->all_clients, client);
+  gboolean stopped = g_hash_table_contains (latency->stopped_clients, client);
+  GString *json = g_string_new ("{");
+  gboolean any;
+
+  append_value (json, "schema", PM_SCHEMA);
+  append_value (json, "time", latency->time);
+  g_string_append (json, "\"elements\":");
+  any = append_wanted (json, latency->elements, client, all);
+  g_string_append (json, "\"paths\":");
+  any = append_wanted (json, latency->paths, client, FALSE) || any;
+
+  if (!any && !all && !stopped) {
+    if (!g_hash_table_remove (latency->active_clients, client)) {
+      g_string_free (json, TRUE);
+      return NULL;
+    }
+  } else {
+    g_hash_table_add (latency->active_clients, client);
+  }
+
   g_string_append_printf (json, "\"all\":{\"on\":%s,",
-      g_hash_table_size (latency->all_clients) > 0 ? "true" : "false");
-  append_value (json, "buffers_per_s", latency->all_rate);
-  append_value (json, "stopped_at", latency->all_stopped_rate ?
-      latency->all_stopped_rate : G_MAXUINT64);
+      all ? "true" : "false");
+  append_value (json, "buffers_per_s", all ? latency->all_rate : 0);
+  append_value (json, "stopped_at", stopped ? latency->all_stopped_rate :
+      G_MAXUINT64);
   close_json (json, '}');
   g_string_append_c (json, '}');
   return g_string_free (json, FALSE);

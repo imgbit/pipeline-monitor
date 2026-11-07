@@ -1405,6 +1405,267 @@ test_latency_all_limit (void)
   g_object_unref (session);
 }
 
+/* Independent pages */
+
+/* Runs the main loop for ms, then drops the messages client got and
+ * returns how many were of this type. */
+static guint
+count_messages (WsClient * client, const gchar * type, gint ms)
+{
+  gchar *prefix = g_strdup_printf ("{\"type\":\"%s\",", type);
+  gint64 end = g_get_monotonic_time () + ms * G_TIME_SPAN_MILLISECOND;
+  guint n = 0;
+
+  while (g_get_monotonic_time () < end)
+    if (!g_main_context_iteration (NULL, FALSE))
+      g_usleep (1000);
+  while (!g_queue_is_empty (&client->messages)) {
+    gchar *message = g_queue_pop_head (&client->messages);
+
+    if (g_str_has_prefix (message, prefix))
+      n++;
+    g_free (message);
+  }
+  g_free (prefix);
+  return n;
+}
+
+/* Whether the next "latency" message for client has element; on: its
+ * "measure all" state. */
+static gboolean
+latency_has (WsClient * client, gint64 element, gboolean * on)
+{
+  JsonNode *all = NULL;
+  JsonNode *entry = next_latency (client, element, &all);
+  gboolean found = entry != NULL;
+
+  if (on != NULL)
+    *on = json_object_get_boolean_member (json_node_get_object (all), "on");
+  if (entry != NULL)
+    json_node_unref (entry);
+  json_node_unref (all);
+  return found;
+}
+
+/* Each page gets only the latency it measures. */
+static void
+test_pages_latency (void)
+{
+  SoupSession *session = soup_session_new ();
+  gchar *url = server_url ("ws");
+  /* 5 buffers/s through three elements (with the capsfilter): below the
+   * "measure all" limit of 50 calls/s used in these tests (see main). */
+  GstElement *pipeline = start_pipeline ("audiotestsrc is-live=true "
+      "samplesperbuffer=9600 ! audio/x-raw,rate=48000 ! identity name=pg-a ! "
+      "identity name=pg-b ! fakesink async=false");
+  gint64 a = element_id ("pg-a");
+  gint64 b = element_id ("pg-b");
+  WsClient one, two;
+  gboolean on;
+  gint tries;
+
+  ws_connect (&one, session, url, NULL);
+  ws_connect (&two, session, url, NULL);
+
+  /* One measures a, two nothing: two gets no latency at all. */
+  ws_send (&one, "{\"type\":\"measure-latency\",\"element\":%"
+      G_GINT64_FORMAT "}", a);
+  g_assert_true (latency_has (&one, a, NULL));
+  g_assert_cmpuint (count_messages (&two, "latency", 1500), ==, 0);
+
+  /* Two measures b: each gets only its own. */
+  ws_send (&two, "{\"type\":\"measure-latency\",\"element\":%"
+      G_GINT64_FORMAT "}", b);
+  count_messages (&one, "latency", 600);
+  count_messages (&two, "latency", 0);
+  g_assert_true (latency_has (&two, b, NULL));
+  g_assert_false (latency_has (&two, a, NULL));
+  g_assert_true (latency_has (&one, a, NULL));
+  g_assert_false (latency_has (&one, b, NULL));
+
+  /* Both measure a; one stops: two still gets it, one gets an empty
+   * message, then nothing. */
+  ws_send (&two, "{\"type\":\"measure-latency\",\"element\":%"
+      G_GINT64_FORMAT "}", a);
+  ws_send (&one, "{\"type\":\"unmeasure-latency\",\"element\":%"
+      G_GINT64_FORMAT "}", a);
+  for (tries = 0; tries < 5 && latency_has (&one, a, NULL); tries++);
+  g_assert_cmpint (tries, <, 5);
+  g_assert_cmpuint (count_messages (&one, "latency", 1500), ==, 0);
+  count_messages (&two, "latency", 0);
+  for (tries = 0; tries < 5 && !latency_has (&two, a, NULL); tries++);
+  g_assert_cmpint (tries, <, 5);
+
+  /* Measure all in one: one sees it on and gets every element; two keeps
+   * only its own, with measure all off. */
+  ws_send (&one, "{\"type\":\"measure-all\"}");
+  count_messages (&one, "latency", 600);
+  g_assert_true (latency_has (&one, b, &on));
+  g_assert_true (on);
+  count_messages (&two, "latency", 0);
+  latency_has (&two, b, &on);
+  g_assert_false (on);
+
+  ws_disconnect (&one);
+  ws_disconnect (&two);
+  stop_pipeline (pipeline);
+  g_free (url);
+  g_object_unref (session);
+}
+
+/* The "measure all" safety stop is reported only to the page that had it
+ * on (limit 50 buffers/s in this test, see main). */
+static void
+test_pages_all_stopped (void)
+{
+  SoupSession *session = soup_session_new ();
+  gchar *url = server_url ("ws");
+  GstElement *pipeline = start_pipeline ("videotestsrc is-live=true ! "
+      "video/x-raw,framerate=60/1 ! queue ! identity name=pg-stop ! queue ! "
+      "fakesink async=false");
+  gint64 id = element_id ("pg-stop");
+  WsClient one, two;
+  gboolean stopped = FALSE;
+  gint tries;
+
+  ws_connect (&one, session, url, NULL);
+  ws_connect (&two, session, url, NULL);
+  ws_send (&two, "{\"type\":\"measure-latency\",\"element\":%"
+      G_GINT64_FORMAT "}", id);
+  ws_send (&one, "{\"type\":\"measure-all\"}");
+  for (tries = 0; tries < 20 && !stopped; tries++) {
+    JsonNode *all = NULL;
+    JsonNode *entry = next_latency (&one, 0, &all);
+
+    stopped = !json_object_get_null_member (json_node_get_object (all),
+        "stopped_at");
+    if (entry != NULL)
+      json_node_unref (entry);
+    json_node_unref (all);
+  }
+  g_assert_true (stopped);
+
+  count_messages (&two, "latency", 0);
+  for (tries = 0; tries < 3; tries++) {
+    JsonNode *all = NULL;
+    JsonNode *entry = next_latency (&two, id, &all);
+
+    g_assert_nonnull (entry);
+    g_assert_true (json_object_get_null_member (json_node_get_object (all),
+            "stopped_at"));
+    json_node_unref (entry);
+    json_node_unref (all);
+  }
+
+  ws_disconnect (&one);
+  ws_disconnect (&two);
+  stop_pipeline (pipeline);
+  g_free (url);
+  g_object_unref (session);
+}
+
+/* The names of the properties in the next "properties" message for
+ * element, joined with commas. */
+static gchar *
+next_property_names (WsClient * client, gint64 element)
+{
+  GString *names = g_string_new (NULL);
+
+  while (names->len == 0) {
+    gchar *message = ws_next (client, "properties");
+    JsonNode *root = parse (message);
+    JsonArray *elements = json_object_get_array_member (json_node_get_object
+        (root), "elements");
+    guint i, j;
+
+    for (i = 0; i < json_array_get_length (elements); i++) {
+      JsonObject *e = json_array_get_object_element (elements, i);
+      JsonArray *props;
+
+      if (json_object_get_int_member (e, "element") != element ||
+          !json_object_has_member (e, "values"))
+        continue;
+      props = json_object_get_array_member (json_object_get_object_member (e,
+              "values"), "properties");
+      for (j = 0; j < json_array_get_length (props); j++)
+        g_string_append_printf (names, "%s%s", names->len ? "," : "",
+            json_object_get_string_member (json_array_get_object_element
+                (props, j), "name"));
+    }
+    json_node_unref (root);
+    g_free (message);
+  }
+  return g_string_free (names, FALSE);
+}
+
+/* Each page gets only the properties it watches. */
+static void
+test_pages_properties (void)
+{
+  SoupSession *session = soup_session_new ();
+  gchar *url = server_url ("ws");
+  GstElement *pipeline = start_pipeline ("videotestsrc is-live=true ! "
+      "fakesink name=pg-sink async=false");
+  gint64 id = element_id ("pg-sink");
+  WsClient one, two;
+  gchar *names;
+
+  ws_connect (&one, session, url, NULL);
+  ws_connect (&two, session, url, NULL);
+  ws_send (&one, "{\"type\":\"watch-property\",\"element\":%"
+      G_GINT64_FORMAT ",\"property\":\"stats\"}", id);
+  ws_send (&two, "{\"type\":\"watch-property\",\"element\":%"
+      G_GINT64_FORMAT ",\"property\":\"sync\"}", id);
+  count_messages (&one, "properties", 600);
+  count_messages (&two, "properties", 0);
+
+  names = next_property_names (&one, id);
+  g_assert_cmpstr (names, ==, "stats");
+  g_free (names);
+  names = next_property_names (&two, id);
+  g_assert_cmpstr (names, ==, "sync");
+  g_free (names);
+
+  ws_disconnect (&one);
+  ws_disconnect (&two);
+  stop_pipeline (pipeline);
+  g_free (url);
+  g_object_unref (session);
+}
+
+/* A pad pinned in two pages keeps its stats for the other when one
+ * unpins it. */
+static void
+test_pages_pads (void)
+{
+  SoupSession *session = soup_session_new ();
+  gchar *url = server_url ("ws");
+  GstElement *pipeline = start_pipeline ("videotestsrc is-live=true ! "
+      "fakesink name=pg-pad async=false");
+  gint64 pad = pad_id ("pg-pad", "sink");
+  WsClient one, two;
+
+  ws_connect (&one, session, url, NULL);
+  ws_connect (&two, session, url, NULL);
+  ws_send (&one, "{\"type\":\"monitor\",\"pad\":%" G_GINT64_FORMAT "}", pad);
+  ws_send (&two, "{\"type\":\"monitor\",\"pad\":%" G_GINT64_FORMAT "}", pad);
+  g_assert_cmpint (next_stats (&one, pad), >=, 0);
+  g_assert_cmpint (next_stats (&two, pad), >=, 0);
+
+  ws_send (&one, "{\"type\":\"unmonitor\",\"pad\":%" G_GINT64_FORMAT "}",
+      pad);
+  count_messages (&one, "pad-stats", 600);
+  g_assert_cmpuint (count_messages (&one, "pad-stats", 1500), ==, 0);
+  count_messages (&two, "pad-stats", 0);
+  g_assert_cmpint (next_stats (&two, pad), >=, 0);
+
+  ws_disconnect (&one);
+  ws_disconnect (&two);
+  stop_pipeline (pipeline);
+  g_free (url);
+  g_object_unref (session);
+}
+
 /* Findings */
 
 /* Polls /api/findings for up to timeout_s until one has this id; returns
@@ -1970,6 +2231,10 @@ main (int argc, char **argv)
   g_test_add_func ("/server/properties-not-answering",
       test_properties_not_answering);
   g_test_add_func ("/server/watch-property", test_watch_property);
+  g_test_add_func ("/server/pages-latency", test_pages_latency);
+  g_test_add_func ("/server/pages-all-stopped", test_pages_all_stopped);
+  g_test_add_func ("/server/pages-properties", test_pages_properties);
+  g_test_add_func ("/server/pages-pads", test_pages_pads);
   g_test_add_func ("/server/latency-element", test_latency_element);
   g_test_add_func ("/server/latency-all-limit", test_latency_all_limit);
   g_test_add_func ("/server/findings-flow", test_findings_flow);
