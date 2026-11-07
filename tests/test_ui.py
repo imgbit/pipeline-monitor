@@ -4,6 +4,7 @@
 
 Usage: test_ui.py SERVE_EXECUTABLE [--screenshot FILE]
 Exits with 77 (skipped) when Chrome is not available.
+With PM_JS_COVERAGE=FILE, writes which lines of the page code ran to FILE.
 """
 
 import base64
@@ -18,6 +19,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.parse
 import urllib.request
 
 PIPELINE = ("videotestsrc is-live=true ! jpegenc ! decodebin3 ! queue ! "
@@ -112,6 +114,11 @@ class Browser:
         self.errors = []
         self.call("Runtime.enable")
         self.call("Page.enable")
+        self.coverage_file = os.environ.get("PM_JS_COVERAGE")
+        self.coverage = {}
+        if self.coverage_file:
+            self.call("Profiler.enable")
+            self.call("Profiler.startPreciseCoverage", detailed=True)
 
     # Starts Chrome; returns its page target, or None after stopping it.
     def start(self, chrome, profile, attempt):
@@ -146,6 +153,9 @@ class Browser:
         return page
 
     def call(self, method, **params):
+        # Coverage is per document: kept before the page is replaced.
+        if method in ("Page.navigate", "Page.reload") and self.coverage_file:
+            self.take_coverage()
         self.next_id += 1
         self.ws.send(json.dumps({"id": self.next_id, "method": method,
                                  "params": params}))
@@ -246,7 +256,60 @@ class Browser:
         with open(path, "wb") as f:
             f.write(base64.b64decode(data))
 
+    # Counts per character of each script: nested ranges come after the
+    # ones they are in, and override them.
+    def take_coverage(self):
+        result = self.call("Profiler.takePreciseCoverage")["result"]
+        for script in result:
+            name = urllib.parse.urlparse(script["url"]).path.lstrip("/")
+            if not name.endswith(".js") or name.startswith("vendor/"):
+                continue
+            ranges = sorted((r for f in script["functions"]
+                             for r in f["ranges"]),
+                            key=lambda r: (r["startOffset"], -r["endOffset"]))
+            counts = {}
+            for r in ranges:
+                for i in range(r["startOffset"], r["endOffset"]):
+                    counts[i] = r["count"]
+            ran = self.coverage.setdefault(name, set())
+            ran.update(i for i, c in counts.items() if c > 0)
+
+    def write_coverage(self, web_dir):
+        lines_out = []
+        for name in sorted(self.coverage):
+            with open(os.path.join(web_dir, name), encoding="utf-8") as f:
+                source = f.read()
+            ran = self.coverage[name]
+            missed, total, offset = [], 0, 0
+            for number, line in enumerate(source.split("\n"), 1):
+                code = line.strip()
+                start = offset + len(line) - len(line.lstrip())
+                offset += len(line) + 1
+                if not code or code.startswith(("//", "*", "/*")) or \
+                        code in ("}", "});", "};", ")", ");", "]", "];"):
+                    continue
+                total += 1
+                if not any(i in ran for i in range(start, start + len(code))):
+                    missed.append(number)
+            share = 100 * (total - len(missed)) / total if total else 100
+            spans = []
+            for n in missed:
+                if spans and spans[-1][1] == n - 1:
+                    spans[-1][1] = n
+                else:
+                    spans.append([n, n])
+            lines_out.append(f"{name:14} {total - len(missed):5}/{total:<5} "
+                             f"{share:5.1f}%  " + ",".join(
+                                 str(a) if a == b else f"{a}-{b}"
+                                 for a, b in spans))
+        with open(self.coverage_file, "w") as f:
+            f.write("\n".join(lines_out) + "\n")
+
     def close(self):
+        if self.coverage_file:
+            self.take_coverage()
+            self.write_coverage(os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), "..", "web"))
         self.ws.close()
         self.proc.terminate()
         self.proc.wait()
