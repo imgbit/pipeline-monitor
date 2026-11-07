@@ -431,9 +431,9 @@ run_job (gpointer data, gpointer user_data)
 }
 
 /* The element's readable properties (all, or only names) as
- * {"schema":1,"time":...,"properties":[...]}. If a getter does not return
+ * {"properties":[...]}. If a getter does not return
  * within timeout_us, that property is marked as not answering and
- * {"schema":1,"time":...,"not_answering":"name"} is returned instead. */
+ * {"not_answering":"name"} is returned instead. */
 gchar *
 pm_props_read (GstElement * element, const gchar * const *names,
     gint64 timeout_us)
@@ -457,16 +457,15 @@ pm_props_read (GstElement * element, const gchar * const *names,
   job->names = g_strdupv ((gchar **) names);
   g_thread_pool_push (pool, job, NULL);
 
-  g_string_append_printf (json, "{\"schema\":%d,\"time\":%" G_GINT64_FORMAT,
-      PM_SCHEMA, g_get_real_time ());
+  g_string_append_c (json, '{');
   g_mutex_lock (&job->lock);
   while (!job->done && g_cond_wait_until (&job->cond, &job->lock, deadline));
   if (job->done) {
-    g_string_append (json, ",\"properties\":");
+    g_string_append (json, "\"properties\":");
     g_string_append_len (json, job->json->str, job->json->len);
   } else {
     stuck = job->current;
-    g_string_append (json, ",\"not_answering\":");
+    g_string_append (json, "\"not_answering\":");
     pm_json_append_string (json, stuck ? stuck : "?");
   }
   g_mutex_unlock (&job->lock);

@@ -45,7 +45,8 @@ test_server = executable('test_server',
   '../src/core/pmfindings.c',
   '../src/server/pmserver.c',
   ui_resources,
-  c_args : ['-DGST_USE_UNSTABLE_API'],
+  c_args : ['-DGST_USE_UNSTABLE_API',
+    '-DVERSION="@0@"'.format(meson.project_version())],
   include_directories : include_directories('../src/core', '../src/server'),
   dependencies : [gst_dep, soup_dep, json_glib_dep])
 

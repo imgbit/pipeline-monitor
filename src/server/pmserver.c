@@ -2,6 +2,7 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #include "pmserver.h"
 #include "pmfindings.h"
+#include "pmjson.h"
 #include "pmlatency.h"
 #include "pmlevels.h"
 #include "pmprops.h"
@@ -11,6 +12,12 @@
 #include <json-glib/json-glib.h>
 #include <libsoup/soup.h>
 #include <string.h>
+#ifdef G_OS_WIN32
+#include <process.h>
+#define getpid _getpid
+#else
+#include <unistd.h>
+#endif
 
 #define PORT_ATTEMPTS 10
 #define UPDATE_INTERVAL_MS 100
@@ -211,6 +218,39 @@ set_json_response (SoupServerMessage * msg, gchar * json)
       json, strlen (json));
 }
 
+/* Sends message (type, body) as the answer; takes body. */
+static void
+set_message_response (SoupServerMessage * msg, const gchar * type,
+    gchar * body)
+{
+  set_json_response (msg, pm_json_message (type, body));
+  g_free (body);
+}
+
+/* {"version","gstreamer","program","pid"}: what the page talks to. */
+static gchar *
+hello_body (void)
+{
+  guint major, minor, micro, nano;
+  GString *json = g_string_new ("{\"version\":");
+
+  gst_version (&major, &minor, &micro, &nano);
+  pm_json_append_string (json, VERSION);
+  g_string_append_printf (json, ",\"gstreamer\":\"%u.%u.%u\",\"program\":",
+      major, minor, micro);
+  pm_json_append_string (json, g_get_prgname ());
+  g_string_append_printf (json, ",\"pid\":%d}", (gint) getpid ());
+  return g_string_free (json, FALSE);
+}
+
+static void
+handle_hello (SoupServer * soup, SoupServerMessage * msg, const char *path,
+    GHashTable * query, gpointer user_data)
+{
+  if (check_request (user_data, msg))
+    set_message_response (msg, "hello", hello_body ());
+}
+
 static void
 handle_graph (SoupServer * soup, SoupServerMessage * msg, const char *path,
     GHashTable * query, gpointer user_data)
@@ -218,7 +258,7 @@ handle_graph (SoupServer * soup, SoupServerMessage * msg, const char *path,
   PmServer *self = user_data;
 
   if (check_request (self, msg))
-    set_json_response (msg, pm_model_to_json (self->model));
+    set_message_response (msg, "graph", pm_model_to_json (self->model));
 }
 
 static void
@@ -228,7 +268,8 @@ handle_monitors (SoupServer * soup, SoupServerMessage * msg,
   PmServer *self = user_data;
 
   if (check_request (self, msg))
-    set_json_response (msg, pm_monitor_list_json (self->monitor));
+    set_message_response (msg, "monitors",
+        pm_monitor_list_json (self->monitor));
 }
 
 static void
@@ -238,8 +279,8 @@ handle_levels (SoupServer * soup, SoupServerMessage * msg,
   PmServer *self = user_data;
 
   if (check_request (self, msg))
-    set_json_response (msg, self->last_levels ? g_strdup (self->last_levels) :
-        pm_levels_to_json (self->model));
+    set_message_response (msg, "levels", self->last_levels ?
+        g_strdup (self->last_levels) : pm_levels_to_json (self->model));
 }
 
 /* How long a request waits for an element's property getters. */
@@ -283,7 +324,7 @@ handle_properties (SoupServer * soup, SoupServerMessage * msg,
     }
     g_string_append_c (json, '}');
     g_free (props);
-    set_json_response (msg, g_string_free (json, FALSE));
+    set_message_response (msg, "properties", g_string_free (json, FALSE));
   }
   gst_object_unref (element);
 }
@@ -295,8 +336,8 @@ handle_findings (SoupServer * soup, SoupServerMessage * msg,
   PmServer *self = user_data;
 
   if (check_request (self, msg))
-    set_json_response (msg, g_strdup (self->last_findings ?
-            self->last_findings : "{\"schema\":1,\"findings\":[]}"));
+    set_message_response (msg, "findings", g_strdup (self->last_findings ?
+            self->last_findings : "{\"findings\":[]}"));
 }
 
 static void
@@ -306,7 +347,8 @@ handle_log (SoupServer * soup, SoupServerMessage * msg, const char *path,
   PmServer *self = user_data;
 
   if (check_request (self, msg))
-    set_json_response (msg, pm_model_log_to_json (self->model, 0, NULL));
+    set_message_response (msg, "log", pm_model_log_to_json (self->model, 0,
+            NULL));
 }
 
 /* Runs before the WebSocket handshake; setting a status rejects it. */
@@ -317,17 +359,6 @@ handle_ws_request (SoupServer * soup, SoupServerMessage * msg,
   check_request (user_data, msg);
 }
 
-static gchar *
-graph_message (const gchar * graph)
-{
-  return g_strdup_printf ("{\"type\":\"graph\",\"graph\":%s}", graph);
-}
-
-static gchar *
-log_message (const gchar * log)
-{
-  return g_strdup_printf ("{\"type\":\"log\",\"log\":%s}", log);
-}
 
 static void
 send_text (SoupWebsocketConnection * conn, const gchar * text)
@@ -395,8 +426,7 @@ on_ws_closed (SoupWebsocketConnection * conn, PmServer * self)
 static void
 send_stats (SoupWebsocketConnection * conn, const gchar * stats)
 {
-  gchar *text = g_strdup_printf ("{\"type\":\"pad-stats\",\"stats\":%s}",
-      stats);
+  gchar *text = pm_json_message ("pad-stats", stats);
 
   send_text (conn, text);
   g_free (text);
@@ -426,80 +456,166 @@ id_member (JsonObject * object, const gchar * name)
   return MAX (json_node_get_int (node), 0);
 }
 
-/* Commands from the page: {"type":"monitor","pad":12} starts watching a
- * pad, {"type":"unmonitor","pad":12} stops. Anything else is ignored. */
+/* Answers a command that failed: {"type":"error","command","reason"}. */
+static void
+send_error (SoupWebsocketConnection * conn, const gchar * command,
+    const gchar * reason)
+{
+  GString *body = g_string_new ("{\"command\":");
+  gchar *text;
+
+  pm_json_append_string (body, command);
+  g_string_append (body, ",\"reason\":");
+  pm_json_append_string (body, reason);
+  g_string_append_c (body, '}');
+  text = pm_json_message ("error", body->str);
+  send_text (conn, text);
+  g_free (text);
+  g_string_free (body, TRUE);
+}
+
+#define NOT_AN_ID(name) "\"" name "\" must be a positive whole number."
+
+/* Whether the element with this id exists (and, with property, has it). */
+static const gchar *
+check_element (PmServer * self, gint64 id, const gchar * property)
+{
+  GstElement *element = pm_model_get_element (self->model, id);
+  const gchar *reason = NULL;
+
+  if (element == NULL)
+    return "No element with this id.";
+  if (property != NULL &&
+      !g_object_class_find_property (G_OBJECT_GET_CLASS (element), property))
+    reason = "The element has no such property.";
+  gst_object_unref (element);
+  return reason;
+}
+
+static gboolean
+pad_exists (PmServer * self, gint64 id)
+{
+  GstPad *pad = pm_model_get_pad (self->model, id);
+
+  if (pad == NULL)
+    return FALSE;
+  gst_object_unref (pad);
+  return TRUE;
+}
+
+/* Runs one command; returns why it failed, or NULL. Stopping something
+ * whose element or pad is gone succeeds: it is only forgotten. */
+static const gchar *
+run_command (PmServer * self, SoupWebsocketConnection * conn,
+    const gchar * command, JsonObject * object)
+{
+  gboolean on = !g_str_has_prefix (command, "un");
+  const gchar *verb = on ? command : command + 2;
+
+  /* {"type":"measure-all"} */
+  if (g_strcmp0 (verb, "measure-all") == 0) {
+    pm_latency_measure_all (self->latency, conn, on);
+    return NULL;
+  }
+
+  /* {"type":"measure-latency","element":12} */
+  if (g_strcmp0 (verb, "measure-latency") == 0) {
+    gint64 element = id_member (object, "element");
+    const gchar *reason;
+
+    if (element == 0)
+      return NOT_AN_ID ("element");
+    if (on && (reason = check_element (self, element, NULL)))
+      return reason;
+    pm_latency_measure_element (self->latency, conn, element, on);
+    return NULL;
+  }
+
+  /* {"type":"measure-path","from":3,"to":9} */
+  if (g_strcmp0 (verb, "measure-path") == 0) {
+    gint64 from = id_member (object, "from");
+    gint64 to = id_member (object, "to");
+
+    if (from == 0 || to == 0)
+      return "\"from\" and \"to\" must be positive whole numbers.";
+    if (on && (!pad_exists (self, from) || !pad_exists (self, to)))
+      return "No pad with this id.";
+    pm_latency_measure_path (self->latency, conn, from, to, on);
+    return NULL;
+  }
+
+  /* {"type":"watch-property","element":12,"property":"stats"} */
+  if (g_strcmp0 (verb, "watch-property") == 0) {
+    gint64 element = id_member (object, "element");
+    const gchar *property = string_member (object, "property");
+    const gchar *reason;
+
+    if (element == 0)
+      return NOT_AN_ID ("element");
+    if (!valid_property_name (property))
+      return "\"property\" must be a name of letters, digits, - and _.";
+    if (on && (reason = check_element (self, element, property)))
+      return reason;
+    watch_property (self, conn, element, property, on);
+    return NULL;
+  }
+
+  /* {"type":"monitor","pad":12}: a pad that does not exist is answered
+   * with "gone" in pad stats. */
+  if (g_strcmp0 (verb, "monitor") == 0) {
+    gint64 pad = id_member (object, "pad");
+
+    if (pad == 0)
+      return NOT_AN_ID ("pad");
+    if (!on) {
+      pm_monitor_remove (self->monitor, conn, pad);
+    } else if (!pm_monitor_add (self->monitor, conn, pad)) {
+      gchar *gone = g_strdup_printf ("{\"pads\":[{\"pad\":%" G_GINT64_FORMAT
+          ",\"gone\":true}]}", pad);
+
+      send_stats (conn, gone);
+      g_free (gone);
+    }
+    return NULL;
+  }
+
+  return "Unknown command.";
+}
+
+/* Commands from the page, {"type":"monitor","pad":12} and so on; one that
+ * fails is answered with an error. */
 static void
 on_ws_message (SoupWebsocketConnection * conn, gint type, GBytes * message,
     PmServer * self)
 {
   JsonParser *parser;
   JsonNode *root;
-  JsonObject *object;
-  const gchar *command;
-  gint64 pad;
+  const gchar *command, *reason;
   gsize size;
   const gchar *data = g_bytes_get_data (message, &size);
 
-  if (type != SOUP_WEBSOCKET_DATA_TEXT || size > MAX_COMMAND_SIZE)
+  if (type != SOUP_WEBSOCKET_DATA_TEXT) {
+    send_error (conn, NULL, "Commands are JSON text, not binary.");
     return;
+  }
+  if (size > MAX_COMMAND_SIZE) {
+    send_error (conn, NULL, "Commands are at most 4096 bytes.");
+    return;
+  }
 
   parser = json_parser_new ();
-  if (!json_parser_load_from_data (parser, data, size, NULL))
-    goto done;
-  root = json_parser_get_root (parser);
-  if (!JSON_NODE_HOLDS_OBJECT (root))
-    goto done;
-  object = json_node_get_object (root);
-  command = string_member (object, "type");
-  if (command == NULL)
-    goto done;
-
-  /* {"type":"measure-latency","element":12}, {"type":"measure-all"},
-   * {"type":"measure-path","from":3,"to":9} and their "un" forms. */
-  if (g_str_has_prefix (command, "measure-") ||
-      g_str_has_prefix (command, "unmeasure-")) {
-    gboolean on = command[0] == 'm';
-    const gchar *what = strchr (command, '-') + 1;
-    gint64 element = id_member (object, "element");
-    gint64 from = id_member (object, "from");
-    gint64 to = id_member (object, "to");
-
-    if (g_strcmp0 (what, "all") == 0)
-      pm_latency_measure_all (self->latency, conn, on);
-    else if (g_strcmp0 (what, "latency") == 0 && element > 0)
-      pm_latency_measure_element (self->latency, conn, element, on);
-    else if (g_strcmp0 (what, "path") == 0 && from > 0 && to > 0)
-      pm_latency_measure_path (self->latency, conn, from, to, on);
-    goto done;
+  if (!json_parser_load_from_data (parser, data, size, NULL)) {
+    send_error (conn, NULL, "Not valid JSON.");
+  } else if ((root = json_parser_get_root (parser)) == NULL ||
+      !JSON_NODE_HOLDS_OBJECT (root)) {
+    send_error (conn, NULL, "A command is a JSON object.");
+  } else if ((command = string_member (json_node_get_object (root),
+              "type")) == NULL) {
+    send_error (conn, NULL, "\"type\" is missing or not a string.");
+  } else if ((reason = run_command (self, conn, command,
+              json_node_get_object (root))) != NULL) {
+    send_error (conn, command, reason);
   }
-
-  /* {"type":"watch-property","element":12,"property":"stats"} */
-  if (g_strcmp0 (command, "watch-property") == 0 ||
-      g_strcmp0 (command, "unwatch-property") == 0) {
-    gint64 element = id_member (object, "element");
-    const gchar *property = string_member (object, "property");
-
-    if (element > 0 && valid_property_name (property))
-      watch_property (self, conn, element, property, command[0] == 'w');
-    goto done;
-  }
-
-  pad = id_member (object, "pad");
-  if (pad == 0)
-    goto done;
-
-  if (g_strcmp0 (command, "monitor") == 0) {
-    if (!pm_monitor_add (self->monitor, conn, pad)) {
-      gchar *gone = g_strdup_printf ("{\"pads\":[{\"pad\":%" G_GINT64_FORMAT
-          ",\"gone\":true}]}", pad);
-      send_stats (conn, gone);
-      g_free (gone);
-    }
-  } else if (g_strcmp0 (command, "unmonitor") == 0) {
-    pm_monitor_remove (self->monitor, conn, pad);
-  }
-
-done:
   g_object_unref (parser);
 }
 
@@ -571,7 +687,7 @@ send_watched (SoupWebsocketConnection * conn, GHashTable * set,
 {
   GHashTable *mine = g_hash_table_new_full (g_int64_hash, g_int64_equal,
       g_free, (GDestroyNotify) g_ptr_array_unref);
-  GString *json = g_string_new ("{\"type\":\"properties\",\"elements\":[");
+  GString *json = g_string_new ("{\"elements\":[");
   GHashTableIter iter;
   gpointer key, value;
 
@@ -608,8 +724,12 @@ send_watched (SoupWebsocketConnection * conn, GHashTable * set,
     }
   }
   g_string_append (json, "]}");
-  if (g_hash_table_size (mine) > 0)
-    send_text (conn, json->str);
+  if (g_hash_table_size (mine) > 0) {
+    gchar *text = pm_json_message ("properties", json->str);
+
+    send_text (conn, text);
+    g_free (text);
+  }
   g_string_free (json, TRUE);
   g_hash_table_unref (mine);
 }
@@ -693,8 +813,7 @@ send_findings (PmServer * self)
     g_free (findings);
     return;
   }
-  text = g_strdup_printf ("{\"type\":\"findings\",\"findings\":%s}",
-      findings);
+  text = pm_json_message ("findings", findings);
   send_to_all (self, text);
   g_free (text);
   g_free (self->last_findings);
@@ -712,8 +831,7 @@ send_all_stats (gpointer user_data)
   pm_monitor_tick (self->monitor);
   g_free (self->last_levels);
   self->last_levels = pm_levels_to_json (self->model);
-  levels = g_strdup_printf ("{\"type\":\"levels\",\"levels\":%s}",
-      self->last_levels);
+  levels = pm_json_message ("levels", self->last_levels);
   for (i = 0; i < self->clients->len; i++) {
     SoupWebsocketConnection *conn = g_ptr_array_index (self->clients, i);
     gchar *stats = pm_monitor_stats_json (self->monitor, conn);
@@ -737,8 +855,7 @@ send_all_stats (gpointer user_data)
 
     latency = pm_latency_message (self->latency, conn);
     if (latency != NULL) {
-      gchar *text = g_strdup_printf ("{\"type\":\"latency\","
-          "\"latency\":%s}", latency);
+      gchar *text = pm_json_message ("latency", latency);
 
       send_text (conn, text);
       g_free (text);
@@ -755,6 +872,7 @@ handle_ws (SoupServer * soup, SoupServerMessage * msg, const char *path,
   PmServer *self = user_data;
   gchar *graph = pm_model_to_json (self->model);
   gchar *log = pm_model_log_to_json (self->model, 0, NULL);
+  gchar *hello = hello_body ();
   gchar *text;
 
   g_ptr_array_add (self->clients, g_object_ref (conn));
@@ -767,20 +885,23 @@ handle_ws (SoupServer * soup, SoupServerMessage * msg, const char *path,
 
   /* The whole log once; later updates may repeat some of it, which the
    * page handles by entry id. */
-  text = graph_message (graph);
+  text = pm_json_message ("hello", hello);
   send_text (conn, text);
   g_free (text);
-  text = log_message (log);
+  text = pm_json_message ("graph", graph);
+  send_text (conn, text);
+  g_free (text);
+  text = pm_json_message ("log", log);
   send_text (conn, text);
   g_free (text);
   /* Findings are otherwise only sent when they change. */
   if (self->last_findings != NULL) {
-    text = g_strdup_printf ("{\"type\":\"findings\",\"findings\":%s}",
-        self->last_findings);
+    text = pm_json_message ("findings", self->last_findings);
     send_text (conn, text);
     g_free (text);
   }
 
+  g_free (hello);
   g_free (log);
   g_free (graph);
 }
@@ -806,7 +927,7 @@ send_update (gpointer user_data)
 
   graph = pm_model_to_json (self->model);
   if (g_strcmp0 (graph, self->last_graph) != 0) {
-    text = graph_message (graph);
+    text = pm_json_message ("graph", graph);
     send_to_all (self, text);
     g_free (text);
     g_free (self->last_graph);
@@ -818,7 +939,7 @@ send_update (gpointer user_data)
   /* Only entries added or repeated since the last send. */
   log = pm_model_log_to_json (self->model, self->log_sent, &seq);
   if (seq > self->log_sent) {
-    text = log_message (log);
+    text = pm_json_message ("log", log);
     send_to_all (self, text);
     g_free (text);
     self->log_sent = seq;
@@ -887,8 +1008,12 @@ flush_now (gpointer user_data)
   send_findings (self);
   if (g_atomic_int_compare_and_exchange (&self->hold_findings, 1, 0))
     self->findings_held_until = g_get_monotonic_time () + FINDINGS_HELD_US;
-  if (flush->bye)
-    send_to_all (self, "{\"type\":\"bye\"}");
+  if (flush->bye) {
+    gchar *bye = pm_json_message ("bye", NULL);
+
+    send_to_all (self, bye);
+    g_free (bye);
+  }
   source = g_timeout_source_new (100);
   g_source_set_callback (source, flush_done, flush,
       (GDestroyNotify) flush_unref);
@@ -998,6 +1123,7 @@ server_thread (gpointer user_data)
 
   self->soup = soup_server_new ("server-header", "pipeline-monitor ", NULL);
   soup_server_add_handler (self->soup, NULL, handle_ui, self, NULL);
+  soup_server_add_handler (self->soup, "/api/hello", handle_hello, self, NULL);
   soup_server_add_handler (self->soup, "/api/graph", handle_graph, self, NULL);
   soup_server_add_handler (self->soup, "/api/log", handle_log, self, NULL);
   soup_server_add_handler (self->soup, "/api/levels", handle_levels, self,

@@ -583,7 +583,7 @@ export class ElementPins extends Pins {
         continue;
       }
       pin.gone = false;
-      pin.stats = entry.values;
+      pin.stats = { ...entry.values, time: message.time };
       this.fill(pin);
     }
     this.place();

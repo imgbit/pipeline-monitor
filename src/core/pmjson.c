@@ -2,6 +2,18 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #include "pmjson.h"
 
+/* A message: {"type","protocol","time"} followed by the members of body,
+ * a JSON object (or NULL for none). time: µs since 1970. */
+gchar *
+pm_json_message (const gchar * type, const gchar * body)
+{
+  gboolean members = body != NULL && body[0] == '{' && body[1] != '}';
+
+  return g_strdup_printf ("{\"type\":\"%s\",\"protocol\":%d,\"time\":%"
+      G_GINT64_FORMAT "%s%s", type, PM_PROTOCOL, g_get_real_time (),
+      members ? "," : "}", members ? body + 1 : "");
+}
+
 /* Appends str as a JSON string, or null. Text that is not valid UTF-8
  * (GStreamer does not enforce it everywhere) gets replacement characters:
  * the WebSocket only carries valid UTF-8. */

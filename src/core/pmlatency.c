@@ -98,7 +98,6 @@ struct _PmLatency
   /* Clients sent results at the last tick: when theirs end, one more
    * (empty) message tells them. */
   GHashTable *active_clients;
-  gint64 time;
   guint all_limit;
   /* Buffers/s seen by "measure all" probes, and why it last stopped. */
   guint64 all_rate;
@@ -667,7 +666,6 @@ pm_latency_tick (PmLatency * latency)
     sync_all (latency);
   else if (latency->all_rate != 0)
     stop_all (latency);
-  latency->time = g_get_real_time ();
 
   g_hash_table_iter_init (&iter, latency->elements);
   while (g_hash_table_iter_next (&iter, &key, &value)) {
@@ -769,8 +767,6 @@ pm_latency_message (PmLatency * latency, gpointer client)
   GString *json = g_string_new ("{");
   gboolean any;
 
-  pm_json_append_value (json, "schema", PM_SCHEMA);
-  pm_json_append_value (json, "time", latency->time);
   g_string_append (json, "\"elements\":");
   any = append_wanted (json, latency->elements, client, all);
   g_string_append (json, "\"paths\":");

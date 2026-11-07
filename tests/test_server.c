@@ -8,6 +8,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "envelope.h"
+
 #include "pmserver.h"
 
 #define EMPTY_GRAPH "{\"pipelines\":[],\"links\":[]}"
@@ -161,6 +163,7 @@ test_http (void)
   g_assert_cmpuint (get_status ("api/graph", "GET", NULL, &body, &type), ==,
       200);
   g_assert_cmpstr (type, ==, "application/json");
+  body = without_envelope (body, "graph");
   g_assert_cmpstr (body, ==, EMPTY_GRAPH);
   g_free (body);
   g_free (type);
@@ -354,10 +357,9 @@ ws_next (WsClient * client, const gchar * type)
 static gboolean
 ws_next_graph_has (WsClient * client, const gchar * needle)
 {
-  gchar *message = ws_next (client, "graph");
+  gchar *message = without_envelope (ws_next (client, "graph"), "graph");
   gboolean found;
 
-  g_assert_true (g_str_has_prefix (message, "{\"type\":\"graph\",\"graph\":{"));
   found = strstr (message, needle) != NULL;
   g_free (message);
   return found;
@@ -391,9 +393,8 @@ test_websocket_log (void)
 
   ws_connect (&client, session, url, NULL);
   g_assert_no_error (client.error);
-  message = ws_next (&client, "log");
-  g_assert_true (g_str_has_prefix (message,
-          "{\"type\":\"log\",\"log\":{\"enabled\":true,"));
+  message = without_envelope (ws_next (&client, "log"), "log");
+  g_assert_true (g_str_has_prefix (message, "{\"enabled\":true,"));
   g_free (message);
 
   post_warning (element, "ws first");
@@ -669,8 +670,8 @@ next_stats (WsClient * client, gint64 pad)
   while (TRUE) {
     gchar *message = ws_next (client, "pad-stats");
     JsonNode *root = parse (message);
-    JsonArray *pads = json_object_get_array_member (json_object_get_object_member
-        (json_node_get_object (root), "stats"), "pads");
+    JsonArray *pads = json_object_get_array_member (json_node_get_object
+        (root), "pads");
     gint64 result = -2;
     guint i;
 
@@ -768,6 +769,59 @@ test_monitor (void)
 }
 
 static guint count_messages (WsClient * client, const gchar * type, gint ms);
+static gint64 element_id (const gchar * name);
+
+/* The next error answer, as an object. */
+static JsonObject *
+next_error (WsClient * client)
+{
+  gchar *message = ws_next (client, "error");
+  JsonNode *root = parse (message);
+  JsonObject *error = json_object_ref (json_node_get_object (root));
+
+  json_node_unref (root);
+  g_free (message);
+  return error;
+}
+
+/* Every connection starts with hello; the same over HTTP. */
+static void
+test_hello (void)
+{
+  SoupSession *session = soup_session_new ();
+  gchar *url = server_url ("ws");
+  gchar *body, *expected;
+  WsClient client;
+  JsonNode *root;
+  JsonObject *hello;
+
+  ws_connect (&client, session, url, NULL);
+  client.got_message = FALSE;
+  g_assert_true (g_queue_get_length (&client.messages) > 0 ||
+      wait_for (&client.got_message));
+  root = parse (g_queue_peek_head (&client.messages));
+  hello = json_node_get_object (root);
+  g_assert_cmpstr (json_object_get_string_member (hello, "type"), ==,
+      "hello");
+  g_assert_cmpint (json_object_get_int_member (hello, "protocol"), ==, 1);
+  g_assert_cmpstr (json_object_get_string_member (hello, "version"), ==,
+      VERSION);
+  g_assert_true (g_str_has_prefix (json_object_get_string_member (hello,
+              "gstreamer"), "1."));
+  g_assert_cmpint (json_object_get_int_member (hello, "pid"), >, 0);
+  json_node_unref (root);
+  ws_disconnect (&client);
+
+  g_assert_cmpuint (get_status ("api/hello", "GET", NULL, &body, NULL), ==,
+      SOUP_STATUS_OK);
+  body = without_envelope (body, "hello");
+  expected = g_strdup_printf ("{\"version\":\"%s\",", VERSION);
+  g_assert_true (g_str_has_prefix (body, expected));
+  g_free (expected);
+  g_free (body);
+  g_free (url);
+  g_object_unref (session);
+}
 
 static void
 test_monitor_bad_commands (void)
@@ -778,6 +832,8 @@ test_monitor_bad_commands (void)
       "fakesink name=bad-sink");
   gint64 pad = pad_id ("bad-sink", "sink");
   WsClient client;
+  JsonObject *error;
+  gchar *long_command;
 
   ws_connect (&client, session, url, NULL);
   ws_send (&client, "not json");
@@ -808,14 +864,40 @@ test_monitor_bad_commands (void)
       "\"property\":\"name\"}");
   ws_send (&client, "{\"type\":\"watch-property\",\"element\":1,"
       "\"property\":\"a b\"}");
-  /* None of them started a measurement or a watch. */
+  /* Things that do not exist. */
+  ws_send (&client, "{\"type\":\"measure-latency\",\"element\":999999}");
+  ws_send (&client, "{\"type\":\"watch-property\",\"element\":%"
+      G_GINT64_FORMAT ",\"property\":\"no-such-property\"}",
+      element_id ("bad-sink"));
+  ws_send (&client, "{\"type\":\"measure-path\",\"from\":999998,"
+      "\"to\":999999}");
+  long_command = g_strnfill (5000, ' ');
+  ws_send (&client, "%s", long_command);
+  g_free (long_command);
+  /* Each is answered with an error, and none started anything. */
+  g_assert_cmpuint (count_messages (&client, "error", 600), ==, 24);
   g_assert_cmpuint (count_messages (&client, "latency", 600), ==, 0);
   g_assert_cmpuint (count_messages (&client, "properties", 600), ==, 0);
 
-  /* Unknown pads are answered with "gone"; the server still answers. */
+  ws_send (&client, "not json");
+  error = next_error (&client);
+  g_assert_true (json_object_get_null_member (error, "command"));
+  g_assert_cmpstr (json_object_get_string_member (error, "reason"), ==,
+      "Not valid JSON.");
+  json_object_unref (error);
+  ws_send (&client, "{\"type\":\"monitor\",\"pad\":\"x\"}");
+  error = next_error (&client);
+  g_assert_cmpstr (json_object_get_string_member (error, "command"), ==,
+      "monitor");
+  g_assert_cmpstr (json_object_get_string_member (error, "reason"), ==,
+      "\"pad\" must be a positive whole number.");
+  json_object_unref (error);
+
+  /* Unknown pads are answered with "gone", not an error. */
   ws_send (&client, "{\"type\":\"monitor\",\"pad\":999999999}");
   g_assert_cmpint (next_stats (&client, 999999999), ==, -1);
   g_assert_cmpint (viewers (pad), ==, 0);
+  g_assert_cmpuint (count_messages (&client, "error", 300), ==, 0);
 
   ws_disconnect (&client);
   stop_pipeline (pipeline);
@@ -830,8 +912,8 @@ next_entry (WsClient * client, gint64 pad)
   while (TRUE) {
     gchar *message = ws_next (client, "pad-stats");
     JsonNode *root = parse (message);
-    JsonArray *pads = json_object_get_array_member (json_object_get_object_member
-        (json_node_get_object (root), "stats"), "pads");
+    JsonArray *pads = json_object_get_array_member (json_node_get_object
+        (root), "pads");
     JsonNode *entry = NULL;
     guint i;
 
@@ -973,7 +1055,7 @@ test_levels (void)
   root = wait_full ("/lv-queue", 5);
   g_assert_nonnull (root);
   g_assert_cmpint (json_object_get_int_member (json_node_get_object (root),
-          "schema"), ==, 1);
+          "protocol"), ==, 1);
   q = find_queue (root, "/lv-queue");
   g_assert_cmpstr (json_object_get_string_member (q, "kind"), ==, "queue");
   g_assert_cmpstr (json_object_get_string_member (q, "leaky"), ==,
@@ -1127,7 +1209,7 @@ test_levels_websocket (void)
 
   ws_connect (&client, session, url, NULL);
   message = ws_next (&client, "levels");
-  g_assert_nonnull (strstr (message, "\"schema\":1"));
+  g_assert_nonnull (strstr (message, "\"protocol\":1"));
   g_assert_nonnull (strstr (message, "\"queues\":["));
   g_free (message);
   ws_disconnect (&client);
@@ -1432,8 +1514,7 @@ next_latency (WsClient * client, gint64 element, JsonNode ** all)
 {
   gchar *message = ws_next (client, "latency");
   JsonNode *root = parse (message);
-  JsonObject *latency = json_object_get_object_member (json_node_get_object
-      (root), "latency");
+  JsonObject *latency = json_node_get_object (root);
   JsonArray *elements = json_object_get_array_member (latency, "elements");
   JsonNode *found = NULL;
   guint i;
@@ -1481,8 +1562,7 @@ path_avg (WsClient * client, gint64 from)
   for (tries = 0; tries < 40 && avg < 0; tries++) {
     gchar *message = ws_next (client, "latency");
     JsonNode *root = parse (message);
-    JsonObject *latency = json_object_get_object_member (json_node_get_object
-        (root), "latency");
+    JsonObject *latency = json_node_get_object (root);
     JsonArray *paths = json_object_get_array_member (latency, "paths");
     guint i;
 
@@ -2514,6 +2594,7 @@ main (int argc, char **argv)
   g_test_add_func ("/server/websocket-log", test_websocket_log);
   g_test_add_func ("/server/monitor", test_monitor);
   g_test_add_func ("/server/monitor-values", test_monitor_values);
+  g_test_add_func ("/server/hello", test_hello);
   g_test_add_func ("/server/monitor-bad-commands", test_monitor_bad_commands);
   g_test_add_func ("/server/invalid-utf8", test_invalid_utf8);
   g_test_add_func ("/server/monitor-pad-gone", test_monitor_pad_gone);

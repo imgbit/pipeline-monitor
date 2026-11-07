@@ -6,6 +6,8 @@
 #include <libsoup/soup.h>
 #include <string.h>
 
+#include "envelope.h"
+
 #define EMPTY_GRAPH "{\"pipelines\":[],\"links\":[]}"
 
 static SoupSession *session;
@@ -33,7 +35,7 @@ http_get (const gchar * url)
 static gchar *
 get_graph (void)
 {
-  return http_get (graph_url);
+  return without_envelope (http_get (graph_url), "graph");
 }
 
 static gchar *

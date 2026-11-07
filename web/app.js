@@ -687,7 +687,7 @@ function connect(delay = 1000) {
   ws.onmessage = (event) => {
     const message = JSON.parse(event.data);
     if (message.type === "graph") {
-      state.graph = message.graph;
+      state.graph = { pipelines: message.pipelines, links: message.links };
       if (state.graph.pipelines.length)
         lastAlive.graph = state.graph;
       const index = buildIndex(state.graph);
@@ -702,20 +702,20 @@ function connect(delay = 1000) {
       syncMeasuring();
       update();
     } else if (message.type === "findings") {
-      findings.apply(message.findings);
+      findings.apply(message);
       if (state.graph.pipelines.length)
-        lastAlive.findings = message.findings;
+        lastAlive.findings = message;
       showProblems();
     } else if (message.type === "latency") {
-      applyLatency(message.latency);
+      applyLatency(message);
     } else if (message.type === "levels") {
-      applyLevels(message.levels);
+      applyLevels(message);
     } else if (message.type === "properties") {
       elementPins.apply(message);
     } else if (message.type === "pad-stats") {
-      pins.apply(message.stats);
+      pins.apply(message);
     } else if (message.type === "log") {
-      log.apply(message.log);
+      log.apply(message);
       if (state.selected !== null)
         update();
     } else if (message.type === "bye") {

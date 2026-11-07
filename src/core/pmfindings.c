@@ -645,7 +645,7 @@ forget_others (GHashTable * table, GHashTable * seen)
       g_hash_table_iter_remove (&iter);
 }
 
-/* Once per second: all findings as {"schema":1,"findings":[{"id",
+/* Once per second: all findings as {"findings":[{"id",
  * "severity","element","pad","text","hint","count","first","last",
  * "caps":{"upstream","downstream","common"}}]}. No time in it, so an
  * unchanged list gives the same text and need not be sent again. */
@@ -670,7 +670,7 @@ pm_findings_tick (PmFindings * self, gint64 stuck_after_us)
   forget_others (self->sinks, seen);
   g_ptr_array_sort (findings, compare_findings);
 
-  g_string_append_printf (json, "{\"schema\":%d,\"findings\":[", PM_SCHEMA);
+  g_string_append (json, "{\"findings\":[");
   for (i = 0; i < findings->len; i++) {
     PmFinding *f = g_ptr_array_index (findings, i);
 

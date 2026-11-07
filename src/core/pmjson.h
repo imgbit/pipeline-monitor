@@ -7,6 +7,10 @@
 
 G_BEGIN_DECLS
 
+/* The protocol's version, in every message (docs/protocol.md). */
+#define PM_PROTOCOL 1
+
+gchar *pm_json_message (const gchar * type, const gchar * body);
 void pm_json_append_string (GString * json, const gchar * str);
 void pm_json_append_value (GString * json, const gchar * key, guint64 value);
 void pm_json_close (GString * json, gchar end);

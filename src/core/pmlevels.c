@@ -225,7 +225,7 @@ compare_refs (gconstpointer a, gconstpointer b)
   return (ra->id > rb->id) - (ra->id < rb->id);
 }
 
-/* {"schema":1,"time":<µs since 1970>,"queues":[...],"pipelines":[...]} */
+/* {"queues":[...],"pipelines":[...]} */
 gchar *
 pm_levels_to_json (PmModel * model)
 {
@@ -233,8 +233,6 @@ pm_levels_to_json (PmModel * model)
   GPtrArray *found;
   guint i;
 
-  pm_json_append_value (json, "schema", PM_SCHEMA);
-  pm_json_append_value (json, "time", g_get_real_time ());
 
   /* Properties and queries are read without the model locked. */
   found = pm_model_find_elements (model, queue_filter);

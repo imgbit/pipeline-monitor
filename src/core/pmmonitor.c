@@ -609,8 +609,7 @@ pm_monitor_stats_json (PmMonitor * monitor, gpointer client)
   g_ptr_array_sort (entries, compare_entries);
 
   json = g_string_new (NULL);
-  g_string_append_printf (json, "{\"schema\":%d,\"time\":%" G_GINT64_FORMAT
-      ",\"pads\":[", PM_SCHEMA, g_get_real_time ());
+  g_string_append (json, "{\"pads\":[");
   for (i = 0; i < entries->len; i++) {
     PmEntry *entry = g_ptr_array_index (entries, i);
     GstPad *pad = g_weak_ref_get (&entry->pad);

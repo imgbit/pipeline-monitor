@@ -7,9 +7,6 @@
 
 G_BEGIN_DECLS
 
-/* Version of the periodic messages (levels, pad-stats). */
-#define PM_SCHEMA 1
-
 gboolean pm_levels_is_queue (GstElement * element);
 gchar *pm_levels_to_json (PmModel * model);
 

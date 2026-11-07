@@ -6,6 +6,8 @@
 #include <libsoup/soup.h>
 #include <string.h>
 
+#include "envelope.h"
+
 /* GST_TRACERS is read once by gst_init(), so each case runs in a child
  * process that sets it first. */
 
@@ -125,12 +127,15 @@ test_log_off (void)
     SoupSession *session = soup_session_new ();
     SoupMessage *msg = soup_message_new ("GET", log_url);
     GBytes *body;
+    gchar *text;
 
     gst_element_post_message (element,
         gst_message_new_warning (GST_OBJECT (element), error, NULL));
     body = soup_session_send_and_read (session, msg, NULL, NULL);
-    g_assert_cmpmem (g_bytes_get_data (body, NULL), g_bytes_get_size (body),
-        "{\"enabled\":false,\"seq\":0,\"entries\":[]}", 38);
+    text = without_envelope (g_strndup (g_bytes_get_data (body, NULL),
+            g_bytes_get_size (body)), "log");
+    g_assert_cmpstr (text, ==, "{\"enabled\":false,\"seq\":0,\"entries\":[]}");
+    g_free (text);
 
     g_bytes_unref (body);
     g_object_unref (msg);
@@ -363,7 +368,7 @@ test_final_state (void)
     g_thread_join (thread);
     g_assert_nonnull (strstr (page.received->str, "\"type\":\"findings\""));
     g_assert_nonnull (strstr (page.received->str, "not-negotiated"));
-    g_assert_nonnull (strstr (page.received->str, "{\"type\":\"bye\"}"));
+    g_assert_nonnull (strstr (page.received->str, "{\"type\":\"bye\","));
     g_string_free (page.received, TRUE);
     g_free (tracers);
     return;
