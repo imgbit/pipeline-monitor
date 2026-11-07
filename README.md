@@ -59,12 +59,15 @@ It goes where the system's GStreamer finds it. To update, install a newer
 On macOS with Homebrew:
 
 ```sh
-brew install imgbit/tap/pipeline-monitor
+brew tap imgbit/tap
+brew trust imgbit/tap        # Homebrew 7 and newer
+brew install pipeline-monitor
 export GST_PLUGIN_PATH="$(brew --prefix)/lib/gstreamer-1.0"
 ```
 
 Homebrew's GStreamer finds plugins only through `GST_PLUGIN_PATH`. Update
-with `brew upgrade`.
+with `brew upgrade`. Installed before Homebrew 7? Run `brew trust
+imgbit/tap` once, then `brew upgrade`.
 
 On macOS with the official GStreamer.framework (Apple Silicon and Intel)
 or on Windows with the official GStreamer MSVC package (x86_64), both 1.28
