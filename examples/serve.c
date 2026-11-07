@@ -3,7 +3,8 @@
 #include <gst/gst.h>
 #include <string.h>
 
-/* Usage: serve [--warnings] [--set-caps NAME=CAPS]... [pipeline description]
+/* Usage: serve [--warnings] [--set-caps NAME=CAPS]... [--second DESCRIPTION]
+ *   [pipeline description]
  * Runs a pipeline until it ends. If it has a tee named "t", a branch is
  * added and removed every two seconds to produce live updates; with
  * --warnings the tee also posts a warning each time. An appsrc named
@@ -12,7 +13,8 @@
  * subtitles; the audio sink plays 300 ms late, so its queue stays about
  * 60 % full. --set-caps sets the caps of the capsfilter NAME after the
  * pipeline is built, to make negotiation fail when it starts (a pipeline
- * description with such caps would not even link). */
+ * description with such caps would not even link). --second runs another
+ * pipeline next to it. */
 
 #define DEFAULT_PIPELINE \
   "videotestsrc is-live=true ! jpegenc ! decodebin3 ! queue ! tee name=t ! " \
@@ -127,7 +129,8 @@ int
 main (int argc, char **argv)
 {
   const gchar *description = DEFAULT_PIPELINE;
-  GstElement *subs;
+  const gchar *second_description = NULL;
+  GstElement *subs, *second = NULL;
   GList *set_caps = NULL, *l;
   Branch branch = { 0 };
   GError *error = NULL;
@@ -141,6 +144,10 @@ main (int argc, char **argv)
       branch.warnings = TRUE;
     } else if (g_strcmp0 (argv[1], "--set-caps") == 0 && argc > 2) {
       set_caps = g_list_append (set_caps, argv[2]);
+      argv++;
+      argc--;
+    } else if (g_strcmp0 (argv[1], "--second") == 0 && argc > 2) {
+      second_description = argv[2];
       argv++;
       argc--;
     } else {
@@ -175,6 +182,13 @@ main (int argc, char **argv)
     g_strfreev (parts);
   }
   g_list_free (set_caps);
+  if (second_description != NULL) {
+    second = gst_parse_launch (second_description, &error);
+    if (second == NULL) {
+      g_printerr ("--second: %s\n", error->message);
+      return 1;
+    }
+  }
 
   loop = g_main_loop_new (NULL, FALSE);
   bus = gst_element_get_bus (branch.pipeline);
@@ -189,10 +203,16 @@ main (int argc, char **argv)
         gst_object_unref);
 
   gst_element_set_state (branch.pipeline, GST_STATE_PLAYING);
+  if (second != NULL)
+    gst_element_set_state (second, GST_STATE_PLAYING);
   g_print ("Running, press Ctrl+C to stop\n");
   g_main_loop_run (loop);
 
   gst_element_set_state (branch.pipeline, GST_STATE_NULL);
+  if (second != NULL) {
+    gst_element_set_state (second, GST_STATE_NULL);
+    gst_object_unref (second);
+  }
   gst_clear_object (&branch.tee_pad);
   gst_clear_object (&branch.tee);
   gst_bus_remove_watch (bus);

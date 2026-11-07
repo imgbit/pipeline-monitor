@@ -404,6 +404,12 @@ def check(browser, url):
     assert browser.wait(f"{TRANSFORM} !== {json.dumps(view)}"), \
         "auto-fit did not follow the window"
     browser.call("Emulation.clearDeviceMetricsOverride")
+    # The wheel zooms where the pointer is, and stops auto-fit.
+    view = browser.eval(TRANSFORM)
+    browser.call("Input.dispatchMouseEvent", type="mouseWheel", x=400, y=300,
+                 deltaX=0, deltaY=-240)
+    assert browser.wait(f"{TRANSFORM} !== {json.dumps(view)} && "
+                        f"{AUTO_FIT} === 'false'"), "the wheel did not zoom"
 
     browser.call("Page.reload")
     assert browser.wait("!!document.querySelector('#graph .node.collapsed')"), \
@@ -704,6 +710,19 @@ def check_element_pins(browser):
     assert browser.eval(f"{rows}.find(r => r.cells[1]?.textContent === "
                         "'stats').querySelector('.pin-prop.on') !== null")
 
+    # A second property joins the card; removing it keeps the card.
+    def prop(name):
+        return (f"{rows}.find(r => r.cells[1]?.textContent === "
+                f"'{name}').querySelector('.pin-prop')")
+    names = f"[...{card}.querySelectorAll('dt')].map(d => d.textContent)"
+    browser.eval(f"{prop('sync')}.click()")
+    assert browser.wait(f"{names}.includes('sync')"), \
+        "second property not on the card"
+    browser.eval(f"{prop('sync')}.click()")
+    assert browser.wait(f"!!{card} && !{names}.includes('sync') && "
+                        f"{names}.includes('rendered')"), \
+        "removing one property changed the rest of the card"
+
     browser.call("Page.reload")
     assert browser.wait(f"!!{card} && /^[0-9]/.test({rendered})"), \
         "element pin not remembered after reload"
@@ -781,6 +800,10 @@ def check_paths(browser):
         "chosen pad not used"
     assert not browser.eval(f"!!{card('videotestsrc0:src')}"), \
         "choosing a pad pinned it"
+    # Clicked again, it goes back to the nearest pinned pad upstream.
+    browser.eval(f"{card('fakesink0:sink')}.querySelector('.pin-from').click()")
+    assert browser.wait(f"!!{row('fakesink0:sink', 'from queue0:sink')}"), \
+        "did not go back to the automatic choice"
 
     # Unpinning the card that is choosing stops choosing.
     browser.eval(f"{card('queue0:sink')}.querySelector('.pin-from').click()")
@@ -890,6 +913,84 @@ def check_ended(browser, serve):
             server.wait()
 
 
+# Two pipelines: a selector; an element that makes new timestamps cannot be
+# measured.
+TWO_PIPELINES = ("audiotestsrc is-live=true ! identity name=retime "
+                 "datarate=1000 ! fakesink sync=false")
+SECOND_PIPELINE = "videotestsrc is-live=true ! fakesink name=other-sink"
+
+
+def check_two_pipelines(browser, serve):
+    server, url = start_server(serve, TWO_PIPELINES, "--second",
+                               SECOND_PIPELINE)
+    try:
+        browser.call("Page.navigate", url=url)
+        select = "document.getElementById('pipeline-select')"
+        assert browser.wait(f"!{select}.hidden && {select}.options.length "
+                            "=== 2", timeout=10), "no pipeline selector"
+        for want in ("other-sink", "retime"):
+            browser.eval(f"(s => {{ s.value = [...s.options].find(o => "
+                         f"o.selected === false).value; s.dispatchEvent("
+                         f"new Event('change')); }})({select})")
+            if browser.wait(f"!!{element_selector(want)}"):
+                continue
+            browser.eval(f"(s => {{ s.value = [...s.options].find(o => "
+                         f"o.selected === false).value; s.dispatchEvent("
+                         f"new Event('change')); }})({select})")
+            assert browser.wait(f"!!{element_selector(want)}"), \
+                f"selecting a pipeline did not show {want}"
+
+        node = browser.eval(f"{element_selector('retime')}?.dataset.id")
+        assert browser.click_until(
+            f'#graph .node[data-id="{node}"] > rect.box',
+            "document.querySelector('#details h2')?.textContent === "
+            "'retime'", tries=5), "could not select retime"
+        browser.eval("document.querySelector('#details .latency-section "
+                     ".measure-toggle').click()")
+        assert browser.wait("[...document.querySelectorAll('#graph "
+                            ".latency-text')].some(t => t.textContent"
+                            ".startsWith('latency ?'))", timeout=10), \
+            "no 'latency ?' for an element that makes new timestamps"
+        browser.eval("document.querySelector('#details .latency-section "
+                     ".measure-toggle').click()")
+        assert not browser.errors, f"errors in the page: {browser.errors}"
+    finally:
+        server.terminate()
+        server.wait()
+
+
+# Negotiation fails when the source starts: the finding compares what each
+# side handles, and a press on its place selects the element.
+FORMAT_PIPELINE = "videotestsrc ! capsfilter name=cf ! fakesink"
+
+
+def check_format_finding(browser, serve):
+    server, url = start_server(serve, FORMAT_PIPELINE, "--set-caps",
+                               "cf=audio/x-raw")
+    try:
+        browser.call("Page.navigate", url=url)
+        caps = "document.querySelector('#findings-rows .finding-caps')"
+        assert browser.wait(f"!!{caps}", timeout=15), \
+            "no format comparison in the finding"
+        assert browser.eval(f"{caps}.querySelectorAll('.finding-caps-side')"
+                            ".length === 2")
+        assert browser.eval(f"!!{caps}.querySelector('.caps-media.differs')"), \
+            "the different media types are not marked"
+        assert browser.eval("/[0-9]+× · [0-9]+ (s|min) ago/.test(document."
+                            "querySelector('#findings-rows .finding-count')"
+                            ".textContent)"), "no count and time"
+        browser.click("#problems-counter")
+        assert browser.wait("!document.getElementById('findings-panel')"
+                            ".hidden")
+        browser.click("#findings-rows .finding.error .finding-place")
+        assert browser.wait("!!document.querySelector('#details h2')"), \
+            "pressing the place did not select the element"
+    finally:
+        if server.poll() is None:
+            server.terminate()
+            server.wait()
+
+
 # Measurements are kept by element path: they come back with a new run,
 # also when turned on while no program is connected.
 RESTART_PIPELINE = ("audiotestsrc is-live=true ! queue name=q-r ! "
@@ -984,6 +1085,12 @@ def check_pins(browser):
         "no live rate"
     assert browser.wait(f"{watched()}.then(n => n === 1)"), "no probe"
     assert browser.wait(f"/^0:00:/.test({pin_row('PTS')})")
+    tip = "document.querySelector('.tooltip')"
+    browser.hover(f"document.querySelector('{pad}')")
+    assert browser.wait(f"!{tip}.hidden && "
+                        f"{tip}.textContent.includes('buffers/s')"), \
+        "no rate in the tooltip of a pinned pad"
+    browser.call("Input.dispatchMouseEvent", type="mouseMoved", x=2, y=2)
 
     browser.click("#time-unit")
     assert browser.wait(f"{pin_row('duration')}?.endsWith(' ns')"), \
@@ -996,6 +1103,15 @@ def check_pins(browser):
     browser.hover(f"{card}.querySelector('.pin-rows')")
     assert browser.wait("!!document.querySelector('#graph .pad.highlight')"), \
         "hovering a card did not highlight its pad"
+
+    # A click on the card's title brings its pad to the middle.
+    browser.click(".pin-card .pin-title")
+    assert browser.wait(
+        f"(p => (g => Math.abs(p.x + p.width / 2 - g.x - g.width / 2) < 20 && "
+        f"Math.abs(p.y + p.height / 2 - g.y - g.height / 2) < 20)("
+        f"document.getElementById('graph').getBoundingClientRect()))("
+        f"document.querySelector('{pad}').getBoundingClientRect())"), \
+        "clicking a card did not show its pad"
 
     browser.drag(".pin-card .pin-head", 220, 160)
     assert browser.wait(f"{card}.classList.contains('detached')"), \
@@ -1120,6 +1236,8 @@ def main():
             check_findings(browser, serve)
             check_ended(browser, serve)
             check_measure_restart(browser, serve)
+            check_two_pipelines(browser, serve)
+            check_format_finding(browser, serve)
     finally:
         if browser:
             browser.close()
