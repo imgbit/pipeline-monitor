@@ -1,6 +1,7 @@
 /* SPDX-FileCopyrightText: 2026 Łukasz Huńczak */
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #include "pmmonitor.h"
+#include "pmjson.h"
 #include "pmlevels.h"
 
 #include <string.h>
@@ -438,18 +439,6 @@ pm_monitor_tick (PmMonitor * monitor)
   g_mutex_unlock (&monitor->lock);
 }
 
-/* Appends "key":value, with null for GST_CLOCK_TIME_NONE, which is also
- * GST_BUFFER_OFFSET_NONE and -1 in segments. */
-static void
-append_value (GString * json, const gchar * key, guint64 value)
-{
-  if (value == G_MAXUINT64)
-    g_string_append_printf (json, "\"%s\":null,", key);
-  else
-    g_string_append_printf (json, "\"%s\":%" G_GUINT64_FORMAT ",", key,
-        value);
-}
-
 static void
 append_double (GString * json, const gchar * key, gdouble value)
 {
@@ -457,16 +446,6 @@ append_double (GString * json, const gchar * key, gdouble value)
 
   g_string_append_printf (json, "\"%s\":%s,", key,
       g_ascii_formatd (buf, sizeof (buf), "%.3f", value));
-}
-
-/* Ends an object built from append_* calls. */
-static void
-close_object (GString * json)
-{
-  if (json->str[json->len - 1] == ',')
-    json->str[json->len - 1] = '}';
-  else
-    g_string_append_c (json, '}');
 }
 
 static void
@@ -498,22 +477,22 @@ append_last (GString * json, const PmValues * v, GstClockTime now)
     return;
   }
   g_string_append (json, "\"last\":{");
-  append_value (json, "pts", v->pts);
-  append_value (json, "dts", v->dts);
-  append_value (json, "duration", v->duration);
-  append_value (json, "running_time", v->running_time);
+  pm_json_append_value (json, "pts", v->pts);
+  pm_json_append_value (json, "dts", v->dts);
+  pm_json_append_value (json, "duration", v->duration);
+  pm_json_append_value (json, "running_time", v->running_time);
   if (v->have_delay)
     g_string_append_printf (json, "\"delay\":%" G_GINT64_FORMAT ",",
         v->delay);
   else
     g_string_append (json, "\"delay\":null,");
-  append_value (json, "size", v->size);
-  append_value (json, "offset", v->offset);
-  append_value (json, "offset_end", v->offset_end);
+  pm_json_append_value (json, "size", v->size);
+  pm_json_append_value (json, "offset", v->offset);
+  pm_json_append_value (json, "offset_end", v->offset_end);
   append_flags (json, v->flags);
   /* How long ago it passed. */
-  append_value (json, "age", now - v->arrival);
-  close_object (json);
+  pm_json_append_value (json, "age", now - v->arrival);
+  pm_json_close (json, '}');
   g_string_append_c (json, ',');
 }
 
@@ -529,10 +508,10 @@ append_segment (GString * json, const PmValues * v)
   g_string_append_printf (json, "\"segment\":{\"format\":\"%s\",",
       gst_format_get_name (s->format));
   append_double (json, "rate", s->rate);
-  append_value (json, "start", s->start);
-  append_value (json, "stop", s->stop);
-  append_value (json, "base", s->base);
-  close_object (json);
+  pm_json_append_value (json, "start", s->start);
+  pm_json_append_value (json, "stop", s->stop);
+  pm_json_append_value (json, "base", s->base);
+  pm_json_close (json, '}');
   g_string_append_c (json, ',');
 }
 
@@ -576,11 +555,11 @@ append_window (GString * json, PmEntry * entry)
   append_double (json, "buffers_per_s", seconds > 0 ? sum.buffers / seconds
       : 0);
   append_double (json, "bytes_per_s", seconds > 0 ? sum.bytes / seconds : 0);
-  append_value (json, "gap_min", sum.gaps ? sum.gap_min : G_MAXUINT64);
-  append_value (json, "gap_avg", sum.gaps ? sum.gap_sum / sum.gaps :
+  pm_json_append_value (json, "gap_min", sum.gaps ? sum.gap_min : G_MAXUINT64);
+  pm_json_append_value (json, "gap_avg", sum.gaps ? sum.gap_sum / sum.gaps :
       G_MAXUINT64);
-  append_value (json, "gap_max", sum.gaps ? sum.gap_max : G_MAXUINT64);
-  close_object (json);
+  pm_json_append_value (json, "gap_max", sum.gaps ? sum.gap_max : G_MAXUINT64);
+  pm_json_close (json, '}');
   g_string_append_c (json, ',');
 }
 
@@ -595,18 +574,18 @@ append_entry (GString * json, PmEntry * entry, GstClockTime now)
   g_mutex_unlock (&entry->stats->lock);
 
   g_string_append_c (json, '{');
-  append_value (json, "pad", entry->pad_id);
-  append_value (json, "buffers", v.buffers);
-  append_value (json, "bytes", v.bytes);
-  append_value (json, "lists", v.lists);
-  append_value (json, "list_buffers", v.list_buffers);
+  pm_json_append_value (json, "pad", entry->pad_id);
+  pm_json_append_value (json, "buffers", v.buffers);
+  pm_json_append_value (json, "bytes", v.bytes);
+  pm_json_append_value (json, "lists", v.lists);
+  pm_json_append_value (json, "list_buffers", v.list_buffers);
   append_last (json, &v, now);
   append_segment (json, &v);
   append_window (json, entry);
   g_string_append (json, "\"events\":{");
   for (i = 0; i < N_EVENTS; i++)
-    append_value (json, event_names[i], v.events[i]);
-  close_object (json);
+    pm_json_append_value (json, event_names[i], v.events[i]);
+  pm_json_close (json, '}');
   g_string_append_c (json, '}');
 }
 

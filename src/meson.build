@@ -6,6 +6,7 @@ plugin_c_args = [
 ]
 
 plugin_sources = files(
+  'core/pmjson.c',
   'core/pmmodel.c',
   'core/pmmonitor.c',
   'core/pmlevels.c',

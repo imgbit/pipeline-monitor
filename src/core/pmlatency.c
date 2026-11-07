@@ -1,6 +1,7 @@
 /* SPDX-FileCopyrightText: 2026 Łukasz Huńczak */
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #include "pmlatency.h"
+#include "pmjson.h"
 #include "pmlevels.h"
 
 #include <string.h>
@@ -602,26 +603,6 @@ sync_all (PmLatency * latency)
   g_ptr_array_unref (found);
 }
 
-/* Appends "key":value or null. */
-static void
-append_value (GString * json, const gchar * key, guint64 value)
-{
-  if (value == G_MAXUINT64)
-    g_string_append_printf (json, "\"%s\":null,", key);
-  else
-    g_string_append_printf (json, "\"%s\":%" G_GUINT64_FORMAT ",", key,
-        value);
-}
-
-static void
-close_json (GString * json, gchar end)
-{
-  if (json->str[json->len - 1] == ',')
-    json->str[json->len - 1] = end;
-  else
-    g_string_append_c (json, end);
-}
-
 /* Closes the current slot into the window and appends "measured". */
 static void
 append_measured (GString * json, PmMeasure * m)
@@ -650,14 +631,14 @@ append_measured (GString * json, PmMeasure * m)
   }
 
   g_string_append (json, "\"measured\":{");
-  append_value (json, "min", sum.matched ? sum.min : G_MAXUINT64);
-  append_value (json, "avg", sum.matched ? sum.sum / sum.matched :
+  pm_json_append_value (json, "min", sum.matched ? sum.min : G_MAXUINT64);
+  pm_json_append_value (json, "avg", sum.matched ? sum.sum / sum.matched :
       G_MAXUINT64);
-  append_value (json, "max", sum.matched ? sum.max : G_MAXUINT64);
-  append_value (json, "last", last);
-  append_value (json, "matched", sum.matched);
-  append_value (json, "unmatched", sum.unmatched);
-  close_json (json, '}');
+  pm_json_append_value (json, "max", sum.matched ? sum.max : G_MAXUINT64);
+  pm_json_append_value (json, "last", last);
+  pm_json_append_value (json, "matched", sum.matched);
+  pm_json_append_value (json, "unmatched", sum.unmatched);
+  pm_json_close (json, '}');
   g_string_append_c (json, ',');
 }
 
@@ -667,7 +648,7 @@ static void
 keep_result (PmMeasure * m, GString * json)
 {
   g_free (m->json);
-  close_json (json, '}');
+  pm_json_close (json, '}');
   m->json = g_string_free (json, FALSE);
 }
 
@@ -703,16 +684,16 @@ pm_latency_tick (PmLatency * latency)
     if (report)
       update_reported (latency, m);
     json = g_string_new ("{");
-    append_value (json, "element", m->a);
+    pm_json_append_value (json, "element", m->a);
     g_string_append_printf (json, "\"inputs\":%s,\"outputs\":%s,",
         m->inputs ? "true" : "false", m->outputs ? "true" : "false");
     append_measured (json, m);
     if (m->have_reported) {
       g_string_append_printf (json, "\"reported\":{\"live\":%s,",
           m->reported_live ? "true" : "false");
-      append_value (json, "min", m->reported_min);
-      append_value (json, "max", m->reported_max);
-      close_json (json, '}');
+      pm_json_append_value (json, "min", m->reported_min);
+      pm_json_append_value (json, "max", m->reported_max);
+      pm_json_close (json, '}');
       g_string_append_c (json, ',');
     } else {
       g_string_append (json, "\"reported\":null,");
@@ -731,8 +712,8 @@ pm_latency_tick (PmLatency * latency)
       continue;
     }
     json = g_string_new ("{");
-    append_value (json, "from", m->a);
-    append_value (json, "to", m->b);
+    pm_json_append_value (json, "from", m->a);
+    pm_json_append_value (json, "to", m->b);
     append_measured (json, m);
     keep_result (m, json);
   }
@@ -788,8 +769,8 @@ pm_latency_message (PmLatency * latency, gpointer client)
   GString *json = g_string_new ("{");
   gboolean any;
 
-  append_value (json, "schema", PM_SCHEMA);
-  append_value (json, "time", latency->time);
+  pm_json_append_value (json, "schema", PM_SCHEMA);
+  pm_json_append_value (json, "time", latency->time);
   g_string_append (json, "\"elements\":");
   any = append_wanted (json, latency->elements, client, all);
   g_string_append (json, "\"paths\":");
@@ -806,10 +787,10 @@ pm_latency_message (PmLatency * latency, gpointer client)
 
   g_string_append_printf (json, "\"all\":{\"on\":%s,",
       all ? "true" : "false");
-  append_value (json, "buffers_per_s", all ? latency->all_rate : 0);
-  append_value (json, "stopped_at", stopped ? latency->all_stopped_rate :
-      G_MAXUINT64);
-  close_json (json, '}');
+  pm_json_append_value (json, "buffers_per_s", all ? latency->all_rate : 0);
+  pm_json_append_value (json, "stopped_at",
+      stopped ? latency->all_stopped_rate : G_MAXUINT64);
+  pm_json_close (json, '}');
   g_string_append_c (json, '}');
   return g_string_free (json, FALSE);
 }

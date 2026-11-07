@@ -1,6 +1,7 @@
 /* SPDX-FileCopyrightText: 2026 Łukasz Huńczak */
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #include "pmfindings.h"
+#include "pmjson.h"
 #include "pmlevels.h"
 
 #include <string.h>
@@ -42,23 +43,6 @@ finding_free (PmFinding * f)
   g_free (f->upstream);
   g_free (f->downstream);
   g_free (f);
-}
-
-static void
-append_escaped (GString * json, const gchar * str)
-{
-  const guchar *p;
-
-  g_string_append_c (json, '"');
-  for (p = (const guchar *) str; *p != '\0'; p++) {
-    if (*p == '"' || *p == '\\')
-      g_string_append_printf (json, "\\%c", *p);
-    else if (*p < 0x20)
-      g_string_append_printf (json, "\\u%04x", *p);
-    else
-      g_string_append_c (json, *p);
-  }
-  g_string_append_c (json, '"');
 }
 
 /* What a result means where data stopped, and what to look at. */
@@ -686,24 +670,24 @@ pm_findings_tick (PmFindings * self, gint64 stuck_after_us)
     if (i > 0)
       g_string_append_c (json, ',');
     g_string_append (json, "{\"id\":");
-    append_escaped (json, f->id);
+    pm_json_append_string (json, f->id);
     g_string_append_printf (json, ",\"severity\":\"%s\",\"element\":%"
         G_GUINT64_FORMAT, severity_names[f->severity], f->element);
     if (f->pad != 0)
       g_string_append_printf (json, ",\"pad\":%" G_GUINT64_FORMAT, f->pad);
     g_string_append (json, ",\"text\":");
-    append_escaped (json, f->text);
+    pm_json_append_string (json, f->text);
     g_string_append (json, ",\"hint\":");
-    append_escaped (json, f->hint ? f->hint : "");
+    pm_json_append_string (json, f->hint ? f->hint : "");
     if (f->count > 0)
       g_string_append_printf (json, ",\"count\":%" G_GUINT64_FORMAT
           ",\"first\":%" G_GINT64_FORMAT ",\"last\":%" G_GINT64_FORMAT,
           f->count, f->first, f->last);
     if (f->upstream != NULL || f->downstream != NULL) {
       g_string_append (json, ",\"caps\":{\"upstream\":");
-      append_escaped (json, f->upstream ? f->upstream : "");
+      pm_json_append_string (json, f->upstream ? f->upstream : "");
       g_string_append (json, ",\"downstream\":");
-      append_escaped (json, f->downstream ? f->downstream : "");
+      pm_json_append_string (json, f->downstream ? f->downstream : "");
       g_string_append_printf (json, ",\"common\":%s}",
           f->common ? "true" : "false");
     }

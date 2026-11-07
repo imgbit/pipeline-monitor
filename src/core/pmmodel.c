@@ -1,6 +1,7 @@
 /* SPDX-FileCopyrightText: 2026 Łukasz Huńczak */
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #include "pmmodel.h"
+#include "pmjson.h"
 
 typedef struct _PmElement PmElement;
 
@@ -534,38 +535,11 @@ pm_model_remove_object (PmModel * model, gpointer object)
   g_mutex_unlock (&model->lock);
 }
 
+/* Names and texts: "" when missing. */
 static void
 append_string (GString * json, const gchar * str)
 {
-  const guchar *p;
-
-  g_string_append_c (json, '"');
-  for (p = (const guchar *) (str ? str : ""); *p != '\0'; p++) {
-    switch (*p) {
-      case '"':
-        g_string_append (json, "\\\"");
-        break;
-      case '\\':
-        g_string_append (json, "\\\\");
-        break;
-      case '\n':
-        g_string_append (json, "\\n");
-        break;
-      case '\r':
-        g_string_append (json, "\\r");
-        break;
-      case '\t':
-        g_string_append (json, "\\t");
-        break;
-      default:
-        if (*p < 0x20)
-          g_string_append_printf (json, "\\u%04x", *p);
-        else
-          g_string_append_c (json, *p);
-        break;
-    }
-  }
-  g_string_append_c (json, '"');
+  pm_json_append_string (json, str ? str : "");
 }
 
 static void

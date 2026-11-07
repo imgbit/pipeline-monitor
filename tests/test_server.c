@@ -422,6 +422,47 @@ test_websocket_log (void)
   g_object_unref (session);
 }
 
+static JsonNode *parse (const gchar * text);
+
+/* Text that is not valid UTF-8 (GStreamer passes it on) still reaches the
+ * page, with replacement characters. */
+static void
+test_invalid_utf8 (void)
+{
+  SoupSession *session = soup_session_new ();
+  gchar *url = server_url ("ws");
+  GstElement *pipeline = gst_pipeline_new (NULL);
+  GstElement *element = gst_element_factory_make ("identity", "utf8-log");
+  GstBus *bus = gst_element_get_bus (pipeline);
+  WsClient client;
+  gchar *message, *body;
+  JsonNode *root;
+
+  gst_bus_set_flushing (bus, TRUE);
+  gst_bin_add (GST_BIN (pipeline), element);
+
+  ws_connect (&client, session, url, NULL);
+  g_free (ws_next (&client, "log"));
+  post_warning (element, "bad \xff text");
+  message = ws_next (&client, "log");
+  g_assert_true (g_utf8_validate (message, -1, NULL));
+  g_assert_nonnull (strstr (message, "\"text\":\"bad \xef\xbf\xbd text\""));
+  g_free (message);
+
+  g_assert_cmpuint (get_status ("api/log", "GET", NULL, &body, NULL), ==,
+      SOUP_STATUS_OK);
+  g_assert_true (g_utf8_validate (body, -1, NULL));
+  root = parse (body);
+  json_node_unref (root);
+  g_free (body);
+
+  ws_disconnect (&client);
+  gst_object_unref (bus);
+  gst_object_unref (pipeline);
+  g_free (url);
+  g_object_unref (session);
+}
+
 static void
 test_websocket (void)
 {
@@ -2223,6 +2264,7 @@ main (int argc, char **argv)
   g_test_add_func ("/server/monitor", test_monitor);
   g_test_add_func ("/server/monitor-values", test_monitor_values);
   g_test_add_func ("/server/monitor-bad-commands", test_monitor_bad_commands);
+  g_test_add_func ("/server/invalid-utf8", test_invalid_utf8);
   g_test_add_func ("/server/monitor-pad-gone", test_monitor_pad_gone);
   g_test_add_func ("/server/levels", test_levels);
   g_test_add_func ("/server/levels-multiqueue", test_levels_multiqueue);

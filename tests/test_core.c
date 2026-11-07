@@ -10,6 +10,7 @@
 #include "pmprops.h"
 #include "pmlatency.h"
 #include "pmfindings.h"
+#include "pmjson.h"
 
 /* Model tests without a pipeline: objects are created and destroyed by the
  * test itself, in orders the tracer hooks can't easily produce. */
@@ -478,7 +479,7 @@ test_props_values (void)
   check_value (&v, "null");
   g_value_init (&v, G_TYPE_STRING);
   g_value_set_string (&v, "a\"b\n");
-  check_value (&v, "\"a\\\"b\\u000a\"");
+  check_value (&v, "\"a\\\"b\\n\"");
   g_value_init (&v, GST_TYPE_STATE);
   g_value_set_enum (&v, GST_STATE_PAUSED);
   check_value (&v, "{\"nick\":\"paused\",\"value\":3}");
@@ -716,6 +717,23 @@ test_latency_path (PathFixture * f, gconstpointer data)
   pm_latency_free (latency);
 }
 
+/* Strings are escaped, and text that is not valid UTF-8 is repaired. */
+static void
+test_json_string (void)
+{
+  GString *json = g_string_new (NULL);
+
+  pm_json_append_string (json, "q\" b\\ n\n t\t c\x01");
+  g_assert_cmpstr (json->str, ==, "\"q\\\" b\\\\ n\\n t\\t c\\u0001\"");
+  g_string_truncate (json, 0);
+  pm_json_append_string (json, "bad \xff end");
+  g_assert_cmpstr (json->str, ==, "\"bad \xef\xbf\xbd end\"");
+  g_string_truncate (json, 0);
+  pm_json_append_string (json, NULL);
+  g_assert_cmpstr (json->str, ==, "null");
+  g_string_free (json, TRUE);
+}
+
 /* A failed push becomes a finding at its pad; repeats count up. */
 static void
 test_findings_flow (Fixture * f, gconstpointer data)
@@ -770,6 +788,7 @@ main (int argc, char **argv)
       test_monitor_sparse, fixture_teardown);
   g_test_add_func ("/core/props-values", test_props_values);
   g_test_add_func ("/core/props-read", test_props_read);
+  g_test_add_func ("/core/json-string", test_json_string);
   g_test_add ("/core/latency-path", PathFixture, NULL, path_setup,
       test_latency_path, path_teardown);
   g_test_add ("/core/findings-flow", Fixture, NULL, fixture_setup,

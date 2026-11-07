@@ -1,6 +1,7 @@
 /* SPDX-FileCopyrightText: 2026 Łukasz Huńczak */
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #include "pmprops.h"
+#include "pmjson.h"
 #include "pmlevels.h"
 
 #include <math.h>
@@ -85,23 +86,6 @@ job_unref (PmReadJob * job)
 }
 
 static void
-append_escaped (GString * json, const gchar * str)
-{
-  const guchar *p;
-
-  g_string_append_c (json, '"');
-  for (p = (const guchar *) str; *p != '\0'; p++) {
-    if (*p == '"' || *p == '\\')
-      g_string_append_printf (json, "\\%c", *p);
-    else if (*p < 0x20)
-      g_string_append_printf (json, "\\u%04x", *p);
-    else
-      g_string_append_c (json, *p);
-  }
-  g_string_append_c (json, '"');
-}
-
-static void
 append_double (GString * json, gdouble d)
 {
   gchar buf[G_ASCII_DTOSTR_BUF_SIZE];
@@ -119,7 +103,7 @@ append_field (GQuark field, const GValue * value, gpointer user_data)
 
   if (json->str[json->len - 1] != '{')
     g_string_append_c (json, ',');
-  append_escaped (json, g_quark_to_string (field));
+  pm_json_append_string (json, g_quark_to_string (field));
   g_string_append_c (json, ':');
   pm_props_append_value (json, value);
   return TRUE;
@@ -129,7 +113,7 @@ static void
 append_structure (GString * json, const GstStructure * s)
 {
   g_string_append (json, "{\"structure\":");
-  append_escaped (json, gst_structure_get_name (s));
+  pm_json_append_string (json, gst_structure_get_name (s));
   g_string_append (json, ",\"fields\":{");
   gst_structure_foreach (s, append_field, json);
   g_string_append (json, "}}");
@@ -184,14 +168,14 @@ pm_props_append_value (GString * json, const GValue * value)
       if (g_value_get_string (value) == NULL)
         g_string_append (json, "null");
       else
-        append_escaped (json, g_value_get_string (value));
+        pm_json_append_string (json, g_value_get_string (value));
       return;
     case G_TYPE_ENUM:{
       GEnumClass *klass = g_type_class_ref (type);
       GEnumValue *e = g_enum_get_value (klass, g_value_get_enum (value));
 
       g_string_append (json, "{\"nick\":");
-      append_escaped (json, e ? e->value_nick : "?");
+      pm_json_append_string (json, e ? e->value_nick : "?");
       g_string_append_printf (json, ",\"value\":%d}", g_value_get_enum (value));
       g_type_class_unref (klass);
       return;
@@ -208,7 +192,7 @@ pm_props_append_value (GString * json, const GValue * value)
         if (f->value != 0 && (flags & f->value) == f->value) {
           if (!first)
             g_string_append_c (json, ',');
-          append_escaped (json, f->value_nick);
+          pm_json_append_string (json, f->value_nick);
           first = FALSE;
         }
       }
@@ -223,10 +207,10 @@ pm_props_append_value (GString * json, const GValue * value)
         g_string_append (json, "null");
       } else {
         g_string_append (json, "{\"object\":");
-        append_escaped (json, GST_IS_OBJECT (object) ?
+        pm_json_append_string (json, GST_IS_OBJECT (object) ?
             GST_OBJECT_NAME (object) : G_OBJECT_TYPE_NAME (object));
         g_string_append (json, ",\"type\":");
-        append_escaped (json, G_OBJECT_TYPE_NAME (object));
+        pm_json_append_string (json, G_OBJECT_TYPE_NAME (object));
         g_string_append_c (json, '}');
       }
       return;
@@ -241,7 +225,7 @@ pm_props_append_value (GString * json, const GValue * value)
 
     g_string_append (json, "{\"caps\":");
     if (text)
-      append_escaped (json, text);
+      pm_json_append_string (json, text);
     else
       g_string_append (json, "null");
     g_string_append_c (json, '}');
@@ -279,7 +263,7 @@ pm_props_append_value (GString * json, const GValue * value)
     for (i = 0; strv && strv[i]; i++) {
       if (i > 0)
         g_string_append_c (json, ',');
-      append_escaped (json, strv[i]);
+      pm_json_append_string (json, strv[i]);
     }
     g_string_append_c (json, ']');
   } else if (type == GST_TYPE_SAMPLE) {
@@ -290,14 +274,14 @@ pm_props_append_value (GString * json, const GValue * value)
 
     g_string_append (json, "{\"type\":\"GstSample\",\"caps\":");
     if (text)
-      append_escaped (json, text);
+      pm_json_append_string (json, text);
     else
       g_string_append (json, "null");
     g_string_append_c (json, '}');
     g_free (text);
   } else {
     g_string_append (json, "{\"type\":");
-    append_escaped (json, g_type_name (type));
+    pm_json_append_string (json, g_type_name (type));
     g_string_append_c (json, '}');
   }
 }
@@ -348,7 +332,7 @@ append_range (GString * json, GParamSpec * pspec)
     for (i = 0; i < n; i++) {
       if (i > 0)
         g_string_append_c (json, ',');
-      append_escaped (json, is_enum ?
+      pm_json_append_string (json, is_enum ?
           ((GEnumClass *) klass)->values[i].value_nick :
           ((GFlagsClass *) klass)->values[i].value_nick);
     }
@@ -383,11 +367,11 @@ read_property (PmReadJob * job, GString * json, GParamSpec * pspec)
   const GValue *def = g_param_spec_get_default_value (pspec);
 
   g_string_append (json, "{\"name\":");
-  append_escaped (json, pspec->name);
+  pm_json_append_string (json, pspec->name);
   g_string_append (json, ",\"type\":");
-  append_escaped (json, g_type_name (pspec->value_type));
+  pm_json_append_string (json, g_type_name (pspec->value_type));
   g_string_append (json, ",\"blurb\":");
-  append_escaped (json, g_param_spec_get_blurb (pspec) ?
+  pm_json_append_string (json, g_param_spec_get_blurb (pspec) ?
       g_param_spec_get_blurb (pspec) : "");
   g_string_append_printf (json, ",\"writable\":%s",
       (pspec->flags & G_PARAM_WRITABLE) ? "true" : "false");
@@ -483,7 +467,7 @@ pm_props_read (GstElement * element, const gchar * const *names,
   } else {
     stuck = job->current;
     g_string_append (json, ",\"not_answering\":");
-    append_escaped (json, stuck ? stuck : "?");
+    pm_json_append_string (json, stuck ? stuck : "?");
   }
   g_mutex_unlock (&job->lock);
   /* Not with the job locked: is_silent locks in the other order. */
