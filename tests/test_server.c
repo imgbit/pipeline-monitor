@@ -1004,6 +1004,81 @@ test_levels (void)
   gst_object_unref (pipeline);
 }
 
+/* An element without pads that gives the pipeline its clock, as an audio
+ * sink does. */
+typedef GstElement PmTestClock;
+typedef GstElementClass PmTestClockClass;
+G_DEFINE_TYPE (PmTestClock, pm_test_clock, GST_TYPE_ELEMENT);
+
+static GstClock *
+pm_test_clock_provide (GstElement * element)
+{
+  return gst_system_clock_obtain ();
+}
+
+static void
+pm_test_clock_class_init (PmTestClockClass * klass)
+{
+  klass->provide_clock = pm_test_clock_provide;
+}
+
+static void
+pm_test_clock_init (PmTestClock * element)
+{
+  GST_OBJECT_FLAG_SET (element, GST_ELEMENT_FLAG_PROVIDE_CLOCK);
+}
+
+/* queue2 reports how full its buffer is; the clock's provider is named. */
+static void
+test_levels_buffering_clock (void)
+{
+  GstElement *pipeline = start_pipeline ("audiotestsrc is-live=true ! "
+      "queue2 name=bf-queue use-buffering=true ! fakesink async=false");
+  GstElement *clock = g_object_new (pm_test_clock_get_type (), "name",
+      "bf-clock", NULL);
+  gboolean buffering = FALSE, provider = FALSE;
+  gint tries;
+
+  gst_element_set_state (pipeline, GST_STATE_PAUSED);
+  gst_bin_add (GST_BIN (pipeline), clock);
+  gst_element_set_state (pipeline, GST_STATE_PLAYING);
+
+  for (tries = 0; tries < 50 && !(buffering && provider); tries++) {
+    gchar *text;
+    JsonNode *root;
+    JsonObject *q;
+    JsonArray *pipelines;
+    guint i;
+
+    g_usleep (100 * G_TIME_SPAN_MILLISECOND);
+    get_status ("api/levels", "GET", NULL, &text, NULL);
+    root = parse (text);
+    q = find_queue (root, "/bf-queue");
+    if (q != NULL && json_object_has_member (q, "buffering")) {
+      gint64 percent = json_object_get_int_member (q, "buffering");
+
+      g_assert_cmpint (percent, >=, 0);
+      g_assert_cmpint (percent, <=, 100);
+      buffering = TRUE;
+    }
+    pipelines = json_object_get_array_member (json_node_get_object (root),
+        "pipelines");
+    for (i = 0; i < json_array_get_length (pipelines); i++) {
+      JsonObject *p = json_array_get_object_element (pipelines, i);
+      const gchar *path = json_object_get_string_member_with_default (p,
+          "clock_provider", NULL);
+
+      if (path != NULL && g_str_has_suffix (path, "/bf-clock"))
+        provider = TRUE;
+    }
+    json_node_unref (root);
+    g_free (text);
+  }
+  g_assert_true (buffering);
+  g_assert_true (provider);
+  stop_pipeline (pipeline);
+}
+
 /* multiqueue reports one level per sink pad, with the pad's id. */
 static void
 test_levels_multiqueue (void)
@@ -1396,6 +1471,35 @@ measured_avg (WsClient * client, gint64 element)
   return avg;
 }
 
+/* Like measured_avg, for the path that starts at pad from. */
+static gint64
+path_avg (WsClient * client, gint64 from)
+{
+  gint64 avg = -1;
+  gint tries;
+
+  for (tries = 0; tries < 40 && avg < 0; tries++) {
+    gchar *message = ws_next (client, "latency");
+    JsonNode *root = parse (message);
+    JsonObject *latency = json_object_get_object_member (json_node_get_object
+        (root), "latency");
+    JsonArray *paths = json_object_get_array_member (latency, "paths");
+    guint i;
+
+    for (i = 0; paths != NULL && i < json_array_get_length (paths); i++) {
+      JsonObject *p = json_array_get_object_element (paths, i);
+      JsonObject *m = json_object_get_object_member (p, "measured");
+
+      if (json_object_get_int_member (p, "from") == from && tries >= 6 &&
+          !json_object_get_null_member (m, "avg"))
+        avg = json_object_get_int_member (m, "avg");
+    }
+    json_node_unref (root);
+    g_free (message);
+  }
+  return avg;
+}
+
 static void
 test_latency_element (void)
 {
@@ -1416,6 +1520,17 @@ test_latency_element (void)
   avg = measured_avg (&client, id);
   g_assert_cmpint (avg, >=, 4 * GST_MSECOND);
   g_assert_cmpint (avg, <, 100 * GST_MSECOND);
+
+  /* The same from its sink pad to its src pad, as pinned pads do. */
+  ws_send (&client, "{\"type\":\"measure-path\",\"from\":%"
+      G_GINT64_FORMAT ",\"to\":%" G_GINT64_FORMAT "}",
+      pad_id ("lat-sleep", "sink"), pad_id ("lat-sleep", "src"));
+  avg = path_avg (&client, pad_id ("lat-sleep", "sink"));
+  g_assert_cmpint (avg, >=, 4 * GST_MSECOND);
+  g_assert_cmpint (avg, <, 100 * GST_MSECOND);
+  ws_send (&client, "{\"type\":\"unmeasure-path\",\"from\":%"
+      G_GINT64_FORMAT ",\"to\":%" G_GINT64_FORMAT "}",
+      pad_id ("lat-sleep", "sink"), pad_id ("lat-sleep", "src"));
   stop_pipeline (pipeline);
 
   /* The queue holds what the late sink has not played yet (~200 ms); its
@@ -2374,6 +2489,8 @@ main (int argc, char **argv)
   g_test_add_func ("/server/monitor-pad-gone", test_monitor_pad_gone);
   g_test_add_func ("/server/levels", test_levels);
   g_test_add_func ("/server/levels-multiqueue", test_levels_multiqueue);
+  g_test_add_func ("/server/levels-buffering-clock",
+      test_levels_buffering_clock);
   g_test_add_func ("/server/levels-websocket", test_levels_websocket);
   g_test_add_func ("/server/properties", test_properties);
   g_test_add_func ("/server/properties-not-answering",

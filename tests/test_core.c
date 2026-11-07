@@ -243,6 +243,8 @@ test_monitor_values (Fixture * f, gconstpointer data)
   for (i = 0; i < 3; i++)
     gst_buffer_list_add (list, new_buffer (10, 2 * GST_SECOND + i));
   g_assert_cmpint (gst_pad_push_list (f->pad, list), ==, GST_FLOW_OK);
+  g_assert_true (gst_pad_push_event (f->pad,
+          gst_event_new_gap (3 * GST_SECOND, GST_SECOND)));
   g_assert_true (gst_pad_push_event (f->pad, gst_event_new_flush_start ()));
   g_assert_true (gst_pad_push_event (f->pad,
           gst_event_new_flush_stop (FALSE)));
@@ -259,6 +261,7 @@ test_monitor_values (Fixture * f, gconstpointer data)
   events = json_object_get_object_member (stats, "events");
   g_assert_cmpint (json_object_get_int_member (events, "flush"), ==, 1);
   g_assert_cmpint (json_object_get_int_member (events, "eos"), ==, 1);
+  g_assert_cmpint (json_object_get_int_member (events, "gap"), ==, 1);
   json_node_unref (root);
 }
 
@@ -489,6 +492,41 @@ test_props_values (void)
   g_value_init (&v, G_TYPE_STRV);
   g_value_set_boxed (&v, strv);
   check_value (&v, "[\"a\",\"b\\\"c\"]");
+  g_value_init (&v, G_TYPE_CHAR);
+  g_value_set_schar (&v, -3);
+  check_value (&v, "-3");
+  g_value_init (&v, G_TYPE_UCHAR);
+  g_value_set_uchar (&v, 200);
+  check_value (&v, "200");
+  g_value_init (&v, G_TYPE_LONG);
+  g_value_set_long (&v, -7);
+  check_value (&v, "-7");
+  g_value_init (&v, G_TYPE_ULONG);
+  g_value_set_ulong (&v, 7);
+  check_value (&v, "7");
+  g_value_init (&v, G_TYPE_FLOAT);
+  g_value_set_float (&v, 0.5f);
+  check_value (&v, "0.5");
+  g_value_init (&v, GST_TYPE_CAPS);
+  check_value (&v, "{\"caps\":null}");
+  g_value_init (&v, GST_TYPE_STRUCTURE);
+  check_value (&v, "null");
+  {
+    GValue item = G_VALUE_INIT;
+
+    g_value_init (&v, GST_TYPE_LIST);
+    g_value_init (&item, G_TYPE_INT);
+    g_value_set_int (&item, 1);
+    gst_value_list_append_value (&v, &item);
+    g_value_set_int (&item, 2);
+    gst_value_list_append_value (&v, &item);
+    g_value_unset (&item);
+    check_value (&v, "[1,2]");
+  }
+  /* Other types: only their name. */
+  g_value_init (&v, G_TYPE_DATE);
+  g_value_take_boxed (&v, g_date_new_dmy (1, 1, 2026));
+  check_value (&v, "{\"type\":\"GDate\"}");
 
   caps = gst_caps_from_string ("video/x-raw, width=(int)2");
   g_value_init (&v, GST_TYPE_CAPS);
@@ -631,6 +669,23 @@ push_span (GstPad * pad, GstClockTime pts, GstClockTime duration)
   g_assert_cmpint (gst_pad_push (pad, buffer), ==, GST_FLOW_OK);
 }
 
+/* n buffers of duration from pts, as one list. */
+static void
+push_list (GstPad * pad, GstClockTime pts, GstClockTime duration, guint n)
+{
+  GstBufferList *list = gst_buffer_list_new ();
+  guint i;
+
+  for (i = 0; i < n; i++) {
+    GstBuffer *buffer = gst_buffer_new ();
+
+    GST_BUFFER_PTS (buffer) = pts + i * duration;
+    GST_BUFFER_DURATION (buffer) = duration;
+    gst_buffer_list_add (list, buffer);
+  }
+  g_assert_cmpint (gst_pad_push_list (pad, list), ==, GST_FLOW_OK);
+}
+
 /* Outputs are looked up at most every 10 ms. */
 static void
 push_out (GstPad * pad, GstClockTime pts, GstClockTime duration)
@@ -703,6 +758,16 @@ test_latency_path (PathFixture * f, gconstpointer data)
   /* The window still holds the first three. */
   g_assert_cmpint (json_object_get_int_member (m, "matched"), ==, 6);
   g_assert_cmpint (json_object_get_int_member (m, "unmatched"), ==, 1);
+
+  /* Lists count as one span, from the first buffer to the last. A buffer
+   * without a time cannot be matched. */
+  push_list (f->a, 2 * GST_SECOND, 20 * GST_MSECOND, 3);
+  g_usleep (12 * G_TIME_SPAN_MILLISECOND);
+  push_list (f->b, 2 * GST_SECOND + 40 * GST_MSECOND, 20 * GST_MSECOND, 2);
+  push_out (f->b, GST_CLOCK_TIME_NONE, GST_CLOCK_TIME_NONE);
+  m = path_measured (latency, parser);
+  g_assert_cmpint (json_object_get_int_member (m, "matched"), ==, 7);
+  g_assert_cmpint (json_object_get_int_member (m, "unmatched"), ==, 2);
 
   /* After the last measurement, one empty message, then none. */
   pm_latency_measure_path (latency, CLIENT, a, b, FALSE);
