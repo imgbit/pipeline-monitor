@@ -782,6 +782,32 @@ test_latency_path (PathFixture * f, gconstpointer data)
   pm_latency_free (latency);
 }
 
+/* A new segment after measuring started: running times follow it. */
+static void
+test_latency_segment (PathFixture * f, gconstpointer data)
+{
+  PmLatency *latency = pm_latency_new (f->model);
+  JsonParser *parser = json_parser_new ();
+  GstSegment segment;
+  JsonObject *m;
+
+  pm_latency_measure_path (latency, CLIENT, pm_model_pad_id (f->model, f->a),
+      pm_model_pad_id (f->model, f->b), TRUE);
+  /* On b, time 1 s is running time 0. */
+  gst_segment_init (&segment, GST_FORMAT_TIME);
+  segment.start = segment.time = GST_SECOND;
+  g_assert_true (gst_pad_push_event (f->b, gst_event_new_segment (&segment)));
+  push_span (f->a, 0, 40 * GST_MSECOND);
+  g_usleep (20 * G_TIME_SPAN_MILLISECOND);
+  push_out (f->b, GST_SECOND, 40 * GST_MSECOND);
+  m = path_measured (latency, parser);
+  g_assert_cmpint (json_object_get_int_member (m, "matched"), ==, 1);
+  g_assert_cmpint (json_object_get_int_member (m, "unmatched"), ==, 0);
+
+  g_object_unref (parser);
+  pm_latency_free (latency);
+}
+
 /* Strings are escaped, and text that is not valid UTF-8 is repaired. */
 static void
 test_json_string (void)
@@ -882,6 +908,8 @@ main (int argc, char **argv)
   g_test_add_func ("/core/json-string", test_json_string);
   g_test_add ("/core/latency-path", PathFixture, NULL, path_setup,
       test_latency_path, path_teardown);
+  g_test_add ("/core/latency-segment", PathFixture, NULL, path_setup,
+      test_latency_segment, path_teardown);
   g_test_add ("/core/findings-flow", Fixture, NULL, fixture_setup,
       test_findings_flow, fixture_teardown);
   g_test_add ("/core/monitor-overhead", Fixture, NULL, fixture_setup,

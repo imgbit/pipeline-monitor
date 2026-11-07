@@ -2040,6 +2040,36 @@ test_check_failed_link (void)
 
 
 
+/* A link refused for another reason than formats: both sides are shown,
+ * and here they do share a format. */
+static void
+test_check_link_was_linked (void)
+{
+  GstElement *pipeline = gst_parse_launch ("videotestsrc name=wl-src ! "
+      "fakesink name=wl-a", NULL);
+  GstElement *src = gst_bin_get_by_name (GST_BIN (pipeline), "wl-src");
+  GstElement *other = gst_element_factory_make ("fakesink", "wl-b");
+  GstPad *src_pad, *sink_pad;
+  JsonNode *node;
+  JsonObject *f;
+
+  gst_bin_add (GST_BIN (pipeline), other);
+  src_pad = gst_element_get_static_pad (src, "src");
+  sink_pad = gst_element_get_static_pad (other, "sink");
+  g_assert_cmpint (gst_pad_link (src_pad, sink_pad), ==,
+      GST_PAD_LINK_WAS_LINKED);
+  f = expect_finding ("link:wl-src:src>wl-b:sink", 8, &node);
+  g_assert_nonnull (strstr (json_object_get_string_member (f, "text"),
+          gst_pad_link_get_name (GST_PAD_LINK_WAS_LINKED)));
+  g_assert_true (json_object_get_boolean_member (json_object_get_object_member
+          (f, "caps"), "common"));
+  json_node_unref (node);
+  gst_object_unref (src_pad);
+  gst_object_unref (sink_pad);
+  gst_object_unref (src);
+  gst_object_unref (pipeline);
+}
+
 /* Whether element:pad in the graph has a flow result. */
 static gboolean
 has_flow (JsonObject * element, const gchar * name, const gchar * pad)
@@ -2513,6 +2543,8 @@ main (int argc, char **argv)
   g_test_add_func ("/server/check-link-after-error",
       test_check_link_after_error);
   g_test_add_func ("/server/check-pull-end", test_check_pull_end);
+  g_test_add_func ("/server/check-link-was-linked",
+      test_check_link_was_linked);
   g_test_add_func ("/server/check-missing-plugin",
       test_check_missing_plugin);
   g_test_add_func ("/server/check-leaky", test_check_leaky);
