@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Łukasz Huńczak
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
-import { buildElkGraph, elementPath, keepPlaces } from "./layout.js";
+import { buildElkGraph, keepPlaces } from "./layout.js";
 import { GraphView, countElements } from "./render.js";
 import { isTimeProperty, propertyText, showDetails, updateLatencyDetails,
   updateProblemsDetails, updateProperties, updateQueueDetails, valueText }
@@ -313,18 +313,17 @@ function buildIndex(graph) {
   const elements = new Map();
   const peers = new Map();
   const linksInto = new Map();
-  const visit = (element, parents) => {
-    const path = elementPath(element, parents);
-    elements.set(element.id, { element, path });
-    elementPaths.set(path, { id: element.id });
+  // Paths come with the graph; they stay the same across runs, ids do not.
+  const visit = (element) => {
+    elements.set(element.id, { element, path: element.path });
+    elementPaths.set(element.path, { id: element.id });
     for (const pad of element.pads) {
-      pads.set(pad.id, { pad, element, path: `${path}:${pad.name}` });
-      padPaths.set(`${path}:${pad.name}`, { id: pad.id, caps: pad.caps });
+      pads.set(pad.id, { pad, element, path: pad.path });
+      padPaths.set(pad.path, { id: pad.id, caps: pad.caps });
     }
-    for (const child of element.children)
-      visit(child, [...parents, element.name]);
+    element.children.forEach(visit);
   };
-  graph.pipelines.forEach((p) => visit(p, []));
+  graph.pipelines.forEach(visit);
   for (const { src, sink } of graph.links) {
     if (!linksInto.has(sink))
       linksInto.set(sink, []);

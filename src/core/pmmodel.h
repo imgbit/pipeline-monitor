@@ -68,7 +68,8 @@ typedef struct
 {
   guint64 pad;
   guint64 element;
-  gchar *path;
+  /* The pad's path, and its element's. */
+  gchar *path, *element_path;
   GstFlowReturn result;
   /* On a sink pad: a pull, not a push. */
   gboolean pulled;
@@ -95,7 +96,8 @@ typedef struct
 {
   guint64 element;
   guint64 pad;
-  gchar *path;
+  /* The pad's path if there is one, else the element's; the element's. */
+  gchar *path, *element_path;
   gchar *detail;
 } PmSpot;
 
@@ -110,6 +112,8 @@ typedef struct
 {
   guint64 element, src, sink;
   gchar *src_path, *sink_path;
+  /* The path of the element, or NULL if it is not known. */
+  gchar *element_path;
   gchar *result;
   gchar *src_caps, *sink_caps;
 } PmLinkFailure;
@@ -131,7 +135,7 @@ typedef struct
 {
   guint64 pad;
   guint64 element;
-  gchar *path;
+  gchar *path, *element_path;
   gchar *peer_path;
   gchar *peer_state;
   gint ms;
@@ -161,6 +165,7 @@ gchar *pm_model_preroll_summary (PmModel * model, guint64 pipeline);
 void pm_model_set_ts_offset (gint64 offset);
 gint pm_model_now_ms (void);
 gchar *pm_model_element_path (PmModel * model, gpointer element);
+gchar *pm_model_path (PmModel * model, guint64 id);
 
 typedef enum
 {

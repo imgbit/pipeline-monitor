@@ -543,11 +543,16 @@ append_string (GString * json, const gchar * str)
 }
 
 static void
-append_pad (GString * json, PmPad * pad)
+append_pad (GString * json, PmPad * pad, const gchar * element_path)
 {
+  gchar *path = g_strdup_printf ("%s:%s", element_path, pad->name);
+
   g_string_append_printf (json, "{\"id\":%" G_GUINT64_FORMAT ",\"name\":",
       pad->id);
   append_string (json, pad->name);
+  g_string_append (json, ",\"path\":");
+  append_string (json, path);
+  g_free (path);
   g_string_append_printf (json, ",\"direction\":\"%s\"",
       pad->direction == GST_PAD_SRC ? "src" :
       pad->direction == GST_PAD_SINK ? "sink" : "unknown");
@@ -570,14 +575,19 @@ static const gchar *preroll_names[] = { NULL, "waiting", "done", "eos",
   "live", "no-wait"
 };
 
+static gchar *element_path (PmElement * element);
+
 static void
 append_element (PmModel * model, GString * json, PmElement * element)
 {
+  gchar *path = element_path (element);
   guint i;
 
   g_string_append_printf (json, "{\"id\":%" G_GUINT64_FORMAT ",\"name\":",
       element->id);
   append_string (json, element->name);
+  g_string_append (json, ",\"path\":");
+  append_string (json, path);
   g_string_append (json, ",\"factory\":");
   append_string (json, element->factory);
   g_string_append (json, ",\"type\":");
@@ -603,8 +613,9 @@ append_element (PmModel * model, GString * json, PmElement * element)
     if (i > 0)
       g_string_append_c (json, ',');
     append_pad (json, g_hash_table_lookup (model->pads,
-            g_ptr_array_index (element->pads, i)));
+            g_ptr_array_index (element->pads, i)), path);
   }
+  g_free (path);
 
   g_string_append (json, "],\"children\":[");
   for (i = 0; i < element->children->len; i++) {
@@ -728,6 +739,16 @@ top_level (PmElement * element)
   return element;
 }
 
+static gchar *
+pad_path (PmPad * pad)
+{
+  gchar *element = element_path (pad->element);
+  gchar *path = g_strdup_printf ("%s:%s", element, pad->name);
+
+  g_free (element);
+  return path;
+}
+
 void
 pm_model_count_queue_event (PmModel * model, gpointer object,
     gboolean overrun)
@@ -841,6 +862,7 @@ void
 pm_flow_record_free (PmFlowRecord * record)
 {
   g_free (record->path);
+  g_free (record->element_path);
   g_free (record);
 }
 
@@ -889,7 +911,7 @@ pm_model_flow_records (PmModel * model)
     record->element = pad->element->id;
     element = element_path (pad->element);
     record->path = g_strdup_printf ("%s:%s", element, pad->name);
-    g_free (element);
+    record->element_path = element;
     record->result = pad->flow;
     record->pulled = pad->direction == GST_PAD_SINK;
     record->count = pad->flow_count;
@@ -975,6 +997,35 @@ pm_model_pad_id (PmModel * model, gpointer object)
   id = pad ? pad->id : 0;
   g_mutex_unlock (&model->lock);
   return id;
+}
+
+/* The path of the element or pad with this id (pipeline0/bin/name, a pad
+ * with ":pad"), or NULL if not known. Element and pad ids never clash. */
+gchar *
+pm_model_path (PmModel * model, guint64 id)
+{
+  GHashTableIter iter;
+  gpointer value;
+  gchar *path = NULL;
+
+  g_mutex_lock (&model->lock);
+  g_hash_table_iter_init (&iter, model->elements);
+  while (path == NULL && g_hash_table_iter_next (&iter, NULL, &value))
+    if (((PmElement *) value)->id == id)
+      path = element_path (value);
+  g_hash_table_iter_init (&iter, model->pads);
+  while (path == NULL && g_hash_table_iter_next (&iter, NULL, &value)) {
+    PmPad *pad = value;
+
+    if (pad->id == id && pad->element != NULL) {
+      gchar *element = element_path (pad->element);
+
+      path = g_strdup_printf ("%s:%s", element, pad->name);
+      g_free (element);
+    }
+  }
+  g_mutex_unlock (&model->lock);
+  return path;
 }
 
 /* The path of an element (pipeline0/bin/name), or NULL if not known. */
@@ -1118,6 +1169,7 @@ void
 pm_spot_free (PmSpot * spot)
 {
   g_free (spot->path);
+  g_free (spot->element_path);
   g_free (spot->detail);
   g_free (spot);
 }
@@ -1133,7 +1185,7 @@ spot_new (PmElement * element, PmPad * pad, const gchar * detail)
   spot->path = pad ? g_strdup_printf ("%s:%s", path, pad->name) :
       g_strdup (path);
   spot->detail = g_strdup (detail);
-  g_free (path);
+  spot->element_path = path;
   return spot;
 }
 
@@ -1358,11 +1410,9 @@ pm_model_record_failed_link (PmModel * model, gpointer src, gpointer sink,
   f->src = src;
   f->sink = sink;
   pad = g_hash_table_lookup (model->pads, src);
-  f->src_path = pad ? g_strdup_printf ("%s:%s", pad->element->name,
-      pad->name) : g_strdup (src_name);
+  f->src_path = pad ? pad_path (pad) : g_strdup (src_name);
   pad = g_hash_table_lookup (model->pads, sink);
-  f->sink_path = pad ? g_strdup_printf ("%s:%s", pad->element->name,
-      pad->name) : g_strdup (sink_name);
+  f->sink_path = pad ? pad_path (pad) : g_strdup (sink_name);
   f->result = g_strdup (result);
   f->src_caps = g_strdup (src_caps);
   f->sink_caps = g_strdup (sink_caps);
@@ -1378,6 +1428,7 @@ pm_link_failure_free (PmLinkFailure * f)
 {
   g_free (f->src_path);
   g_free (f->sink_path);
+  g_free (f->element_path);
   g_free (f->result);
   g_free (f->src_caps);
   g_free (f->sink_caps);
@@ -1401,6 +1452,8 @@ pm_model_failed_links (PmModel * model)
     copy->src = src ? src->id : 0;
     copy->sink = sink ? sink->id : 0;
     copy->element = src ? src->element->id : sink ? sink->element->id : 0;
+    copy->element_path = src ? element_path (src->element) :
+        sink ? element_path (sink->element) : NULL;
     copy->src_path = g_strdup (f->src_path);
     copy->sink_path = g_strdup (f->sink_path);
     copy->result = g_strdup (f->result);
@@ -1484,6 +1537,7 @@ void
 pm_blocked_free (PmBlocked * b)
 {
   g_free (b->path);
+  g_free (b->element_path);
   g_free (b->peer_path);
   g_free (b->peer_state);
   g_free (b);
@@ -1537,9 +1591,8 @@ pm_model_blocked_pushes (PmModel * model, gint now_ms, gint min_ms)
     b = g_new0 (PmBlocked, 1);
     b->pad = pad->id;
     b->element = pad->element->id;
-    path = element_path (pad->element);
-    b->path = g_strdup_printf ("%s:%s", path, pad->name);
-    g_free (path);
+    b->element_path = element_path (pad->element);
+    b->path = g_strdup_printf ("%s:%s", b->element_path, pad->name);
     if (peer != NULL) {
       path = element_path (peer->element);
       b->peer_path = g_strdup_printf ("%s:%s", path, peer->name);

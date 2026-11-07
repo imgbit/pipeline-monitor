@@ -13,6 +13,8 @@ G_BEGIN_DECLS
 gchar *pm_json_message (const gchar * type, const gchar * body);
 void pm_json_append_string (GString * json, const gchar * str);
 void pm_json_append_value (GString * json, const gchar * key, guint64 value);
+void pm_json_append_member_string (GString * json, const gchar * key,
+    const gchar * value);
 void pm_json_close (GString * json, gchar end);
 
 G_END_DECLS

@@ -49,14 +49,6 @@ pipeline_filter (GstElement * element, gboolean top_level)
   return top_level && GST_IS_PIPELINE (element);
 }
 
-static void
-append_string (GString * json, const gchar * key, const gchar * value)
-{
-  g_string_append_printf (json, "\"%s\":", key);
-  pm_json_append_string (json, value);
-  g_string_append_c (json, ',');
-}
-
 static gboolean
 has_property (gpointer object, const gchar * name)
 {
@@ -66,7 +58,7 @@ has_property (gpointer object, const gchar * name)
 
 /* One level: buffers, bytes and time, from a queue or a multiqueue pad. */
 static void
-append_level (GString * json, gpointer object, guint64 pad)
+append_level (GString * json, PmModel * model, gpointer object, guint64 pad)
 {
   guint buffers = 0, bytes = 0;
   guint64 time = 0;
@@ -74,8 +66,13 @@ append_level (GString * json, gpointer object, guint64 pad)
   g_object_get (object, "current-level-buffers", &buffers,
       "current-level-bytes", &bytes, "current-level-time", &time, NULL);
   g_string_append_c (json, '{');
-  if (pad != 0)
+  if (pad != 0) {
+    gchar *path = pm_model_path (model, pad);
+
     pm_json_append_value (json, "pad", pad);
+    pm_json_append_member_string (json, "pad_path", path);
+    g_free (path);
+  }
   pm_json_append_value (json, "buffers", buffers);
   pm_json_append_value (json, "bytes", bytes);
   pm_json_append_value (json, "time", time);
@@ -95,7 +92,7 @@ append_leaky (GString * json, GstElement * element)
     return;
   g_object_get (element, "leaky", &leaky, NULL);
   value = g_enum_get_value (G_PARAM_SPEC_ENUM (pspec)->enum_class, leaky);
-  append_string (json, "leaky", value ? value->value_nick : NULL);
+  pm_json_append_member_string (json, "leaky", value ? value->value_nick : NULL);
 }
 
 static void
@@ -110,8 +107,8 @@ append_queue (GString * json, PmModel * model, PmElementRef * ref)
 
   g_string_append_c (json, '{');
   pm_json_append_value (json, "element", ref->id);
-  append_string (json, "path", ref->path);
-  append_string (json, "kind", queue_kind (element));
+  pm_json_append_member_string (json, "path", ref->path);
+  pm_json_append_member_string (json, "kind", queue_kind (element));
   append_leaky (json, element);
   g_string_append (json, "\"limits\":{");
   pm_json_append_value (json, "buffers", max_buffers);
@@ -128,7 +125,7 @@ append_queue (GString * json, PmModel * model, PmElementRef * ref)
 
   g_string_append (json, "\"levels\":[");
   if (has_property (element, "current-level-buffers")) {
-    append_level (json, element, 0);
+    append_level (json, model, element, 0);
   } else {
     /* multiqueue: one queue per sink pad (levels on the pads since 1.18). */
     GstIterator *it = gst_element_iterate_sink_pads (element);
@@ -138,7 +135,7 @@ append_queue (GString * json, PmModel * model, PmElementRef * ref)
       GstPad *pad = g_value_get_object (&item);
 
       if (has_property (pad, "current-level-buffers"))
-        append_level (json, pad, pm_model_pad_id (model, pad));
+        append_level (json, model, pad, pm_model_pad_id (model, pad));
       g_value_reset (&item);
     }
     g_value_unset (&item);
@@ -174,12 +171,12 @@ append_pipeline (GString * json, PmModel * model, PmElementRef * ref)
 
   g_string_append_c (json, '{');
   pm_json_append_value (json, "element", ref->id);
-  append_string (json, "path", ref->path);
-  append_string (json, "state", gst_element_state_get_name (state));
-  append_string (json, "clock", clock ? GST_OBJECT_NAME (clock) : NULL);
-  append_string (json, "clock_type", clock ? G_OBJECT_TYPE_NAME (clock) :
+  pm_json_append_member_string (json, "path", ref->path);
+  pm_json_append_member_string (json, "state", gst_element_state_get_name (state));
+  pm_json_append_member_string (json, "clock", clock ? GST_OBJECT_NAME (clock) : NULL);
+  pm_json_append_member_string (json, "clock_type", clock ? G_OBJECT_TYPE_NAME (clock) :
       NULL);
-  append_string (json, "clock_provider", provider_path);
+  pm_json_append_member_string (json, "clock_provider", provider_path);
   pm_json_append_value (json, "clock_time", now);
   pm_json_append_value (json, "base_time", clock ? base : GST_CLOCK_TIME_NONE);
   pm_json_append_value (json, "running_time", state == GST_STATE_PLAYING &&

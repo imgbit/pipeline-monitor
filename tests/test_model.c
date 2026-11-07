@@ -83,6 +83,9 @@ describe_json_element (JsonObject * element, const gchar * parent_path,
   JsonArray *children = json_object_get_array_member (element, "children");
   guint i;
 
+  /* The tracer's path is the same, without the leading "/". */
+  g_assert_cmpstr (json_object_get_string_member (element, "path"), ==,
+      path + 1);
   g_hash_table_add (set, g_strdup_printf ("E %s %s %s/%s", path,
           json_object_get_string_member (element, "type"),
           json_object_get_string_member (element, "state"),
@@ -93,6 +96,9 @@ describe_json_element (JsonObject * element, const gchar * parent_path,
     JsonObject *pad = json_array_get_object_element (pads, i);
     gchar *pad_path = g_strdup_printf ("%s:%s", path,
         json_object_get_string_member (pad, "name"));
+
+    g_assert_cmpstr (json_object_get_string_member (pad, "path"), ==,
+        pad_path + 1);
 
     g_hash_table_add (set, g_strdup_printf ("P %s %s%s caps=%s", pad_path,
             json_object_get_string_member (pad, "direction"),

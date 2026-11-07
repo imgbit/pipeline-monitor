@@ -25,6 +25,7 @@ typedef struct
   PmSeverity severity;
   guint64 element;
   guint64 pad;
+  gchar *path, *pad_path;
   gchar *text;
   gchar *hint;
   guint64 count;
@@ -38,6 +39,8 @@ static void
 finding_free (PmFinding * f)
 {
   g_free (f->id);
+  g_free (f->path);
+  g_free (f->pad_path);
   g_free (f->text);
   g_free (f->hint);
   g_free (f->upstream);
@@ -229,16 +232,21 @@ key_new (guint64 id)
   return key;
 }
 
+/* A finding at an element, or at one of its pads (pad 0: none). Its id is
+ * the kind and the place's path, the same in every run. */
 static PmFinding *
-finding_new (const gchar * kind, guint64 id, PmSeverity severity,
-    guint64 element, guint64 pad)
+finding_new (const gchar * kind, PmSeverity severity, guint64 element,
+    const gchar * path, guint64 pad, const gchar * pad_path)
 {
   PmFinding *f = g_new0 (PmFinding, 1);
 
-  f->id = g_strdup_printf ("%s:%" G_GUINT64_FORMAT, kind, id);
+  f->id = g_strdup_printf ("%s:%s", kind, pad_path ? pad_path :
+      path ? path : "?");
   f->severity = severity;
   f->element = element;
+  f->path = g_strdup (path);
   f->pad = pad;
+  f->pad_path = g_strdup (pad_path);
   return f;
 }
 
@@ -300,7 +308,8 @@ add_flow (PmFindings * self, GPtrArray * findings)
     PmFinding *f;
 
     explain_flow (r->result, &severity, &hint);
-    f = finding_new ("flow", r->pad, severity, r->element, r->pad);
+    f = finding_new ("flow", severity, r->element, r->element_path, r->pad,
+        r->path);
     f->text = g_strdup_printf ("Data stopped at %s: %s", r->path,
         gst_flow_get_name (r->result));
     f->hint = r->pulled ? g_strdup_printf ("Pulling data from upstream into "
@@ -326,8 +335,8 @@ add_stuck (PmFindings * self, GPtrArray * findings, gint64 stuck_after_us)
 
   for (i = 0; i < pending->len; i++) {
     PmPending *p = g_ptr_array_index (pending, i);
-    PmFinding *f = finding_new ("stuck", p->element, PM_WARNING, p->element,
-        0);
+    PmFinding *f = finding_new ("stuck", PM_WARNING, p->element, p->path, 0,
+        NULL);
     GPtrArray *starved;
     gchar *pending_list, *preroll;
 
@@ -347,7 +356,8 @@ add_stuck (PmFindings * self, GPtrArray * findings, gint64 stuck_after_us)
     for (j = 0; j < starved->len; j++) {
       PmSpot *s = g_ptr_array_index (starved, j);
 
-      f = finding_new ("starved", s->pad, PM_WARNING, s->element, s->pad);
+      f = finding_new ("starved", PM_WARNING, s->element, s->element_path,
+          s->pad, s->pad ? s->path : NULL);
       f->text = g_strdup_printf ("%s has no data", s->path);
       f->hint = s->detail ? g_strdup_printf ("The nearest pad before it "
           "that has received data is %s.", s->detail) :
@@ -367,8 +377,8 @@ add_spots (GPtrArray * findings, GPtrArray * spots, const gchar * kind,
 
   for (i = 0; i < spots->len; i++) {
     PmSpot *s = g_ptr_array_index (spots, i);
-    PmFinding *f = finding_new (kind, s->pad ? s->pad : s->element, severity,
-        s->element, s->pad);
+    PmFinding *f = finding_new (kind, severity, s->element, s->element_path,
+        s->pad, s->pad ? s->path : NULL);
 
     f->text = g_strdup_printf (text, s->path, s->detail ? s->detail : "");
     f->hint = g_strdup (hint);
@@ -389,8 +399,8 @@ add_blocked (PmFindings * self, GPtrArray * findings)
 
   for (i = 0; i < blocked->len; i++) {
     PmBlocked *b = g_ptr_array_index (blocked, i);
-    PmFinding *f = finding_new ("blocked", b->pad, PM_WARNING, b->element,
-        b->pad);
+    PmFinding *f = finding_new ("blocked", PM_WARNING, b->element,
+        b->element_path, b->pad, b->path);
 
     f->text = g_strdup_printf ("Data flow blocked at %s%s%s for %d s",
         b->path, b->peer_path ? " → " : "", b->peer_path ? b->peer_path : "",
@@ -418,7 +428,8 @@ add_structure (PmFindings * self, GPtrArray * findings)
 
   for (i = 0; i < failed->len; i++) {
     PmLinkFailure *l = g_ptr_array_index (failed, i);
-    PmFinding *f = finding_new ("link", i, PM_ERROR, l->element, l->src);
+    PmFinding *f = finding_new ("link", PM_ERROR, l->element,
+        l->element_path, l->src, l->src ? l->src_path : NULL);
 
     g_free (f->id);
     f->id = g_strdup_printf ("link:%s>%s", l->src_path, l->sink_path);
@@ -543,7 +554,7 @@ add_queues (PmFindings * self, GPtrArray * findings, GHashTable * seen)
      * lost. */
     if (!q->leaky && ref->live && q->full_since != 0 &&
         now - q->full_since >= FULL_AFTER_US) {
-      f = finding_new ("full", ref->id, PM_WARNING, ref->id, 0);
+      f = finding_new ("full", PM_WARNING, ref->id, ref->path, 0, NULL);
       f->text = g_strdup_printf ("%s has been full for %" G_GINT64_FORMAT
           " s", ref->path, (now - q->full_since) / G_USEC_PER_SEC);
       f->hint = g_strdup ("The pipeline is live; elements before it wait "
@@ -571,7 +582,7 @@ add_queues (PmFindings * self, GPtrArray * findings, GHashTable * seen)
       q->prev_level = level;
       q->have_prev = TRUE;
       if (history_sum (q->drops) > 0) {
-        f = finding_new ("dropping", ref->id, PM_WARNING, ref->id, 0);
+        f = finding_new ("dropping", PM_WARNING, ref->id, ref->path, 0, NULL);
         f->text = g_strdup_printf ("%s (leaky) dropped %" G_GUINT64_FORMAT
             " buffers in the last %d s", ref->path, history_sum (q->drops),
             HISTORY);
@@ -620,7 +631,8 @@ add_sinks (PmFindings * self, GPtrArray * findings, GHashTable * seen)
     s->last = dropped;
     s->have_last = TRUE;
     if (history_sum (s->drops) > 0) {
-      PmFinding *f = finding_new ("late", ref->id, PM_WARNING, ref->id, 0);
+      PmFinding *f = finding_new ("late", PM_WARNING, ref->id, ref->path, 0,
+          NULL);
 
       f->text = g_strdup_printf ("%s dropped %" G_GUINT64_FORMAT " buffers "
           "in the last %d s", ref->path, history_sum (s->drops), HISTORY);
@@ -680,8 +692,13 @@ pm_findings_tick (PmFindings * self, gint64 stuck_after_us)
     pm_json_append_string (json, f->id);
     g_string_append_printf (json, ",\"severity\":\"%s\",\"element\":%"
         G_GUINT64_FORMAT, severity_names[f->severity], f->element);
-    if (f->pad != 0)
+    g_string_append (json, ",\"path\":");
+    pm_json_append_string (json, f->path);
+    if (f->pad != 0) {
       g_string_append_printf (json, ",\"pad\":%" G_GUINT64_FORMAT, f->pad);
+      g_string_append (json, ",\"pad_path\":");
+      pm_json_append_string (json, f->pad_path);
+    }
     g_string_append (json, ",\"text\":");
     pm_json_append_string (json, f->text);
     g_string_append (json, ",\"hint\":");

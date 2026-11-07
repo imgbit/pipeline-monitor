@@ -11,6 +11,9 @@
 #include "envelope.h"
 #include "pmserver.h"
 
+static gchar *pad_finding (const gchar * kind, const gchar * element,
+    const gchar * pad);
+static gchar *element_finding (const gchar * kind, const gchar * element);
 static JsonNode *parse (const gchar * text);
 
 #define EMPTY_GRAPH "{\"pipelines\":[],\"links\":[]}"
@@ -654,6 +657,49 @@ pad_id (const gchar * name, const gchar * pad)
   g_free (graph);
   g_assert_cmpint (id, >, 0);
   return id;
+}
+
+/* The path the graph gives element name, or its pad if pad is not NULL. */
+static gchar *
+find_path (JsonObject * element, const gchar * name, const gchar * pad)
+{
+  JsonArray *list = json_object_get_array_member (element, "pads");
+  gchar *path = NULL;
+  guint i;
+
+  if (g_strcmp0 (json_object_get_string_member (element, "name"), name) == 0) {
+    if (pad == NULL)
+      return g_strdup (json_object_get_string_member (element, "path"));
+    for (i = 0; i < json_array_get_length (list); i++) {
+      JsonObject *p = json_array_get_object_element (list, i);
+      if (g_strcmp0 (json_object_get_string_member (p, "name"), pad) == 0)
+        return g_strdup (json_object_get_string_member (p, "path"));
+    }
+  }
+  list = json_object_get_array_member (element, "children");
+  for (i = 0; i < json_array_get_length (list) && path == NULL; i++)
+    path = find_path (json_array_get_object_element (list, i), name, pad);
+  return path;
+}
+
+static gchar *
+graph_path (const gchar * name, const gchar * pad)
+{
+  gchar *graph, *path = NULL;
+  JsonNode *root;
+  JsonArray *pipelines;
+  guint i;
+
+  get_status ("api/graph", "GET", NULL, &graph, NULL);
+  root = parse (graph);
+  pipelines = json_object_get_array_member (json_node_get_object (root),
+      "pipelines");
+  for (i = 0; i < json_array_get_length (pipelines) && path == NULL; i++)
+    path = find_path (json_array_get_object_element (pipelines, i), name, pad);
+  json_node_unref (root);
+  g_free (graph);
+  g_assert_nonnull (path);
+  return path;
 }
 
 static void
@@ -1976,13 +2022,22 @@ test_findings_flow (void)
 {
   GstElement *pipeline = start_pipeline ("videotestsrc ! "
       "queue name=flow-queue ! tee name=flow-tee");
-  gchar *id = g_strdup_printf ("flow:%" G_GINT64_FORMAT,
-      pad_id ("flow-queue", "src"));
+  gchar *pad_path = graph_path ("flow-queue", "src");
+  gchar *path = graph_path ("flow-queue", NULL);
+  gchar *id = g_strdup_printf ("flow:%s", pad_path);
   JsonNode *node = wait_finding (id, 5);
   JsonObject *f;
 
   g_assert_nonnull (node);
   f = json_node_get_object (node);
+  /* Its place by id and by path. */
+  g_assert_cmpstr (json_object_get_string_member (f, "path"), ==, path);
+  g_assert_cmpstr (json_object_get_string_member (f, "pad_path"), ==,
+      pad_path);
+  g_assert_cmpint (json_object_get_int_member (f, "pad"), ==,
+      pad_id ("flow-queue", "src"));
+  g_free (path);
+  g_free (pad_path);
   g_assert_cmpstr (json_object_get_string_member (f, "severity"), ==,
       "warning");
   g_assert_nonnull (strstr (json_object_get_string_member (f, "text"),
@@ -2003,8 +2058,7 @@ test_findings_stuck (void)
   JsonNode *node;
 
   gst_element_set_state (pipeline, GST_STATE_PLAYING);
-  id = g_strdup_printf ("stuck:%" G_GINT64_FORMAT,
-      element_id (GST_OBJECT_NAME (pipeline)));
+  id = element_finding ("stuck", GST_OBJECT_NAME (pipeline));
   node = wait_finding (id, 8);
   g_assert_nonnull (node);
   g_assert_nonnull (strstr (json_object_get_string_member
@@ -2013,8 +2067,7 @@ test_findings_stuck (void)
   g_free (id);
 
   /* And the sink that got no data, with no source reaching it. */
-  id = g_strdup_printf ("starved:%" G_GINT64_FORMAT, pad_id ("stuck-sink",
-          "sink"));
+  id = pad_finding ("starved", "stuck-sink", "sink");
   node = wait_finding (id, 3);
   g_assert_nonnull (node);
   g_assert_nonnull (strstr (json_object_get_string_member
@@ -2041,15 +2094,21 @@ run_pipeline (const gchar * description)
 static gchar *
 pad_finding (const gchar * kind, const gchar * element, const gchar * pad)
 {
-  return g_strdup_printf ("%s:%" G_GINT64_FORMAT, kind, pad_id (element,
-          pad));
+  gchar *path = graph_path (element, pad);
+  gchar *id = g_strdup_printf ("%s:%s", kind, path);
+
+  g_free (path);
+  return id;
 }
 
 static gchar *
 element_finding (const gchar * kind, const gchar * element)
 {
-  return g_strdup_printf ("%s:%" G_GINT64_FORMAT, kind,
-      element_id (element));
+  gchar *path = graph_path (element, NULL);
+  gchar *id = g_strdup_printf ("%s:%s", kind, path);
+
+  g_free (path);
+  return id;
 }
 
 /* Expects the finding within timeout_s; returns it for more checks. */
@@ -2117,7 +2176,8 @@ test_check_failed_link (void)
   gst_object_unref (src_pad);
   gst_object_unref (sink_pad);
   /* The previous test ends with an error: findings can be held 5 s. */
-  f = expect_finding ("link:fl-src:src>fl-conv:sink", 8, &node);
+  f = expect_finding ("link:fl-pipeline/fl-src:src>fl-pipeline/fl-conv:sink",
+      8, &node);
   caps = json_object_get_object_member (f, "caps");
   g_assert_true (g_str_has_prefix (json_object_get_string_member (caps,
               "upstream"), "video/x-raw"));
@@ -2141,13 +2201,20 @@ test_check_link_was_linked (void)
   GstPad *src_pad, *sink_pad;
   JsonNode *node;
   JsonObject *f;
+  gchar *src_path, *sink_path, *id;
 
   gst_bin_add (GST_BIN (pipeline), other);
   src_pad = gst_element_get_static_pad (src, "src");
   sink_pad = gst_element_get_static_pad (other, "sink");
   g_assert_cmpint (gst_pad_link (src_pad, sink_pad), ==,
       GST_PAD_LINK_WAS_LINKED);
-  f = expect_finding ("link:wl-src:src>wl-b:sink", 8, &node);
+  src_path = graph_path ("wl-src", "src");
+  sink_path = graph_path ("wl-b", "sink");
+  id = g_strdup_printf ("link:%s>%s", src_path, sink_path);
+  f = expect_finding (id, 8, &node);
+  g_free (id);
+  g_free (src_path);
+  g_free (sink_path);
   g_assert_nonnull (strstr (json_object_get_string_member (f, "text"),
           gst_pad_link_get_name (GST_PAD_LINK_WAS_LINKED)));
   g_assert_true (json_object_get_boolean_member (json_object_get_object_member

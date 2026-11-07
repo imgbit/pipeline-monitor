@@ -71,6 +71,16 @@ pm_json_append_value (GString * json, const gchar * key, guint64 value)
         value);
 }
 
+/* Appends "key":"value", with null for NULL. */
+void
+pm_json_append_member_string (GString * json, const gchar * key,
+    const gchar * value)
+{
+  g_string_append_printf (json, "\"%s\":", key);
+  pm_json_append_string (json, value);
+  g_string_append_c (json, ',');
+}
+
 /* Ends an object or array built from "member," parts. */
 void
 pm_json_close (GString * json, gchar end)

@@ -76,6 +76,8 @@ typedef struct _PmEntry PmEntry;
 struct _PmEntry
 {
   guint64 pad_id;
+  /* Known when watching started, kept for when the pad is gone. */
+  gchar *pad_path;
   GWeakRef pad;
   gulong probe;
   PmPadStats *stats;
@@ -281,6 +283,7 @@ entry_free (PmEntry * entry)
     gst_object_unref (pad);
   }
   g_weak_ref_clear (&entry->pad);
+  g_free (entry->pad_path);
   g_hash_table_unref (entry->clients);
   stats_unref (entry->stats);
   g_free (entry);
@@ -329,6 +332,7 @@ pm_monitor_add (PmMonitor * monitor, gpointer client, guint64 pad_id)
 
   entry = g_new0 (PmEntry, 1);
   entry->pad_id = pad_id;
+  entry->pad_path = pm_model_path (monitor->model, pad_id);
   g_weak_ref_init (&entry->pad, pad);
   entry->clients = g_hash_table_new (NULL, NULL);
   g_hash_table_add (entry->clients, client);
@@ -575,6 +579,7 @@ append_entry (GString * json, PmEntry * entry, GstClockTime now)
 
   g_string_append_c (json, '{');
   pm_json_append_value (json, "pad", entry->pad_id);
+  pm_json_append_member_string (json, "pad_path", entry->pad_path);
   pm_json_append_value (json, "buffers", v.buffers);
   pm_json_append_value (json, "bytes", v.bytes);
   pm_json_append_value (json, "lists", v.lists);
@@ -618,7 +623,9 @@ pm_monitor_stats_json (PmMonitor * monitor, gpointer client)
       g_string_append_c (json, ',');
     if (pad == NULL) {
       g_string_append_printf (json, "{\"pad\":%" G_GUINT64_FORMAT
-          ",\"gone\":true}", entry->pad_id);
+          ",\"pad_path\":", entry->pad_id);
+      pm_json_append_string (json, entry->pad_path);
+      g_string_append (json, ",\"gone\":true}");
       remove_client_from (monitor, entry, client);
       continue;
     }

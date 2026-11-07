@@ -602,6 +602,17 @@ sync_all (PmLatency * latency)
   g_ptr_array_unref (found);
 }
 
+/* "key":"<path of the element or pad with this id>", */
+static void
+append_path (GString * json, const gchar * key, PmLatency * latency,
+    guint64 id)
+{
+  gchar *path = pm_model_path (latency->model, id);
+
+  pm_json_append_member_string (json, key, path);
+  g_free (path);
+}
+
 /* Closes the current slot into the window and appends "measured". */
 static void
 append_measured (GString * json, PmMeasure * m)
@@ -683,6 +694,7 @@ pm_latency_tick (PmLatency * latency)
       update_reported (latency, m);
     json = g_string_new ("{");
     pm_json_append_value (json, "element", m->a);
+    append_path (json, "path", latency, m->a);
     g_string_append_printf (json, "\"inputs\":%s,\"outputs\":%s,",
         m->inputs ? "true" : "false", m->outputs ? "true" : "false");
     append_measured (json, m);
@@ -711,7 +723,9 @@ pm_latency_tick (PmLatency * latency)
     }
     json = g_string_new ("{");
     pm_json_append_value (json, "from", m->a);
+    append_path (json, "from_path", latency, m->a);
     pm_json_append_value (json, "to", m->b);
+    append_path (json, "to_path", latency, m->b);
     append_measured (json, m);
     keep_result (m, json);
   }

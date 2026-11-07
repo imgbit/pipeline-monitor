@@ -314,8 +314,12 @@ handle_properties (SoupServer * soup, SoupServerMessage * msg,
 
     /* As in a "properties" message, with the latency the element reports,
      * for its details. */
+    gchar *element_path = pm_model_path (self->model, element_id);
+
     g_string_append_printf (json, "{\"elements\":[{\"element\":%"
         G_GUINT64_FORMAT ",", element_id);
+    pm_json_append_member_string (json, "path", element_path);
+    g_free (element_path);
     g_string_append_len (json, props + 1, strlen (props) - 2);
     if (pm_latency_reported (element, &live, &min, &max)) {
       g_string_append_printf (json, ",\"reported\":{\"live\":%s,\"min\":%"
@@ -686,8 +690,8 @@ watched_values (JsonNode * result, GPtrArray * names)
  * element id -> pm_props_read result (parsed), or NULL if the element is
  * gone (its watches are then dropped). */
 static void
-send_watched (SoupWebsocketConnection * conn, GHashTable * set,
-    GHashTable * results)
+send_watched (PmServer * self, SoupWebsocketConnection * conn,
+    GHashTable * set, GHashTable * results)
 {
   GHashTable *mine = g_hash_table_new_full (g_int64_hash, g_int64_equal,
       g_free, (GDestroyNotify) g_ptr_array_unref);
@@ -721,10 +725,13 @@ send_watched (SoupWebsocketConnection * conn, GHashTable * set,
           ",\"gone\":true}", id);
     } else {
       gchar *values = watched_values (result, value);
+      gchar *path = pm_model_path (self->model, id);
 
-      /* {"element":12,"properties":[...]} */
-      g_string_append_printf (json, "{\"element\":%" G_GINT64_FORMAT
-          ",%s", id, values + 1);
+      /* {"element":12,"path":"...","properties":[...]} */
+      g_string_append_printf (json, "{\"element\":%" G_GINT64_FORMAT ",", id);
+      pm_json_append_member_string (json, "path", path);
+      g_string_append (json, values + 1);
+      g_free (path);
       g_free (values);
     }
   }
@@ -791,7 +798,7 @@ send_properties (PmServer * self)
 
   g_hash_table_iter_init (&iter, self->watches);
   while (g_hash_table_iter_next (&iter, &key, &value))
-    send_watched (key, value, results);
+    send_watched (self, key, value, results);
   g_hash_table_unref (results);
   g_hash_table_unref (by_element);
 }
