@@ -316,8 +316,10 @@ class Browser:
         self.log.close()
 
 
-def start_server(serve, pipeline, *args, debug=None, port=0):
-    env = dict(os.environ, GST_TRACERS=f"pipeline-monitor(port={port})")
+# wait: the program starts only once a page is connected.
+def start_server(serve, pipeline, *args, debug=None, port=0, wait=False):
+    options = f"port={port}" + (",wait=true" if wait else "")
+    env = dict(os.environ, GST_TRACERS=f"pipeline-monitor({options})")
     if debug:
         env["GST_DEBUG"] = debug
     proc = subprocess.Popen([serve, *args, pipeline], env=env,
@@ -965,8 +967,9 @@ FORMAT_PIPELINE = "videotestsrc ! capsfilter name=cf ! fakesink"
 
 
 def check_format_finding(browser, serve):
+    # It fails at once and ends: it waits for the page to be there.
     server, url = start_server(serve, FORMAT_PIPELINE, "--set-caps",
-                               "cf=audio/x-raw")
+                               "cf=audio/x-raw", wait=True)
     try:
         browser.call("Page.navigate", url=url)
         caps = "document.querySelector('#findings-rows .finding-caps')"
