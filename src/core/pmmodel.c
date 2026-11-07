@@ -1686,15 +1686,22 @@ pm_model_preroll_summary (PmModel * model, guint64 pipeline)
   while (g_hash_table_iter_next (&iter, NULL, &value)) {
     PmElement *element = value;
     PmElement *top = top_level (element);
-    GString *list;
 
     if (top->id != pipeline || has_preroll_inside (model, element))
       continue;
-    list = element->preroll == PM_PREROLL_DONE ? done :
-        element->preroll == PM_PREROLL_DONE_EOS ? eos :
-        element->preroll == PM_PREROLL_WAITING ? waiting : NULL;
-    if (list != NULL)
-      append_name (list, element, top);
+    switch (element->preroll) {
+      case PM_PREROLL_DONE:
+        append_name (done, element, top);
+        break;
+      case PM_PREROLL_DONE_EOS:
+        append_name (eos, element, top);
+        break;
+      case PM_PREROLL_WAITING:
+        append_name (waiting, element, top);
+        break;
+      default:
+        break;
+    }
   }
   g_mutex_unlock (&model->lock);
 
