@@ -12,15 +12,14 @@ import { linkCaps } from "./caps.js";
 import { ElementPins, Pins } from "./pins.js";
 import { TIME_UNITS, formatSpan } from "./units.js";
 import { pipelineTimes, queueRows } from "./levels.js";
-import { cannotMeasure, latencyLabel, latencyRows } from "./latency.js";
+import { cannotMeasure, latencyRows } from "./latency.js";
+import { Measuring } from "./measure.js";
 import { FindingsView } from "./findings.js";
 
 const $ = (id) => document.getElementById(id);
 const COLLAPSED_KEY = "pipeline-monitor.collapsed";
 const CAPS_LABELS_KEY = "pipeline-monitor.caps-labels";
 const TIME_UNIT_KEY = "pipeline-monitor.time-unit";
-const MEASURING_KEY = "pipeline-monitor.measuring";
-const MEASURE_ALL_KEY = "pipeline-monitor.measure-all";
 
 const elk = new ELK({ workerUrl: "vendor/elkjs/elk-worker.min.js" });
 
@@ -31,19 +30,8 @@ const state = {
   collapsed: loadCollapsed(),
   capsLabels: loadFlag(CAPS_LABELS_KEY),
   known: new Map(),
-  // From the "latency" message: entries by element id, and "measure all".
-  latency: new Map(),
-  latencyAll: { on: false, buffers_per_s: 0, stopped_at: null },
-  // Elements this page measures, by path (kept across reloads and runs),
-  // whether it wants all, and the ids sent on this connection.
-  measuring: loadMeasuring(),
-  measureAll: loadFlag(MEASURE_ALL_KEY),
-  measuringSent: new Map(),
   // A program is connected: measurements and pins are applied.
   connected: false,
-  // Pad to pad: "from>to" -> measured, and the keys sent to the server.
-  pathLatency: new Map(),
-  pathsSent: new Set(),
   // The pad card choosing its "measure from" pad, or null.
   picking: null,
   // From the "levels" message: queues and pipelines by element id.
@@ -53,6 +41,7 @@ const state = {
   places: { tops: new Map() },
 };
 
+const measure = new Measuring(send);
 const tooltip = new Tooltip();
 // The pads of the current layout and lookups over the graph, for tooltips.
 let shown = { info: null, index: null };
@@ -293,22 +282,6 @@ function loadCollapsed() {
     return new Set(JSON.parse(localStorage.getItem(COLLAPSED_KEY)) || []);
   } catch {
     return new Set();
-  }
-}
-
-function loadMeasuring() {
-  try {
-    return new Set(JSON.parse(localStorage.getItem(MEASURING_KEY)) || []);
-  } catch {
-    return new Set();
-  }
-}
-
-function saveMeasuring() {
-  try {
-    localStorage.setItem(MEASURING_KEY, JSON.stringify([...state.measuring]));
-  } catch {
-    // Storage may be unavailable; measuring still works for this page.
   }
 }
 
@@ -554,32 +527,22 @@ function send(command) {
 }
 
 function showLatencyLabels() {
-  const labels = new Map();
-  for (const [id, entry] of state.latency) {
-    const label = latencyLabel(entry, pins.unit);
-    if (label)
-      labels.set(id, label);
-  }
-  view.setLatency(labels);
+  view.setLatency(measure.labels(pins.unit));
 }
 
 function latencyDetails(selection) {
   if (!selection)
     return null;
   const id = selection.element.id;
-  const on = state.measuring.has(selection.path);
+  const on = measure.has(selection.path);
   return {
     on,
     toggle() {
-      if (state.measuring.has(selection.path))
-        state.measuring.delete(selection.path);
-      else
-        state.measuring.add(selection.path);
-      saveMeasuring();
+      measure.toggle(selection.path);
       syncMeasuring();
       updateLatencyDetails($("details"), latencyDetails(selection));
     },
-    rows: latencyRows(state.latency.get(id), pins.unit,
+    rows: latencyRows(measure.result(id), pins.unit,
       selection.element.pads, propsLast.id === id ? propsLast.data?.reported
         : null, on && !state.connected),
     // Only with data going in and out is there a time in between.
@@ -590,49 +553,15 @@ function latencyDetails(selection) {
 
 function showMeasureAll() {
   const button = $("measure-all");
-  const all = state.latencyAll;
-  button.setAttribute("aria-pressed", String(state.measureAll));
-  if (state.measureAll && !state.connected) {
-    button.textContent = "latency · starts when the program runs";
-    button.title = "Measures every element once a program is connected; " +
-      "click to stop";
-  } else if (state.measureAll && all.on) {
-    button.textContent = `latency · ${all.buffers_per_s.toLocaleString()} ` +
-      "buf/s";
-    button.title = "Measuring every element; click to stop";
-  } else if (all.stopped_at) {
-    button.textContent = "latency stopped: too busy";
-    button.title = `Stopped by itself at ${all.stopped_at.toLocaleString()} ` +
-      "buffers/s, to protect the pipeline. Measure single elements from " +
-      "their details instead.";
-  } else {
-    button.textContent = "latency";
-    button.title = "Measure how long data takes through every element";
-  }
+  const { pressed, text, title } = measure.button(state.connected);
+  button.setAttribute("aria-pressed", String(pressed));
+  button.textContent = text;
+  button.title = title;
 }
 
-// Measurements are kept by element path, so they survive reloads and new
-// runs; each connection gets them with that run's element ids. Called
-// with the run's graph, never with an older one.
 function syncMeasuring() {
-  if (socket?.readyState !== WebSocket.OPEN)
-    return;
-  const { elementPaths } = buildIndex(state.graph);
-  for (const [path, id] of state.measuringSent) {
-    const now = elementPaths.get(path)?.id;
-    if (state.measuring.has(path) && now === id)
-      continue;
-    if (now === id)
-      send({ type: "unmeasure-latency", element: id });
-    state.measuringSent.delete(path);
-  }
-  for (const path of state.measuring) {
-    const id = elementPaths.get(path)?.id;
-    if (id !== undefined && !state.measuringSent.has(path)) {
-      send({ type: "measure-latency", element: id });
-      state.measuringSent.set(path, id);
-    }
-  }
+  if (socket?.readyState === WebSocket.OPEN)
+    measure.sync(buildIndex(state.graph).elementPaths);
 }
 
 function stopPicking() {
@@ -640,73 +569,8 @@ function stopPicking() {
   $("pick-hint").hidden = true;
 }
 
-// The pads data comes from into pad: those linked into it, else (for an
-// element's src pad) the element's sink pads.
-function upstreamOf(index, id) {
-  const into = index.linksInto.get(id);
-  if (into?.length)
-    return into;
-  const p = index.pads.get(id);
-  return p?.pad.direction === "src"
-    ? p.element.pads.filter((x) => x.direction === "sink").map((x) => x.id)
-    : [];
-}
-
-// Walks upstream from pad id; returns the first pad for which found(pad)
-// is true, nearest first, or null.
-function searchUpstream(index, id, found) {
-  const seen = new Set([id]);
-  let level = [id];
-  while (level.length) {
-    const next = [];
-    for (const pad of level)
-      for (const up of upstreamOf(index, pad)) {
-        if (seen.has(up))
-          continue;
-        if (found(up))
-          return up;
-        seen.add(up);
-        next.push(up);
-      }
-    level = next;
-  }
-  return null;
-}
-
-// Which pad each pad card measures from: its own choice, else the nearest
-// pinned pad upstream. Asks the server for the paths needed; pads on
-// different branches are measured both ways.
 function updatePaths() {
-  const index = buildIndex(state.graph);
-  const pinned = new Set([...pins.pins.values()].filter((p) => p.id !== null)
-    .map((p) => p.id));
-  const wanted = new Set();
-  for (const pin of pins.pins.values()) {
-    pin.source = null;
-    if (pin.id === null)
-      continue;
-    const chosen = pin.from ? index.padPaths.get(pin.from)?.id : null;
-    const from = chosen ?? searchUpstream(index, pin.id, (p) => pinned.has(p));
-    if (from === null || from === undefined || from === pin.id)
-      continue;
-    const upstream = from === chosen
-      ? searchUpstream(index, pin.id, (p) => p === from) !== null : true;
-    pin.source = { id: from, name: index.padName(from), upstream };
-    wanted.add(`${from}>${pin.id}`);
-    if (!upstream)
-      wanted.add(`${pin.id}>${from}`);
-  }
-  for (const key of wanted)
-    if (!state.pathsSent.has(key)) {
-      const [from, to] = key.split(">").map(Number);
-      send({ type: "measure-path", from, to });
-    }
-  for (const key of state.pathsSent)
-    if (!wanted.has(key)) {
-      const [from, to] = key.split(">").map(Number);
-      send({ type: "unmeasure-path", from, to });
-    }
-  state.pathsSent = wanted;
+  measure.updatePaths(buildIndex(state.graph), [...pins.pins.values()]);
 }
 
 const AV_SAME = 5e6;
@@ -717,8 +581,8 @@ function extraRows(pin) {
   const rows = {};
   const src = pin.source;
   if (src) {
-    const there = state.pathLatency.get(`${src.id}>${pin.id}`);
-    const back = state.pathLatency.get(`${pin.id}>${src.id}`);
+    const there = measure.path(src.id, pin.id);
+    const back = measure.path(pin.id, src.id);
     const span = (m) => `${formatSpan(m.avg, pins.unit)} (` +
       `${formatSpan(m.min, pins.unit)} – ${formatSpan(m.max, pins.unit)})`;
     const short = src.name.split("/").pop();
@@ -775,14 +639,7 @@ function sinkKind(pin) {
 }
 
 function applyLatency(latency) {
-  state.latency = new Map(latency.elements.map((e) => [e.element, e]));
-  state.pathLatency = new Map(latency.paths.map((p) => [`${p.from}>${p.to}`,
-    p.measured]));
-  state.latencyAll = latency.all;
-  if (state.measureAll && !latency.all.on && latency.all.stopped_at) {
-    state.measureAll = false;
-    saveFlag(MEASURE_ALL_KEY, false);
-  }
+  measure.apply(latency);
   showLatencyLabels();
   showMeasureAll();
   const index = buildIndex(state.graph);
@@ -816,12 +673,7 @@ function connect(delay = 1000) {
     log.reset();
     pins.connected();
     elementPins.connected();
-    // A new connection knows nothing of what this page measures; elements
-    // are measured again when this run's graph comes (syncMeasuring).
-    state.measuringSent = new Map();
-    if (state.measureAll)
-      send({ type: "measure-all" });
-    state.pathsSent = new Set();
+    measure.connected();
     showMeasureAll();
   };
   ws.onmessage = (event) => {
@@ -870,7 +722,7 @@ function connect(delay = 1000) {
     // Its last state stays on screen; what the page measures and pins is
     // applied again when a program connects.
     state.connected = false;
-    state.latency = new Map();
+    measure.disconnected();
     showMeasureAll();
     update();
     // After "bye" the program has ended, and the page quietly looks for a
@@ -929,10 +781,7 @@ document.addEventListener("pointerdown", (e) => {
     setAbout(false);
 });
 $("measure-all").addEventListener("click", () => {
-  state.measureAll = !state.measureAll;
-  saveFlag(MEASURE_ALL_KEY, state.measureAll);
-  state.latencyAll.stopped_at = null;
-  send({ type: state.measureAll ? "measure-all" : "unmeasure-all" });
+  measure.toggleAll();
   showMeasureAll();
 });
 $("time-unit").textContent = `time: ${pins.unit}`;
