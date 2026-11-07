@@ -244,8 +244,8 @@ failed_link_free (PmFailedLink * f)
   g_free (f);
 }
 
-/* Forgets failed links of a pad: it is gone, or linked now. */
-/* A failed link stays while its src pad is there and not linked: the
+/* Forgets failed links of a pad: it is gone, or linked now. A failed link
+ * stays while its src pad is there and not linked: the
  * other side may be gone already (gst-launch removes the capsfilter it
  * made for the link), its name and caps are kept as text. */
 static void
@@ -720,6 +720,14 @@ element_path (PmElement * element)
   return g_string_free (path, FALSE);
 }
 
+static PmElement *
+top_level (PmElement * element)
+{
+  while (element->parent != NULL)
+    element = element->parent;
+  return element;
+}
+
 void
 pm_model_count_queue_event (PmModel * model, gpointer object,
     gboolean overrun)
@@ -785,7 +793,6 @@ pm_model_find_elements (PmModel * model, PmElementFilter filter)
     PmElement *element = value;
     GstElement *object = g_weak_ref_get (&element->ref);
     PmElementRef *ref;
-    PmElement *top;
 
     if (object == NULL)
       continue;
@@ -800,8 +807,7 @@ pm_model_find_elements (PmModel * model, PmElementFilter filter)
     ref->overruns = element->overruns;
     ref->underruns = element->underruns;
     ref->buffering = element->buffering;
-    for (top = element; top->parent != NULL; top = top->parent);
-    ref->live = top->live;
+    ref->live = top_level (element)->live;
     g_ptr_array_add (found, ref);
   }
   g_mutex_unlock (&model->lock);
@@ -838,7 +844,15 @@ pm_flow_record_free (PmFlowRecord * record)
   g_free (record);
 }
 
-static void downstream_of (PmModel * model, gpointer pad, GPtrArray * out);
+typedef gboolean (*PmPadMatch) (gpointer object, PmPad * pad, gpointer data);
+static gpointer nearest_pad (PmModel * model, gpointer start,
+    gboolean downstream, PmPadMatch match, gpointer data);
+
+static gboolean
+same_flow (gpointer object, PmPad * pad, gpointer result)
+{
+  return pad->flow_count > 0 && pad->flow == GPOINTER_TO_INT (result);
+}
 
 /* Whether a pad downstream of pad has the same flow result: a failed push
  * returns the same result to every element upstream, and only the most
@@ -846,41 +860,8 @@ static void downstream_of (PmModel * model, gpointer pad, GPtrArray * out);
 static gboolean
 echoed_downstream (PmModel * model, gpointer start, GstFlowReturn result)
 {
-  GHashTable *seen = g_hash_table_new (NULL, NULL);
-  GPtrArray *level = g_ptr_array_new ();
-  gboolean found = FALSE;
-
-  g_ptr_array_add (level, start);
-  g_hash_table_add (seen, start);
-  while (level->len > 0 && !found) {
-    GPtrArray *next = g_ptr_array_new ();
-    guint i, j;
-
-    for (i = 0; i < level->len && !found; i++) {
-      GPtrArray *out = g_ptr_array_new ();
-
-      downstream_of (model, g_ptr_array_index (level, i), out);
-      for (j = 0; j < out->len; j++) {
-        gpointer pad = g_ptr_array_index (out, j);
-        PmPad *p = g_hash_table_lookup (model->pads, pad);
-
-        if (p == NULL || g_hash_table_contains (seen, pad))
-          continue;
-        g_hash_table_add (seen, pad);
-        if (p->flow_count > 0 && p->flow == result) {
-          found = TRUE;
-          break;
-        }
-        g_ptr_array_add (next, pad);
-      }
-      g_ptr_array_unref (out);
-    }
-    g_ptr_array_unref (level);
-    level = next;
-  }
-  g_ptr_array_unref (level);
-  g_hash_table_unref (seen);
-  return found;
+  return nearest_pad (model, start, TRUE, same_flow,
+      GINT_TO_POINTER (result)) != NULL;
 }
 
 /* Pads where data stopped (a flow record), for the findings; the echoes
@@ -891,9 +872,7 @@ pm_model_flow_records (PmModel * model)
   GPtrArray *found = g_ptr_array_new_with_free_func ((GDestroyNotify)
       pm_flow_record_free);
   GHashTableIter iter;
-  gpointer value;
-
-  gpointer key;
+  gpointer key, value;
 
   g_mutex_lock (&model->lock);
   g_hash_table_iter_init (&iter, model->pads);
@@ -1164,7 +1143,6 @@ spots_new (void)
   return g_ptr_array_new_with_free_func ((GDestroyNotify) pm_spot_free);
 }
 
-
 static guint
 count_pads (PmModel * model, PmElement * element, GstPadDirection direction)
 {
@@ -1185,14 +1163,6 @@ is_sink (PmModel * model, PmElement * element)
 {
   return !element->is_bin && count_pads (model, element, GST_PAD_SINK) > 0 &&
       count_pads (model, element, GST_PAD_SRC) == 0;
-}
-
-static PmElement *
-top_level (PmElement * element)
-{
-  while (element->parent != NULL)
-    element = element->parent;
-  return element;
 }
 
 /* The pads data goes to from pad: its peer, the inside of a ghost pad, or
@@ -1242,8 +1212,57 @@ upstream_of (PmModel * model, gpointer pad, GPtrArray * out)
   }
 }
 
+/* Walks from start, downstream or upstream, nearest pads first; returns the
+ * first pad known to the model for which match is TRUE, or NULL. */
+static gpointer
+nearest_pad (PmModel * model, gpointer start, gboolean downstream,
+    PmPadMatch match, gpointer data)
+{
+  GHashTable *seen = g_hash_table_new (NULL, NULL);
+  GPtrArray *level = g_ptr_array_new ();
+  gpointer found = NULL;
 
+  g_ptr_array_add (level, start);
+  g_hash_table_add (seen, start);
+  while (level->len > 0 && found == NULL) {
+    GPtrArray *next = g_ptr_array_new ();
+    guint i, j;
 
+    for (i = 0; i < level->len && found == NULL; i++) {
+      GPtrArray *step = g_ptr_array_new ();
+
+      if (downstream)
+        downstream_of (model, g_ptr_array_index (level, i), step);
+      else
+        upstream_of (model, g_ptr_array_index (level, i), step);
+      for (j = 0; j < step->len; j++) {
+        gpointer pad = g_ptr_array_index (step, j);
+        PmPad *p = g_hash_table_lookup (model->pads, pad);
+
+        if (p == NULL || g_hash_table_contains (seen, pad))
+          continue;
+        g_hash_table_add (seen, pad);
+        if (match (pad, p, data)) {
+          found = pad;
+          break;
+        }
+        g_ptr_array_add (next, pad);
+      }
+      g_ptr_array_unref (step);
+    }
+    g_ptr_array_unref (level);
+    level = next;
+  }
+  g_ptr_array_unref (level);
+  g_hash_table_unref (seen);
+  return found;
+}
+
+static gboolean
+has_caps (gpointer object, PmPad * pad, gpointer data)
+{
+  return pad->caps != NULL;
+}
 
 /* Sinks of a pipeline whose sink pads have no caps: no data reached them.
  * detail: the pad nearest upstream that has caps (how far data got), or
@@ -1266,46 +1285,19 @@ pm_model_starved_sinks (PmModel * model, guint64 pipeline)
     for (i = 0; i < element->pads->len; i++) {
       gpointer start = g_ptr_array_index (element->pads, i);
       PmPad *pad = g_hash_table_lookup (model->pads, start);
-      GHashTable *seen;
-      GPtrArray *level;
+      PmPad *up;
       gchar *reached = NULL;
 
       if (pad == NULL || pad->caps != NULL)
         continue;
-      seen = g_hash_table_new (NULL, NULL);
-      level = g_ptr_array_new ();
-      g_ptr_array_add (level, start);
-      while (level->len > 0 && reached == NULL) {
-        GPtrArray *next = g_ptr_array_new ();
-        guint j, k;
+      up = g_hash_table_lookup (model->pads, nearest_pad (model, start, FALSE,
+              has_caps, NULL));
+      if (up != NULL) {
+        gchar *path = element_path (up->element);
 
-        for (j = 0; j < level->len && reached == NULL; j++) {
-          GPtrArray *in = g_ptr_array_new ();
-
-          upstream_of (model, g_ptr_array_index (level, j), in);
-          for (k = 0; k < in->len; k++) {
-            gpointer up = g_ptr_array_index (in, k);
-            PmPad *u = g_hash_table_lookup (model->pads, up);
-            gchar *path;
-
-            if (u == NULL || g_hash_table_contains (seen, up))
-              continue;
-            g_hash_table_add (seen, up);
-            if (u->caps != NULL) {
-              path = element_path (u->element);
-              reached = g_strdup_printf ("%s:%s", path, u->name);
-              g_free (path);
-              break;
-            }
-            g_ptr_array_add (next, up);
-          }
-          g_ptr_array_unref (in);
-        }
-        g_ptr_array_unref (level);
-        level = next;
+        reached = g_strdup_printf ("%s:%s", path, up->name);
+        g_free (path);
       }
-      g_ptr_array_unref (level);
-      g_hash_table_unref (seen);
       g_ptr_array_add (found, spot_new (element, pad, reached));
       g_free (reached);
     }
@@ -1498,42 +1490,9 @@ pm_blocked_free (PmBlocked * b)
 }
 
 static gboolean
-blocked_downstream (PmModel * model, gpointer start, GHashTable * blocked)
+is_blocked (gpointer object, PmPad * pad, gpointer blocked)
 {
-  GHashTable *seen = g_hash_table_new (NULL, NULL);
-  GPtrArray *level = g_ptr_array_new ();
-  gboolean found = FALSE;
-
-  g_ptr_array_add (level, start);
-  g_hash_table_add (seen, start);
-  while (level->len > 0 && !found) {
-    GPtrArray *next = g_ptr_array_new ();
-    guint i, j;
-
-    for (i = 0; i < level->len && !found; i++) {
-      GPtrArray *out = g_ptr_array_new ();
-
-      downstream_of (model, g_ptr_array_index (level, i), out);
-      for (j = 0; j < out->len; j++) {
-        gpointer pad = g_ptr_array_index (out, j);
-
-        if (g_hash_table_contains (seen, pad))
-          continue;
-        g_hash_table_add (seen, pad);
-        if (g_hash_table_contains (blocked, pad)) {
-          found = TRUE;
-          break;
-        }
-        g_ptr_array_add (next, pad);
-      }
-      g_ptr_array_unref (out);
-    }
-    g_ptr_array_unref (level);
-    level = next;
-  }
-  g_ptr_array_unref (level);
-  g_hash_table_unref (seen);
-  return found;
+  return g_hash_table_contains (blocked, object);
 }
 
 /* Pushes that have not returned for at least min_ms (now_ms on the same
@@ -1573,7 +1532,7 @@ pm_model_blocked_pushes (PmModel * model, gint now_ms, gint min_ms)
     PmBlocked *b;
     gchar *path;
 
-    if (blocked_downstream (model, key, blocked))
+    if (nearest_pad (model, key, TRUE, is_blocked, blocked) != NULL)
       continue;
     b = g_new0 (PmBlocked, 1);
     b->pad = pad->id;
