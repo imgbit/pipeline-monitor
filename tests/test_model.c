@@ -866,7 +866,8 @@ main (int argc, char **argv)
 
   g_test_init (&argc, &argv, NULL);
   gst_init (&argc, &argv);
-  session = soup_session_new ();
+  /* A stalled server fails the request instead of the whole run. */
+  session = soup_session_new_with_options ("timeout", 10, NULL);
   url = tracer_url ();
   graph_url = g_strconcat (url, "api/graph", NULL);
   log_url = g_strconcat (url, "api/log", NULL);
