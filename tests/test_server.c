@@ -836,6 +836,142 @@ next_error (WsClient * client)
   return error;
 }
 
+/* The rules every message follows (docs/protocol.md). */
+static const gchar *message_types[] = { "hello", "graph", "log", "findings",
+  "levels", "pads", "properties", "latency", "error", "bye", "watched-pads",
+  NULL
+};
+
+/* Each reference to an element or pad has its path next to its id. */
+static void
+check_references (JsonNode * node)
+{
+  static const gchar *pairs[][2] = { {"element", "path"}, {"pad", "pad_path"},
+  {"from", "from_path"}, {"to", "to_path"}
+  };
+  GList *members, *l;
+  guint i;
+
+  if (JSON_NODE_HOLDS_ARRAY (node)) {
+    JsonArray *array = json_node_get_array (node);
+
+    for (i = 0; i < json_array_get_length (array); i++)
+      check_references (json_array_get_element (array, i));
+    return;
+  }
+  if (!JSON_NODE_HOLDS_OBJECT (node))
+    return;
+  if (!json_object_get_boolean_member_with_default (json_node_get_object
+          (node), "gone", FALSE))
+    for (i = 0; i < G_N_ELEMENTS (pairs); i++)
+      if (json_object_has_member (json_node_get_object (node), pairs[i][0]) &&
+          !json_object_has_member (json_node_get_object (node), pairs[i][1]))
+        g_error ("\"%s\" without \"%s\"", pairs[i][0], pairs[i][1]);
+  members = json_object_get_members (json_node_get_object (node));
+  for (l = members; l != NULL; l = l->next)
+    /* Property values are the element's own data. */
+    if (g_strcmp0 (l->data, "value") != 0 && g_strcmp0 (l->data,
+            "default") != 0)
+      check_references (json_object_get_member (json_node_get_object (node),
+              l->data));
+  g_list_free (members);
+}
+
+/* Checks a message; returns its type. */
+static gchar *
+check_message (const gchar * text)
+{
+  JsonNode *root = parse (text);
+  JsonObject *o = json_node_get_object (root);
+  gchar *type = g_strdup (json_object_get_string_member (o, "type"));
+
+  g_assert_true (g_strv_contains (message_types, type));
+  g_assert_cmpint (json_object_get_int_member (o, "protocol"), ==, 1);
+  g_assert_cmpint (json_object_get_int_member (o, "time"), >,
+      G_GINT64_CONSTANT (1000000000000000));
+  check_references (root);
+  json_node_unref (root);
+  return type;
+}
+
+/* Every message and answer follows the rules, and each type shows up. */
+static void
+test_protocol (void)
+{
+  const gchar *expected[] = { "hello", "graph", "log", "findings", "levels",
+    "pads", "properties", "latency", "error", NULL
+  };
+  const gchar *endpoints[] = { "api/hello", "api/graph", "api/log",
+    "api/findings", "api/levels", "api/pads", NULL
+  };
+  SoupSession *session = soup_session_new ();
+  gchar *url = server_url ("ws");
+  /* The second branch pushes into a tee without outputs: a finding. */
+  GstElement *pipeline = start_pipeline ("videotestsrc is-live=true ! "
+      "tee name=pr-tee ! queue name=pr-queue ! fakesink name=pr-sink "
+      "pr-tee. ! queue name=pr-dead ! tee");
+  GstElement *queue = gst_bin_get_by_name (GST_BIN (pipeline), "pr-queue");
+  GHashTable *seen = g_hash_table_new_full (g_str_hash, g_str_equal, g_free,
+      NULL);
+  gint64 end = g_get_monotonic_time () + 8 * G_USEC_PER_SEC;
+  WsClient client;
+  gchar *body, *path;
+  guint i;
+
+  post_warning (queue, "protocol");
+  ws_connect (&client, session, url, NULL);
+  ws_send (&client, "{\"type\":\"watch-pad\",\"pad\":%" G_GINT64_FORMAT
+      "}", pad_id ("pr-queue", "src"));
+  ws_send (&client, "{\"type\":\"measure-element\",\"element\":%"
+      G_GINT64_FORMAT "}", element_id ("pr-queue"));
+  ws_send (&client, "{\"type\":\"measure-path\",\"from\":%"
+      G_GINT64_FORMAT ",\"to\":%" G_GINT64_FORMAT "}",
+      pad_id ("pr-queue", "sink"), pad_id ("pr-queue", "src"));
+  ws_send (&client, "{\"type\":\"watch-property\",\"element\":%"
+      G_GINT64_FORMAT ",\"property\":\"stats\"}", element_id ("pr-sink"));
+  ws_send (&client, "{\"type\":\"explode\"}");
+
+  while (g_get_monotonic_time () < end &&
+      g_hash_table_size (seen) < g_strv_length ((gchar **) expected)) {
+    if (!g_main_context_iteration (NULL, FALSE))
+      g_usleep (1000);
+    while (!g_queue_is_empty (&client.messages)) {
+      gchar *message = g_queue_pop_head (&client.messages);
+      gchar *type = check_message (message);
+
+      if (g_strv_contains (expected, type))
+        g_hash_table_add (seen, type);
+      else
+        g_free (type);
+      g_free (message);
+    }
+  }
+  for (i = 0; expected[i] != NULL; i++)
+    if (!g_hash_table_contains (seen, expected[i]))
+      g_error ("no \"%s\" message", expected[i]);
+
+  for (i = 0; endpoints[i] != NULL; i++) {
+    g_assert_cmpuint (get_status (endpoints[i], "GET", NULL, &body, NULL), ==,
+        SOUP_STATUS_OK);
+    g_free (check_message (body));
+    g_free (body);
+  }
+  path = g_strdup_printf ("api/properties?element=%" G_GINT64_FORMAT,
+      element_id ("pr-sink"));
+  g_assert_cmpuint (get_status (path, "GET", NULL, &body, NULL), ==,
+      SOUP_STATUS_OK);
+  g_free (check_message (body));
+  g_free (body);
+  g_free (path);
+
+  ws_disconnect (&client);
+  g_hash_table_unref (seen);
+  gst_object_unref (queue);
+  stop_pipeline (pipeline);
+  g_free (url);
+  g_object_unref (session);
+}
+
 /* Every connection starts with hello; the same over HTTP. */
 static void
 test_hello (void)
@@ -2671,6 +2807,7 @@ main (int argc, char **argv)
   g_test_add_func ("/server/monitor", test_monitor);
   g_test_add_func ("/server/monitor-values", test_monitor_values);
   g_test_add_func ("/server/hello", test_hello);
+  g_test_add_func ("/server/protocol", test_protocol);
   g_test_add_func ("/server/monitor-bad-commands", test_monitor_bad_commands);
   g_test_add_func ("/server/invalid-utf8", test_invalid_utf8);
   g_test_add_func ("/server/monitor-pad-gone", test_monitor_pad_gone);

@@ -653,8 +653,10 @@ pm_monitor_list_json (PmMonitor * monitor)
     PmEntry *entry = g_ptr_array_index (entries, i);
 
     g_string_append_printf (json, "%s{\"pad\":%" G_GUINT64_FORMAT
-        ",\"viewers\":%u,\"buffers\":%" G_GUINT64_FORMAT "}", i ? "," : "",
-        entry->pad_id, g_hash_table_size (entry->clients),
+        ",\"pad_path\":", i ? "," : "", entry->pad_id);
+    pm_json_append_string (json, entry->pad_path);
+    g_string_append_printf (json, ",\"viewers\":%u,\"buffers\":%"
+        G_GUINT64_FORMAT "}", g_hash_table_size (entry->clients),
         read_buffers (entry));
   }
   g_ptr_array_unref (entries);

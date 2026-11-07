@@ -159,6 +159,10 @@ Then open the address it prints, by default http://127.0.0.1:8765/.
 The server has no authentication. It only accepts connections from the same
 machine and only from its own page.
 
+Scripts and other tools can read the same data over HTTP and a WebSocket,
+e.g. `curl -s http://127.0.0.1:8765/api/findings`; see
+[docs/protocol.md](docs/protocol.md).
+
 ## Status
 
 Version 0.8 shows the pipeline graph, errors and warnings, negotiated caps,
