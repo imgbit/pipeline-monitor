@@ -2408,7 +2408,7 @@ static void
 test_check_link_after_error (void)
 {
   const gchar *texts[] = { "le-dec:src_0 could not link to",
-    "no common format", "no format in common", "rate=(int)8000", NULL
+    "no common format", "\"common\":false", "rate=(int)8000", NULL
   };
   GstElement *next;
   gchar *text = NULL;

@@ -78,8 +78,6 @@ explain_flow (GstFlowReturn result, PmSeverity * severity,
   }
 }
 
-
-
 /* Most severe first, then by id, so the list does not reorder itself. */
 static gint
 compare_findings (gconstpointer a, gconstpointer b)
@@ -253,6 +251,19 @@ caps_string (GstCaps * caps)
   return text;
 }
 
+/* Whether two caps strings have a format in common. */
+static gboolean
+caps_meet (const gchar * a, const gchar * b)
+{
+  GstCaps *ca = a ? gst_caps_from_string (a) : NULL;
+  GstCaps *cb = b ? gst_caps_from_string (b) : NULL;
+  gboolean meet = ca && cb && gst_caps_can_intersect (ca, cb);
+
+  gst_clear_caps (&ca);
+  gst_clear_caps (&cb);
+  return meet;
+}
+
 /* For a src pad whose push was not negotiated: what it sends (or could)
  * and what its peer accepts. */
 static void
@@ -318,22 +329,18 @@ add_stuck (PmFindings * self, GPtrArray * findings, gint64 stuck_after_us)
     PmFinding *f = finding_new ("stuck", p->element, PM_WARNING, p->element,
         0);
     GPtrArray *starved;
+    gchar *pending_list, *preroll;
 
     f->text = g_strdup_printf ("%s has not reached %s for %" G_GINT64_FORMAT
         " s (it is %s)", p->path, gst_element_state_get_name (p->pending),
         p->since_us / G_USEC_PER_SEC, gst_element_state_get_name (p->state));
-    {
-      gchar *pending_list = pm_model_pending_elements (self->model,
-          p->element);
-
-      gchar *preroll = pm_model_preroll_summary (self->model, p->element);
-
-      f->hint = pending_list ? g_strdup_printf ("Still changing state: %s.%s%s",
-          pending_list, preroll ? " " : "", preroll ? preroll : "") :
-          g_strdup (preroll);
-      g_free (pending_list);
-      g_free (preroll);
-    }
+    pending_list = pm_model_pending_elements (self->model, p->element);
+    preroll = pm_model_preroll_summary (self->model, p->element);
+    f->hint = pending_list ? g_strdup_printf ("Still changing state: %s.%s%s",
+        pending_list, preroll ? " " : "", preroll ? preroll : "") :
+        g_strdup (preroll);
+    g_free (pending_list);
+    g_free (preroll);
     g_ptr_array_add (findings, f);
 
     starved = pm_model_starved_sinks (self->model, p->element);
@@ -417,12 +424,10 @@ add_structure (PmFindings * self, GPtrArray * findings)
     f->id = g_strdup_printf ("link:%s>%s", l->src_path, l->sink_path);
     f->text = g_strdup_printf ("%s could not link to %s: %s", l->src_path,
         l->sink_path, l->result);
-    f->hint = g_strdup (g_strcmp0 (l->result,
-            gst_pad_link_get_name (GST_PAD_LINK_NOFORMAT)) == 0 ?
-        "The two pads have no format in common; what each side handles is "
-        "below." : "What each side handles is below.");
+    f->hint = g_strdup ("What each side handles is below.");
     f->upstream = g_strdup (l->src_caps);
     f->downstream = g_strdup (l->sink_caps);
+    f->common = caps_meet (l->src_caps, l->sink_caps);
     g_ptr_array_add (findings, f);
   }
   g_ptr_array_unref (failed);
