@@ -1039,6 +1039,10 @@ def check_measure_restart(browser, serve):
                             ".textContent === 'connected'", timeout=15), \
             "page did not reconnect"
         assert browser.wait("document.getElementById('lost').hidden")
+        # The selection is found again by its path, as measurements are.
+        assert browser.wait("document.querySelector('#details h2')"
+                            "?.textContent === 'i-r'"), \
+            "selection not kept across the restart"
         assert browser.wait(measured, timeout=8), "identity not measured " \
             "after the restart"
         browser.click("#details .close")

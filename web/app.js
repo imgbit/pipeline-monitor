@@ -27,6 +27,10 @@ const state = {
   graph: { pipelines: [], links: [] },
   pipelineId: null,
   selected: null,
+  // Its path, to find it again in a new run (ids are per run), and whether
+  // a new run has started and it is still to be found.
+  selectedPath: null,
+  reselect: false,
   collapsed: loadCollapsed(),
   capsLabels: loadFlag(CAPS_LABELS_KEY),
   known: new Map(),
@@ -105,6 +109,9 @@ const view = new GraphView($("graph"), {
   hover: showTooltip,
   select(id) {
     state.selected = id;
+    state.selectedPath = id === null ? null
+      : buildIndex(state.graph).elements.get(id)?.path ?? null;
+    state.reselect = false;
     update();
   },
   toggle(path) {
@@ -674,6 +681,7 @@ function connect(delay = 1000) {
     pins.connected();
     elementPins.connected();
     measure.connected();
+    state.reselect = state.selectedPath !== null;
     showMeasureAll();
   };
   ws.onmessage = (event) => {
@@ -683,6 +691,11 @@ function connect(delay = 1000) {
       if (state.graph.pipelines.length)
         lastAlive.graph = state.graph;
       const index = buildIndex(state.graph);
+      if (state.reselect) {
+        state.selected = index.elementPaths.get(state.selectedPath)?.id ??
+          null;
+        state.reselect = state.selected === null;
+      }
       pins.sync(index.padPaths);
       elementPins.sync(index.elementPaths);
       updatePaths();
@@ -749,6 +762,7 @@ const lastAlive = { graph: null, findings: null };
 $("pipeline-select").addEventListener("change", (e) => {
   state.pipelineId = Number(e.target.value);
   state.selected = null;
+  state.selectedPath = null;
   update();
 });
 $("zoom-in").addEventListener("click", () => view.zoomCenter(1.25));
