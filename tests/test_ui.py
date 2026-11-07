@@ -828,12 +828,14 @@ def check_findings(browser, serve):
         browser.click("#details .close")
         sink = browser.eval(f"{element_selector('fakesink1')}?.dataset.id")
         box = f'#graph .node[data-id="{sink}"] > rect.box'
-        # On a slow machine the graph can still be moving: click once it
-        # is in the window.
-        assert browser.wait(f"(r => r.width > 0 && r.left >= 0 && r.top >= 0 "
-                            f"&& r.right <= innerWidth && r.bottom <= "
-                            f"innerHeight)(document.querySelector('{box}')"
-                            ".getBoundingClientRect())"), "fakesink1 not in view"
+        # On a slow machine the graph can still be moving, or something
+        # can lie over it: click once its middle is the sink's.
+        assert browser.wait(f"(r => r.width > 0 && document.elementFromPoint("
+                            f"r.x + r.width / 2, r.y + r.height / 2)"
+                            f"?.closest('.node')?.dataset.id === '{sink}')"
+                            f"(document.querySelector('{box}')"
+                            ".getBoundingClientRect())", timeout=10), \
+            "fakesink1 not clickable"
         assert browser.click_until(
             box, "document.querySelector('#details h2')?.textContent === "
             "'fakesink1'", tries=5), "could not select fakesink1"
