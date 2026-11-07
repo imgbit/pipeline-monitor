@@ -292,7 +292,9 @@ add_flow (PmFindings * self, GPtrArray * findings)
     f = finding_new ("flow", r->pad, severity, r->element, r->pad);
     f->text = g_strdup_printf ("Data stopped at %s: %s", r->path,
         gst_flow_get_name (r->result));
-    f->hint = g_strdup (hint);
+    f->hint = r->pulled ? g_strdup_printf ("Pulling data from upstream into "
+        "this pad returned %s.", gst_flow_get_name (r->result)) :
+        g_strdup (hint);
     f->count = r->count;
     f->first = r->first;
     f->last = r->last;

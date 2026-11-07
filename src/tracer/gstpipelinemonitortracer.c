@@ -581,6 +581,9 @@ static void
 do_pad_pull_range_post (GstTracer * tracer, GstClockTime ts, GstPad * pad,
     GstBuffer * buffer, GstFlowReturn res)
 {
+  /* Reading past the end of what upstream has is how pulling ends. */
+  if (res == GST_FLOW_EOS)
+    return;
   record_flow (tracer, pad, res);
 }
 

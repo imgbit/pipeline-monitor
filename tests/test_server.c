@@ -1925,6 +1925,85 @@ test_check_failed_link (void)
 
 
 
+/* Whether element:pad in the graph has a flow result. */
+static gboolean
+has_flow (JsonObject * element, const gchar * name, const gchar * pad)
+{
+  JsonArray *list = json_object_get_array_member (element, "pads");
+  guint i;
+
+  if (g_strcmp0 (json_object_get_string_member (element, "name"), name) == 0)
+    for (i = 0; i < json_array_get_length (list); i++) {
+      JsonObject *p = json_array_get_object_element (list, i);
+      if (g_strcmp0 (json_object_get_string_member (p, "name"), pad) == 0)
+        return json_object_has_member (p, "flow");
+    }
+  list = json_object_get_array_member (element, "children");
+  for (i = 0; i < json_array_get_length (list); i++)
+    if (has_flow (json_array_get_object_element (list, i), name, pad))
+      return TRUE;
+  return FALSE;
+}
+
+/* Runs a pipeline whose element "file" gets location, until it ends. */
+static GstElement *
+run_to_end (const gchar * description, const gchar * location)
+{
+  GstElement *pipeline = gst_parse_launch (description, NULL);
+  GstElement *file = gst_bin_get_by_name (GST_BIN (pipeline), "file");
+  GstBus *bus = gst_element_get_bus (pipeline);
+  GstMessage *message;
+
+  g_object_set (file, "location", location, NULL);
+  gst_object_unref (file);
+  gst_element_set_state (pipeline, GST_STATE_PLAYING);
+  message = gst_bus_timed_pop_filtered (bus, 10 * GST_SECOND,
+      GST_MESSAGE_EOS | GST_MESSAGE_ERROR);
+  g_assert_nonnull (message);
+  g_assert_cmpint (GST_MESSAGE_TYPE (message), ==, GST_MESSAGE_EOS);
+  gst_message_unref (message);
+  gst_object_unref (bus);
+  return pipeline;
+}
+
+/* A demuxer pulling a file reaches its end: data did not stop there. */
+static void
+test_check_pull_end (void)
+{
+  gchar *dir = g_dir_make_tmp ("pm-pull-XXXXXX", NULL);
+  gchar *path = g_build_filename (dir, "clip.mp4", NULL);
+  GstElement *pipeline;
+  gchar *body;
+  JsonNode *root;
+  JsonArray *pipelines;
+  guint i;
+  gboolean flow = FALSE;
+
+  stop_pipeline (run_to_end ("videotestsrc num-buffers=5 ! jpegenc ! qtmux ! "
+          "filesink name=file", path));
+  pipeline = run_to_end ("filesrc name=file ! qtdemux name=pe-demux ! "
+      "fakesink", path);
+
+  g_assert_cmpuint (get_status ("api/graph", "GET", NULL, &body, NULL), ==,
+      SOUP_STATUS_OK);
+  root = parse (body);
+  pipelines = json_object_get_array_member (json_node_get_object (root),
+      "pipelines");
+  g_assert_cmpuint (json_array_get_length (pipelines), >, 0);
+  for (i = 0; i < json_array_get_length (pipelines); i++)
+    flow |= has_flow (json_array_get_object_element (pipelines, i),
+        "pe-demux", "sink");
+  g_assert_false (flow);
+
+  json_node_unref (root);
+  g_free (body);
+  stop_pipeline (pipeline);
+  g_unlink (path);
+  g_rmdir (dir);
+  g_free (path);
+  g_free (dir);
+}
+
 static void
 test_check_missing_plugin (void)
 {
@@ -2316,6 +2395,7 @@ main (int argc, char **argv)
   g_test_add_func ("/server/check-preroll", test_check_preroll);
   g_test_add_func ("/server/check-link-after-error",
       test_check_link_after_error);
+  g_test_add_func ("/server/check-pull-end", test_check_pull_end);
   g_test_add_func ("/server/check-missing-plugin",
       test_check_missing_plugin);
   g_test_add_func ("/server/check-leaky", test_check_leaky);

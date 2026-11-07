@@ -759,6 +759,32 @@ test_findings_flow (Fixture * f, gconstpointer data)
   g_assert_nonnull (strstr (json, "\"count\":1"));
   g_assert_nonnull (strstr (json, "\"severity\":\"warning\""));
   g_free (json);
+
+  pm_model_record_flow (f->model, f->pad, GST_FLOW_EOS);
+  json = pm_findings_tick (findings, PM_STUCK_AFTER_US);
+  g_assert_nonnull (strstr (json, "\"severity\":\"info\""));
+  g_assert_nonnull (strstr (json, "downstream has already ended"));
+  g_free (json);
+  pm_model_record_flow (f->model, f->pad, GST_FLOW_NOT_SUPPORTED);
+  json = pm_findings_tick (findings, PM_STUCK_AFTER_US);
+  g_assert_nonnull (strstr (json, "returned not-supported."));
+  g_free (json);
+  pm_model_record_flow (f->model, f->pad, GST_FLOW_ERROR);
+  json = pm_findings_tick (findings, PM_STUCK_AFTER_US);
+  g_assert_nonnull (strstr (json, "\"severity\":\"error\""));
+  g_assert_nonnull (strstr (json, "under errors and warnings"));
+  g_free (json);
+
+  /* On a sink pad the result is of a pull. */
+  f->sink = gst_object_ref_sink (gst_pad_new ("core-sink", GST_PAD_SINK));
+  pm_model_add_pad (f->model, f->element, f->sink, "core-sink", GST_PAD_SINK,
+      NULL, FALSE);
+  pm_model_record_flow (f->model, f->sink, GST_FLOW_ERROR);
+  json = pm_findings_tick (findings, PM_STUCK_AFTER_US);
+  g_assert_nonnull (strstr (json, "core-sink: error"));
+  g_assert_nonnull (strstr (json, "Pulling data from upstream into this pad "
+          "returned error."));
+  g_free (json);
   pm_findings_free (findings);
 }
 

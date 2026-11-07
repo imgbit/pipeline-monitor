@@ -912,6 +912,7 @@ pm_model_flow_records (PmModel * model)
     record->path = g_strdup_printf ("%s:%s", element, pad->name);
     g_free (element);
     record->result = pad->flow;
+    record->pulled = pad->direction == GST_PAD_SINK;
     record->count = pad->flow_count;
     record->first = pad->flow_first;
     record->last = pad->flow_last;

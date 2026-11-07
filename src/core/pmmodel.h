@@ -70,6 +70,8 @@ typedef struct
   guint64 element;
   gchar *path;
   GstFlowReturn result;
+  /* On a sink pad: a pull, not a push. */
+  gboolean pulled;
   guint64 count;
   gint64 first, last;
 } PmFlowRecord;
