@@ -254,12 +254,18 @@ class Browser:
 
     # Clicks the element an expression returns, at once (it may not last).
     def click_point(self, expression):
+        assert self.try_click_point(expression), \
+            f"nothing to click: {expression}\n{self.history()}"
+
+    # As click_point; False if there is nothing to click.
+    def try_click_point(self, expression):
         point = self.eval(
             f"(() => {{ const n = {expression}; if (!n) return null;"
             " const r = n.getBoundingClientRect();"
             " return [r.x + r.width / 2, r.y + r.height / 2]; })()")
-        assert point, f"nothing to click: {expression}\n{self.history()}"
-        self.press(expression[:60], point)
+        if point:
+            self.press(expression[:60], point)
+        return bool(point)
 
     # Drags the element a selector matches by (dx, dy) in small steps.
     def drag(self, selector, dx, dy):
@@ -1613,9 +1619,14 @@ def check_pins(browser):
 
     # The example adds and removes a branch with "extra-sink" every 2 s.
     extra = f"{element_selector('extra-sink')}?.querySelector('.pad[data-port]')"
-    assert browser.wait(f"!!{extra}", timeout=6), "no extra branch"
-    browser.click_point(extra)
-    assert browser.wait(f"{cards} === 1"), "could not pin the extra branch"
+    # It can go between seeing it and clicking it: then wait for the next.
+    for _ in range(3):
+        assert browser.wait(f"!!{extra}", timeout=6), "no extra branch"
+        if browser.try_click_point(extra) and \
+                browser.wait(f"{cards} === 1", timeout=2):
+            break
+    assert browser.wait(f"{cards} === 1"), \
+        f"could not pin the extra branch\n{browser.history()}"
     assert browser.wait(f"{card}.classList.contains('gone') && !{card}.hidden"
                         " && document.querySelector('.pin-note')"
                         ".textContent.startsWith('pad is gone')",
