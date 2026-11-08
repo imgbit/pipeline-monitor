@@ -33,7 +33,7 @@ function duration(us) {
 
 // The recordings panel: Record/Stop, Snapshot and the list in the folder of
 // the program's machine. handlers: send(command), view() -> what this page
-// shows (saved with a recording).
+// shows (saved with a recording), open(name), openFile(File).
 export class RecordingsView {
   constructor(nodes, handlers) {
     this.nodes = nodes;
@@ -48,6 +48,13 @@ export class RecordingsView {
       this.handlers.send(this.running()?.kind === "recording"
         ? { type: "record-stop" }
         : { type: "record-start", view: this.handlers.view() });
+    });
+    nodes.openFile.addEventListener("click", () => nodes.fileInput.click());
+    nodes.fileInput.addEventListener("change", () => {
+      const file = nodes.fileInput.files[0];
+      if (file)
+        this.handlers.openFile(file);
+      nodes.fileInput.value = "";
     });
     nodes.snapshot.addEventListener("click", () => {
       this.showError(null);
@@ -125,6 +132,8 @@ export class RecordingsView {
           "muted");
         continue;
       }
+      const open = add(actions, "button", "Open", "rec-open");
+      open.addEventListener("click", () => this.handlers.open(r.name));
       const link = add(actions, "a", "Download", "rec-download");
       link.href = `api/recordings/${encodeURIComponent(r.name)}`;
       link.download = r.name;

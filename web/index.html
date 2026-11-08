@@ -50,6 +50,9 @@
     its last state. A new run on this address is picked up by itself.</div>
   <div id="lost" class="ended-banner" hidden>Connection lost: showing the
     last known state, which may be out of date. Reconnecting…</div>
+  <div id="viewing" class="ended-banner viewing-banner" hidden>
+    <span id="viewing-text"></span> · read-only
+    <button id="viewing-close">Close</button></div>
   <div id="pick-hint" class="pick-hint" hidden>Click the pad to measure from · Esc to cancel</div>
   <div class="toolbar">
     <button id="zoom-in" title="Zoom in">+</button>
@@ -79,6 +82,8 @@
     <strong>Recordings</strong>
     <button id="record">● Record</button>
     <button id="snapshot" title="Save the state of this moment">Snapshot</button>
+    <button id="open-file" title="Open a recording file (or drop it on the page)">Open file…</button>
+    <input id="file-input" type="file" accept=".jsonl,application/jsonl" hidden>
     <span id="recordings-error" class="rec-error" hidden></span>
     <span class="spacer"></span>
     <button id="recordings-close" class="close" title="Close">×</button>

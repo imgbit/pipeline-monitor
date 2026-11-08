@@ -120,7 +120,9 @@ const view = new GraphView($("graph"), {
       state.collapsed.delete(path);
     else
       state.collapsed.add(path);
-    saveCollapsed();
+    // A recording's view is not this browser's.
+    if (!state.viewing)
+      saveCollapsed();
     state.places = { tops: new Map() };
     update();
   },
@@ -129,7 +131,7 @@ const view = new GraphView($("graph"), {
   },
   pin(port) {
     const path = shown.index?.padPath(Number(port.slice(1)));
-    if (!path)
+    if (!path || state.viewing)
       return;
     if (state.picking) {
       if (path !== state.picking.path)
@@ -236,7 +238,11 @@ const recordings = new RecordingsView({
   close: $("recordings-close"),
   error: $("recordings-error"),
   note: $("recordings-note"),
-}, { send, view: pageView });
+  openFile: $("open-file"),
+  fileInput: $("file-input"),
+}, { send, view: pageView, open: (name) => openStored(name),
+  openFile: (file) => file.text().then((text) =>
+    openRecording(text, file.name)) });
 
 const findings = new FindingsView({
   counter: $("problems-counter"),
@@ -520,11 +526,15 @@ async function refreshProperties() {
   const id = state.selected;
   if (id !== null) {
     let data = null;
-    try {
-      const r = await fetch(`/api/properties?element=${id}`);
-      data = r.ok ? (await r.json()).elements[0] : null;
-    } catch {
-      // Disconnected; the next round tries again.
+    if (state.viewing) {
+      data = state.viewing.properties.get(id) ?? null;
+    } else {
+      try {
+        const r = await fetch(`/api/properties?element=${id}`);
+        data = r.ok ? (await r.json()).elements[0] : null;
+      } catch {
+        // Disconnected; the next round tries again.
+      }
     }
     if (state.selected === id) {
       propsLast = { id, data };
@@ -689,6 +699,185 @@ function applyLevels(levels) {
     index.elements.get(state.selected), index));
 }
 
+// Recordings shown read-only: the program's state is set aside meanwhile.
+
+function clearState() {
+  state.graph = { pipelines: [], links: [] };
+  lastAlive.graph = null;
+  lastAlive.findings = null;
+  state.selected = null;
+  findings.apply({ findings: [] });
+  showProblems();
+  log.reset();
+  measure.disconnected();
+  applyLevels({ queues: [], pipelines: [] });
+  showLatencyLabels();
+}
+
+// Properties of an element from a recording: the latest value of each.
+function keepProperties(entry) {
+  const known = state.viewing.properties.get(entry.element);
+  const byName = new Map((known?.properties ?? []).map((p) => [p.name, p]));
+  for (const p of entry.properties ?? [])
+    byName.set(p.name, p);
+  state.viewing.properties.set(entry.element, { element: entry.element,
+    path: entry.path, properties: [...byName.values()] });
+}
+
+function openRecording(text, name) {
+  const lines = text.split("\n").filter((line) => line.trim());
+  let header = null;
+  try {
+    header = JSON.parse(lines[0]);
+  } catch {
+    // Not JSON: said below.
+  }
+  if (header?.format !== "pipeline-monitor-recording" ||
+      header.version !== 1) {
+    recordings.showError(`${name} is not a recording this page can open.`);
+    return;
+  }
+  const messages = [];
+  for (const line of lines.slice(1)) {
+    try {
+      messages.push(JSON.parse(line));
+    } catch {
+      // A last line cut off by a crash.
+    }
+  }
+  if (!state.viewing)
+    state.live = { collapsed: state.collapsed,
+      selectedPath: state.selectedPath };
+  state.viewing = { header, properties: new Map() };
+  clearState();
+  state.collapsed = new Set(header.view?.collapsed ?? []);
+  state.selectedPath = header.view?.selected ?? null;
+  state.reselect = state.selectedPath !== null;
+  state.places = { tops: new Map() };
+  document.body.classList.add("viewing");
+  for (const message of messages) {
+    if (message.type === "properties")
+      message.elements.filter((e) => !e.gone).forEach(keepProperties);
+    else if (["graph", "log", "findings", "levels", "latency"]
+      .includes(message.type))
+      handleMessage(message);
+  }
+  const last = messages.at(-1)?.time ?? header.started;
+  const program = header.hello?.program ?? "a program";
+  const when = new Date(header.started / 1000).toLocaleString();
+  $("viewing-text").textContent = header.kind === "snapshot"
+    ? `Snapshot of ${program}, ${when}`
+    : `Recording of ${program}, ${when}, ` +
+      `${Math.round((last - header.started) / 1e6)} s`;
+  $("viewing").hidden = false;
+  $("ended").hidden = true;
+  $("lost").hidden = true;
+  $("connection").textContent = "recording";
+  $("connection").className = "connection viewing";
+  recordings.showError(null);
+  update();
+  refreshProperties();
+}
+
+function closeRecording() {
+  if (!state.viewing)
+    return;
+  state.viewing = null;
+  document.body.classList.remove("viewing");
+  $("viewing").hidden = true;
+  clearState();
+  state.collapsed = state.live.collapsed;
+  state.selectedPath = state.live.selectedPath;
+  state.reselect = state.selectedPath !== null;
+  state.places = { tops: new Map() };
+  update();
+  // The program's state, fresh: a new connection sends all of it.
+  reconnectNow = true;
+  if (socket?.readyState === WebSocket.OPEN)
+    socket.close();
+  else
+    reconnectNow = false;
+}
+
+async function openStored(name) {
+  try {
+    const r = await fetch(`api/recordings/${encodeURIComponent(name)}`);
+    if (!r.ok)
+      throw new Error(r.statusText);
+    openRecording(await r.text(), name);
+  } catch {
+    recordings.showError(`Cannot read ${name}.`);
+  }
+}
+
+$("viewing-close").addEventListener("click", closeRecording);
+// A recording file dropped on the page.
+window.addEventListener("dragover", (e) => e.preventDefault());
+window.addEventListener("drop", (e) => {
+  const file = e.dataTransfer?.files?.[0];
+  if (!file)
+    return;
+  e.preventDefault();
+  file.text().then((text) => openRecording(text, file.name));
+});
+
+let reconnectNow = false;
+
+// A message from the program, or from a recording being shown.
+function handleMessage(message) {
+  if (message.type === "graph") {
+    state.graph = { pipelines: message.pipelines, links: message.links };
+    if (state.graph.pipelines.length)
+      lastAlive.graph = state.graph;
+    const index = buildIndex(state.graph);
+    if (state.reselect) {
+      state.selected = index.elementPaths.get(state.selectedPath)?.id ??
+        null;
+      state.reselect = state.selected === null;
+    }
+    // A recording's ids are not the program's: nothing is sent for them.
+    if (!state.viewing) {
+      pins.sync(index.padPaths);
+      elementPins.sync(index.elementPaths);
+      updatePaths();
+      syncMeasuring();
+    }
+    update();
+  } else if (message.type === "findings") {
+    findings.apply(message);
+    if (state.graph.pipelines.length)
+      lastAlive.findings = message;
+    showProblems();
+  } else if (message.type === "latency") {
+    applyLatency(message);
+  } else if (message.type === "levels") {
+    applyLevels(message);
+  } else if (message.type === "properties") {
+    elementPins.apply(message);
+  } else if (message.type === "pads") {
+    pins.apply(message);
+  } else if (message.type === "log") {
+    log.apply(message);
+    if (state.selected !== null)
+      update();
+  } else if (message.type === "recordings") {
+    recordings.apply(message);
+  } else if (message.type === "error") {
+    recordings.applyError(message);
+  } else if (message.type === "bye") {
+    ended = true;
+    // A program usually destroys its pipeline before it exits: show the
+    // last state in which there was one.
+    if (!state.graph.pipelines.length && lastAlive.graph) {
+      state.graph = lastAlive.graph;
+      if (lastAlive.findings)
+        findings.apply(lastAlive.findings);
+      showProblems();
+      update();
+    }
+  }
+}
+
 function connect(delay = 1000) {
   const ws = new WebSocket(`ws://${location.host}/ws`);
   const status = $("connection");
@@ -712,59 +901,25 @@ function connect(delay = 1000) {
   };
   ws.onmessage = (event) => {
     const message = JSON.parse(event.data);
-    if (message.type === "graph") {
-      state.graph = { pipelines: message.pipelines, links: message.links };
-      if (state.graph.pipelines.length)
-        lastAlive.graph = state.graph;
-      const index = buildIndex(state.graph);
-      if (state.reselect) {
-        state.selected = index.elementPaths.get(state.selectedPath)?.id ??
-          null;
-        state.reselect = state.selected === null;
-      }
-      pins.sync(index.padPaths);
-      elementPins.sync(index.elementPaths);
-      updatePaths();
-      syncMeasuring();
-      update();
-    } else if (message.type === "findings") {
-      findings.apply(message);
-      if (state.graph.pipelines.length)
-        lastAlive.findings = message;
-      showProblems();
-    } else if (message.type === "latency") {
-      applyLatency(message);
-    } else if (message.type === "levels") {
-      applyLevels(message);
-    } else if (message.type === "properties") {
-      elementPins.apply(message);
-    } else if (message.type === "pads") {
-      pins.apply(message);
-    } else if (message.type === "log") {
-      log.apply(message);
-      if (state.selected !== null)
-        update();
-    } else if (message.type === "recordings") {
-      recordings.apply(message);
-    } else if (message.type === "error") {
-      recordings.applyError(message);
-    } else if (message.type === "bye") {
-      ended = true;
-      // A program usually destroys its pipeline before it exits: show the
-      // last state in which there was one.
-      if (!state.graph.pipelines.length && lastAlive.graph) {
-        state.graph = lastAlive.graph;
-        if (lastAlive.findings)
-          findings.apply(lastAlive.findings);
-        showProblems();
-        update();
-      }
-    }
+    // While a recording is shown, only the recordings list stays live.
+    if (!state.viewing || message.type === "recordings" ||
+        message.type === "error")
+      handleMessage(message);
   };
   ws.onclose = () => {
     // Its last state stays on screen; what the page measures and pins is
     // applied again when a program connects.
     state.connected = false;
+    if (reconnectNow) {
+      reconnectNow = false;
+      connect();
+      return;
+    }
+    if (state.viewing) {
+      recordings.setConnected(false);
+      setTimeout(() => connect(delay), delay);
+      return;
+    }
     measure.disconnected();
     recordings.setConnected(false);
     showMeasureAll();

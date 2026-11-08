@@ -693,3 +693,11 @@ main {
 .rec-actions button { font-size: 12px; padding: 0 6px; }
 .rec-error { color: var(--error); }
 .rec-note { padding: 4px 16px; font-size: 11px; border-top: 1px solid var(--border); }
+
+/* A recording shown read-only: nothing that acts on the program. */
+.viewing-banner { border-left-color: var(--accent); }
+.viewing-banner button { margin-left: 8px; }
+.connection.viewing::before { background: var(--accent); }
+body.viewing #pins, body.viewing #pin-lines, body.viewing #measure-all,
+body.viewing #record, body.viewing #snapshot, body.viewing .measure-toggle,
+body.viewing .mute-toggle, body.viewing #details .pin-prop { display: none; }

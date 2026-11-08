@@ -259,6 +259,13 @@ class Browser:
         self.call("Input.dispatchMouseEvent", type="mouseMoved", x=point[0],
                   y=point[1])
 
+    # Chooses a file for an <input type="file">, as a person would.
+    def set_file(self, selector, path):
+        root = self.call("DOM.getDocument")["root"]["nodeId"]
+        node = self.call("DOM.querySelector", nodeId=root,
+                         selector=selector)["nodeId"]
+        self.call("DOM.setFileInputFiles", files=[path], nodeId=node)
+
     def screenshot(self, path):
         data = self.call("Page.captureScreenshot")["data"]
         with open(path, "wb") as f:
@@ -1055,6 +1062,7 @@ def check_recordings(browser, serve):
         assert text.startswith('{"format":"pipeline-monitor-recording"'), \
             "download is not a recording"
         assert '"view":{"pins":' in text.split("\n")[0], "no view saved"
+        check_viewer(browser, rows)
         # Delete asks for a second click.
         for _ in range(2):
             browser.eval(f"{rows}[0].querySelector('.rec-delete').click()")
@@ -1066,6 +1074,52 @@ def check_recordings(browser, serve):
     finally:
         server.terminate()
         server.wait()
+
+
+# Open a recording read-only, from the list and from a file, and close it.
+def check_viewer(browser, rows):
+    banner = "document.getElementById('viewing')"
+    status = "document.getElementById('connection')"
+    browser.eval(f"{rows}[1].querySelector('.rec-open').click()")
+    assert browser.wait(f"!{banner}.hidden && "
+                        f"{banner}.textContent.includes('Recording of serve')"), \
+        "recording not opened"
+    assert browser.wait(f"{status}.textContent === 'recording'")
+    assert browser.wait(f"!!{element_selector('q-r')}"), "no recorded graph"
+    node = browser.eval(f"{element_selector('q-r')}?.dataset.id")
+    assert browser.click_until(
+        f'#graph .node[data-id="{node}"] > rect.box',
+        "document.querySelector('#details h2')?.textContent === 'q-r'",
+        tries=5), "could not select q-r in the recording"
+    assert browser.wait("[...document.querySelectorAll('#details table.props "
+                        "tr')].some(r => r.cells[1]?.textContent === "
+                        "'max-size-buffers')"), \
+        "no properties from the recording"
+    assert browser.eval("!document.querySelector('#details .measure-toggle')"
+                        "?.offsetParent"), "Measure shown in a recording"
+    assert browser.eval("!document.querySelector('#details .pin-prop')"
+                        "?.offsetParent"), "pinning shown in a recording"
+    browser.eval(f"{banner}.querySelector('button').click()")
+    assert browser.wait(f"{banner}.hidden && "
+                        f"{status}.textContent === 'connected'", timeout=10), \
+        "did not go back to the program"
+
+    # The same file, chosen from the disk.
+    name = browser.eval(f"{rows}[1].dataset.name")
+    browser.set_file("#file-input", os.path.join(RECORDINGS, name))
+    assert browser.wait(f"!{banner}.hidden"), "file not opened"
+    browser.eval(f"{banner}.querySelector('button').click()")
+    assert browser.wait(f"{banner}.hidden")
+    not_one = os.path.join(RECORDINGS, "not-a-recording.jsonl")
+    with open(not_one, "w") as f:
+        f.write("hello\n")
+    browser.set_file("#file-input", not_one)
+    assert browser.wait("document.getElementById('recordings-error')"
+                        ".textContent.includes('not a recording')"), \
+        "a file that is not a recording was not refused"
+    os.remove(not_one)
+    browser.eval(f"document.getElementById('{'recordings-error'}').hidden "
+                 "= true")
 
 
 # Measurements are kept by element path: they come back with a new run,
