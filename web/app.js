@@ -22,6 +22,11 @@ const $ = (id) => document.getElementById(id);
 const COLLAPSED_KEY = "pipeline-monitor.collapsed";
 const CAPS_LABELS_KEY = "pipeline-monitor.caps-labels";
 const TIME_UNIT_KEY = "pipeline-monitor.time-unit";
+const AUTO_FIT_KEY = "pipeline-monitor.auto-fit";
+
+// Each tab is live (connected to the program) or a viewer of recordings,
+// chosen when it opens: "#viewer" or "#viewer=<name>".
+const viewerMode = location.hash.startsWith("#viewer");
 
 const elk = new ELK({ workerUrl: "vendor/elkjs/elk-worker.min.js" });
 
@@ -265,7 +270,8 @@ const dock = new Dock({
     close: $("log-close") },
   recordings: { button: $("recordings-counter"),
     panel: $("recordings-panel"), close: $("recordings-close") },
-});
+}, viewerMode ? "pipeline-monitor.viewer-panel" : "pipeline-monitor.panel");
+dock.open(dock.saved());
 
 // The worst severity per place, for the graph.
 const RANK = { info: 0, warning: 1, error: 2 };
@@ -476,7 +482,9 @@ async function layoutAndRender() {
   if (pipeline.id !== state.pipelineId) {
     state.pipelineId = pipeline.id;
     state.places = { tops: new Map() };
+    // A new pipeline is fitted once; then auto-fit is as last chosen.
     view.setAutoFit(true);
+    state.fitOnce = loadString(AUTO_FIT_KEY) === "false";
   }
 
   const selection = index.elements.get(state.selected);
@@ -504,6 +512,10 @@ async function layoutAndRender() {
     badges,
     pinned: new Set([...pins.ports(), ...elementPins.ports()]),
   });
+  if (state.fitOnce) {
+    state.fitOnce = false;
+    view.setAutoFit(false);
+  }
   view.setLevels(state.queues);
   showLatencyLabels();
   const details = selection && log.enabled ? {
@@ -1085,6 +1097,28 @@ function connect(delay = 1000) {
   };
 }
 
+// A viewer tab talks to the server only about recordings: the list, kept
+// up to date, and Delete. The program's live messages are not for it.
+function connectViewer(delay = 1000) {
+  const ws = new WebSocket(`ws://${location.host}/ws`);
+  socket = ws;
+  ws.onopen = () => {
+    delay = 1000;
+    recordings.setConnected(true);
+  };
+  ws.onmessage = (event) => {
+    const message = JSON.parse(event.data);
+    if (message.type === "recordings")
+      recordings.apply(message);
+    else if (message.type === "error")
+      recordings.applyError(message);
+  };
+  ws.onclose = () => {
+    recordings.setConnected(false);
+    setTimeout(() => connectViewer(Math.min(delay * 2, 5000)), delay);
+  };
+}
+
 // The program said "bye" before the connection closed.
 let ended = false;
 // The graph and findings of the last moment a pipeline existed.
@@ -1098,7 +1132,10 @@ $("pipeline-select").addEventListener("change", (e) => {
 });
 $("zoom-in").addEventListener("click", () => view.zoomCenter(1.25));
 $("zoom-out").addEventListener("click", () => view.zoomCenter(0.8));
-$("auto-fit").addEventListener("click", () => view.setAutoFit(!view.autoFit));
+$("auto-fit").addEventListener("click", () => {
+  view.setAutoFit(!view.autoFit);
+  saveFlag(AUTO_FIT_KEY, view.autoFit);
+});
 $("caps-labels").setAttribute("aria-pressed", String(state.capsLabels));
 $("caps-labels").addEventListener("click", () => {
   state.capsLabels = !state.capsLabels;
@@ -1144,24 +1181,17 @@ window.addEventListener("resize", () => {
   elementPins.place();
 });
 
-// Each tab is live (connected to the program) or a viewer of recordings,
-// chosen when it opens: "#viewer" or "#viewer=<name>".
-const viewerMode = location.hash.startsWith("#viewer");
-
-async function startViewer() {
+function startViewer() {
   document.body.classList.add("viewing", "viewer-mode");
   $("connection").textContent = "viewer";
   $("connection").className = "connection viewing";
   $("empty").textContent = "Open a recording: from the list, with Open " +
     "file…, or drop a file on the page.";
-  dock.open("recordings");
-  try {
-    const r = await fetch("api/recordings");
-    recordings.apply(await r.json());
-    recordings.setConnected(true);
-  } catch {
-    // Without a server only Open file… works.
-  }
+  // With nothing open yet, the list to open one from.
+  if (!location.hash.startsWith("#viewer="))
+    dock.open("recordings");
+  // Without a server only Open file… works.
+  connectViewer();
   const name = location.hash.match(/^#viewer=(.+)$/)?.[1];
   if (name)
     openStored(decodeURIComponent(name));

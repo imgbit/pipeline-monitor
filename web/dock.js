@@ -19,10 +19,12 @@ export function setCounter(button, name, count, cls) {
 
 // One panel at the bottom at a time: the header buttons open theirs and
 // close it again; the panels' top edge sets the height for all of them.
-// panels: name -> {button, panel, close}.
+// panels: name -> {button, panel, close}; key: where the open one is kept
+// across reloads.
 export class Dock {
-  constructor(panels) {
+  constructor(panels, key) {
     this.panels = panels;
+    this.key = key;
     this.current = null;
     this.setHeight(this.loadHeight());
     for (const [name, { button, panel, close }] of Object.entries(panels)) {
@@ -37,8 +39,23 @@ export class Dock {
     }
   }
 
+  // The panel open before the page was reloaded, or null.
+  saved() {
+    try {
+      const name = localStorage.getItem(this.key);
+      return Object.hasOwn(this.panels, name) ? name : null;
+    } catch {
+      return null;
+    }
+  }
+
   open(name) {
     this.current = name;
+    try {
+      localStorage.setItem(this.key, name ?? "");
+    } catch {
+      // Storage may be unavailable; the panel still opens now.
+    }
     for (const [n, { button, panel }] of Object.entries(this.panels)) {
       panel.hidden = n !== name;
       button.setAttribute("aria-pressed", String(n === name));

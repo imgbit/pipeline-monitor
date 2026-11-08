@@ -440,10 +440,37 @@ def check(browser, url):
     browser.call("Page.reload")
     assert browser.wait("!!document.querySelector('#graph .node.collapsed')"), \
         "collapsed bin not remembered after reload"
+    assert browser.eval(f"{AUTO_FIT} === 'true'"), \
+        "auto-fit not back on after zooming and a reload"
     assert browser.click_until(
         '.toggle[data-path$="parsebin0"] rect',
         "!document.querySelector('#graph .node.collapsed')"), \
         "bin did not expand"
+
+    # Auto-fit turned off with its button stays off after a reload (the
+    # graph is fitted once).
+    if browser.eval(f"{AUTO_FIT} === 'false'"):
+        browser.click("#auto-fit")
+    assert browser.wait(f"{AUTO_FIT} === 'true'")
+    browser.click("#auto-fit")
+    assert browser.wait(f"{AUTO_FIT} === 'false'")
+    browser.call("Page.reload")
+    assert browser.wait(f"!!{element_selector('queue0')}", timeout=10)
+    time.sleep(1)
+    assert browser.eval(f"{AUTO_FIT} === 'false'"), \
+        "auto-fit off not remembered after reload"
+    assert browser.eval(
+        "(g => { const r = g.getBoundingClientRect(), s = document."
+        "getElementById('graph').getBoundingClientRect(); return r.width > 0 "
+        "&& r.left >= s.left - 1 && r.right <= s.right + 1 && "
+        "r.top >= s.top - 1 && r.bottom <= s.bottom + 1; })"
+        "(document.querySelector('#graph > g'))"), \
+        "the graph was not fitted after reload"
+    browser.click("#auto-fit")
+    assert browser.wait(f"{AUTO_FIT} === 'true'")
+    browser.call("Page.reload")
+    assert browser.wait(f"!!{element_selector('queue0')}", timeout=10)
+    assert browser.wait(f"{AUTO_FIT} === 'true'")
 
     counts = set()
     end = time.time() + 5
@@ -477,6 +504,24 @@ def check(browser, url):
     assert not browser.errors, f"errors in the page: {browser.errors}"
 
 
+PANELS = {"log": "log", "problems": "findings", "recordings": "recordings"}
+
+
+# Opens a bottom panel, also if it is open already (the page keeps the open
+# one across reloads).
+def open_panel(browser, name):
+    panel = f"document.getElementById('{PANELS[name]}-panel')"
+    if browser.eval(f"{panel}.hidden"):
+        browser.click(f"#{name}-counter")
+    assert browser.wait(f"!{panel}.hidden"), f"{name} panel did not open"
+
+
+def close_panel(browser, name):
+    if not browser.eval(f"document.getElementById('{PANELS[name]}-panel')"
+                        ".hidden"):
+        browser.click(f"#{PANELS[name]}-close")
+
+
 # The server runs "serve --warnings": the tee "t" posts a warning each time
 # a branch is added or removed (every two seconds).
 def check_log(browser):
@@ -490,7 +535,7 @@ def check_log(browser):
     assert browser.eval(f"{counter}.title.includes('warning')")
     assert browser.wait(f"!!{badge}"), "no badge on the tee"
 
-    browser.click("#log-counter")
+    open_panel(browser, "log")
     assert browser.wait("!document.getElementById('log-panel').hidden"), \
         "log panel did not open"
     assert browser.wait(f"{rows} > 0"), "no rows in the log panel"
@@ -510,9 +555,11 @@ def check_log(browser):
     browser.call("Page.reload")
     assert browser.wait(f"{badge}?.classList.contains('muted')"), \
         "mute not remembered after reload"
-    browser.click("#log-counter")
-    browser.click("#log-muted .unmute")
-    assert browser.wait(f"{rows} > 0"), "unmuting did not bring rows back"
+    assert browser.wait("!document.getElementById('log-panel').hidden"), \
+        "the open panel not kept after reload"
+    # The list is drawn again when the log arrives: click until it works.
+    assert browser.click_until("#log-muted .unmute", f"{rows} > 0"), \
+        "unmuting did not bring rows back"
 
     browser.click("#log-clear")
     assert browser.wait(f"{rows} === 0"), "clear did not empty the panel"
@@ -522,6 +569,7 @@ def check_log(browser):
         "new warnings did not appear after clear"
     assert browser.eval("document.querySelector('#log-rows .log-count')"
                         ".textContent") == "", "count did not restart at clear"
+    close_panel(browser, "log")
 
 
 CAPS_SUMMARIES = [
@@ -868,9 +916,9 @@ def check_findings(browser, serve):
                             "'.count.warning')?.textContent)", timeout=10), \
             "no problems found in a faulty pipeline"
         # One panel at a time; the open one's button is pressed.
-        browser.click("#log-counter")
+        open_panel(browser, "log")
         assert browser.wait("!document.getElementById('log-panel').hidden")
-        browser.click("#problems-counter")
+        open_panel(browser, "problems")
         assert browser.wait("document.getElementById('log-panel').hidden && "
                             "!document.getElementById('findings-panel')"
                             ".hidden"), "two panels open"
@@ -894,7 +942,7 @@ def check_findings(browser, serve):
                             ".includes('blocked at')"), \
             "no problems in the details"
         # The panels cover the sink.
-        browser.click("#findings-close")
+        close_panel(browser, "problems")
         browser.click("#details .close")
         sink = browser.eval(f"{element_selector('fakesink1')}?.dataset.id")
         box = f'#graph .node[data-id="{sink}"] > rect.box'
@@ -1027,12 +1075,13 @@ def check_format_finding(browser, serve):
         assert browser.eval("/[0-9]+× · [0-9]+ (s|min) ago/.test(document."
                             "querySelector('#findings-rows .finding-count')"
                             ".textContent)"), "no count and time"
-        browser.click("#problems-counter")
+        open_panel(browser, "problems")
         assert browser.wait("!document.getElementById('findings-panel')"
                             ".hidden")
         browser.click("#findings-rows .finding.error .finding-place")
         assert browser.wait("!!document.querySelector('#details h2')"), \
             "pressing the place did not select the element"
+        close_panel(browser, "problems")
     finally:
         if server.poll() is None:
             server.terminate()
@@ -1047,7 +1096,7 @@ def check_recordings(browser, serve):
         assert browser.wait(f"!!{element_selector('q-r')}", timeout=10)
         counter = "document.getElementById('recordings-counter')"
         rows = "document.querySelectorAll('#recordings-rows .rec-row')"
-        browser.click("#recordings-counter")
+        open_panel(browser, "recordings")
         assert browser.wait("!document.getElementById('recordings-panel')"
                             ".hidden")
         assert browser.wait("!document.getElementById('record').disabled")
@@ -1089,7 +1138,7 @@ def check_recordings(browser, serve):
             time.sleep(0.5)
         assert browser.wait(f"{rows}.length === 0"), "recordings not deleted"
         assert not browser.errors, f"errors in the page: {browser.errors}"
-        browser.click("#recordings-close")
+        close_panel(browser, "recordings")
     finally:
         server.terminate()
         server.wait()
@@ -1180,7 +1229,8 @@ def check_viewer(browser, rows, url):
     browser.call("Page.navigate", url="about:blank")
     browser.call("Page.navigate", url=url)
     assert browser.wait(f"{status}.textContent === 'connected'")
-    browser.click("#recordings-counter")
+    assert browser.wait("!document.getElementById('recordings-panel')"
+                        ".hidden"), "the open panel not kept in the live tab"
     assert browser.wait(f"{rows}.length === 2")
 
 
@@ -1256,7 +1306,7 @@ def check_record_fails(browser, serve):
     try:
         browser.call("Page.navigate", url=url)
         assert browser.wait(f"!!{element_selector('q-r')}", timeout=10)
-        browser.click("#recordings-counter")
+        open_panel(browser, "recordings")
         assert browser.wait("!document.getElementById('record').disabled")
         browser.click("#record")
         error = "document.getElementById('recordings-error')"
@@ -1267,6 +1317,7 @@ def check_record_fails(browser, serve):
                             "'#recordings-counter .count')"), \
             "a failed Record shows as running"
         assert not browser.errors, f"errors in the page: {browser.errors}"
+        close_panel(browser, "recordings")
     finally:
         server.terminate()
         server.wait()
@@ -1318,9 +1369,31 @@ def check_command(browser, serve, tool):
         browser.eval(f"{rows}[0].querySelector('.rec-open').click()")
         assert browser.wait(f"!{banner}.hidden && !!{element_selector('q-r')}"), \
             "recording not opened in the command's viewer"
+
+        # Delete, with the mouse (a second click within 3 s).
+        browser.click("#viewing-close")
+        assert browser.wait(f"{banner}.hidden")
+        spare = os.path.join(RECORDINGS, os.path.basename(path).replace(
+            ".jsonl", "-copy.jsonl"))
+        shutil.copy(path, spare)
+        browser.call("Page.reload")
+        delete = (f"[...{rows}].find(r => r.dataset.name === "
+                  f"{json.dumps(os.path.basename(spare))})"
+                  "?.querySelector('.rec-delete')")
+        assert browser.wait(f"{delete} && !{delete}.disabled"), \
+            "no Delete for the copy"
+        browser.click_point(delete)
+        assert browser.wait(f"{delete}?.textContent === 'Delete?'")
+        browser.click_point(delete)
+        assert browser.wait(f"!{delete}"), "Delete did not remove the row"
+        assert not os.path.exists(spare), "Delete did not remove the file"
     finally:
         tool_proc.terminate()
         tool_proc.wait()
+    # Without the command the list's buttons are off.
+    assert browser.wait(f"[...{rows}].every(r => [...r.querySelectorAll("
+                        "'button')].every(b => b.disabled))", timeout=10), \
+        "the list's buttons still work without the command"
 
     tool_proc, url = run("open", path)
     try:
