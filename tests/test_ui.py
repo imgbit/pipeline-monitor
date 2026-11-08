@@ -324,9 +324,16 @@ class Browser:
         self.log.close()
 
 
+# Recordings of the test runs go here, not to the user's folder.
+RECORDINGS = tempfile.mkdtemp(prefix="pm-ui-rec-")
+
+
 # wait: the program starts only once a page is connected.
 def start_server(serve, pipeline, *args, debug=None, port=0, wait=False):
-    options = f"port={port}" + (",wait=true" if wait else "")
+    # In GST_TRACERS a backslash escapes: Windows paths use "/".
+    folder = RECORDINGS.replace("\\", "/")
+    options = f'port={port},recordings="{folder}"' + \
+        (",wait=true" if wait else "")
     env = dict(os.environ, GST_TRACERS=f"pipeline-monitor({options})")
     if debug:
         env["GST_DEBUG"] = debug
@@ -1014,6 +1021,51 @@ def check_format_finding(browser, serve):
             server.wait()
 
 
+# Record, stop, snapshot, download and delete from the panel.
+def check_recordings(browser, serve):
+    server, url = start_server(serve, RESTART_PIPELINE)
+    try:
+        browser.call("Page.navigate", url=url)
+        assert browser.wait(f"!!{element_selector('q-r')}", timeout=10)
+        counter = "document.getElementById('recordings-counter')"
+        rows = "document.querySelectorAll('#recordings-rows .rec-row')"
+        browser.click("#recordings-counter")
+        assert browser.wait("!document.getElementById('recordings-panel')"
+                            ".hidden")
+        assert browser.wait("!document.getElementById('record').disabled")
+        browser.click("#record")
+        assert browser.wait(f"{counter}.textContent.startsWith('●')"), \
+            "no running recording in the header"
+        assert browser.wait(f"/[0-9]:[0-9]{{2}} · [0-9.]+ (B|KB|MB)$/.test("
+                            f"{counter}.textContent) && {counter}.textContent"
+                            ".includes('0:02')", timeout=8), \
+            "the running recording's time and size do not grow"
+        browser.click("#record")
+        assert browser.wait(f"{counter}.textContent === 'Recordings' && "
+                            f"{rows}.length === 1"), "recording did not stop"
+        browser.click("#snapshot")
+        assert browser.wait(f"{rows}.length === 2 && {rows}[0].querySelector("
+                            "'.rec-kind').textContent === 'snapshot' && "
+                            f"!{rows}[0].classList.contains('running')",
+                            timeout=8), "no snapshot in the list"
+        href = browser.eval(f"{rows}[1].querySelector('.rec-download').href")
+        text = browser.eval(f"fetch({json.dumps(href)}).then(r => r.text())")
+        assert text.startswith('{"format":"pipeline-monitor-recording"'), \
+            "download is not a recording"
+        assert '"view":{"pins":' in text.split("\n")[0], "no view saved"
+        # Delete asks for a second click.
+        for _ in range(2):
+            browser.eval(f"{rows}[0].querySelector('.rec-delete').click()")
+            browser.eval(f"{rows}[0].querySelector('.rec-delete').click()")
+            time.sleep(0.5)
+        assert browser.wait(f"{rows}.length === 0"), "recordings not deleted"
+        assert not browser.errors, f"errors in the page: {browser.errors}"
+        browser.click("#recordings-close")
+    finally:
+        server.terminate()
+        server.wait()
+
+
 # Measurements are kept by element path: they come back with a new run,
 # also when turned on while no program is connected.
 RESTART_PIPELINE = ("audiotestsrc is-live=true ! queue name=q-r ! "
@@ -1263,6 +1315,7 @@ def main():
             check_findings(browser, serve)
             check_ended(browser, serve)
             check_measure_restart(browser, serve)
+            check_recordings(browser, serve)
             check_two_pipelines(browser, serve)
             check_format_finding(browser, serve)
     finally:
@@ -1271,6 +1324,7 @@ def main():
         server.terminate()
         server.wait()
         shutil.rmtree(profile, ignore_errors=True)
+        shutil.rmtree(RECORDINGS, ignore_errors=True)
     print("ok")
     return 0
 

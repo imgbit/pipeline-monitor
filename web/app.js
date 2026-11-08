@@ -15,6 +15,7 @@ import { pipelineTimes, queueRows } from "./levels.js";
 import { cannotMeasure, latencyRows } from "./latency.js";
 import { Measuring } from "./measure.js";
 import { FindingsView } from "./findings.js";
+import { RecordingsView } from "./recordings.js";
 
 const $ = (id) => document.getElementById(id);
 const COLLAPSED_KEY = "pipeline-monitor.collapsed";
@@ -212,6 +213,30 @@ const log = new LogView({
     update();
   },
 });
+
+// What this page shows, saved with a recording.
+function pageView() {
+  return {
+    pins: [...pins.pins.values()].map((pin) => pins.saved(pin)),
+    element_pins: [...elementPins.pins.values()].map((pin) =>
+      elementPins.saved(pin)),
+    measuring: [...measure.paths],
+    measure_all: measure.all,
+    selected: state.selectedPath,
+    collapsed: [...state.collapsed],
+  };
+}
+
+const recordings = new RecordingsView({
+  counter: $("recordings-counter"),
+  panel: $("recordings-panel"),
+  rows: $("recordings-rows"),
+  record: $("record"),
+  snapshot: $("snapshot"),
+  close: $("recordings-close"),
+  error: $("recordings-error"),
+  note: $("recordings-note"),
+}, { send, view: pageView });
 
 const findings = new FindingsView({
   counter: $("problems-counter"),
@@ -681,6 +706,7 @@ function connect(delay = 1000) {
     pins.connected();
     elementPins.connected();
     measure.connected();
+    recordings.setConnected(true);
     state.reselect = state.selectedPath !== null;
     showMeasureAll();
   };
@@ -718,6 +744,10 @@ function connect(delay = 1000) {
       log.apply(message);
       if (state.selected !== null)
         update();
+    } else if (message.type === "recordings") {
+      recordings.apply(message);
+    } else if (message.type === "error") {
+      recordings.applyError(message);
     } else if (message.type === "bye") {
       ended = true;
       // A program usually destroys its pipeline before it exits: show the
@@ -736,6 +766,7 @@ function connect(delay = 1000) {
     // applied again when a program connects.
     state.connected = false;
     measure.disconnected();
+    recordings.setConnected(false);
     showMeasureAll();
     update();
     // After "bye" the program has ended, and the page quietly looks for a

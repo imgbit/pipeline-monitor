@@ -670,3 +670,26 @@ main {
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
   font-size: 12px;
 }
+
+/* Recordings */
+
+/* The header's buttons keep their size; the times line gives way. */
+.recordings-counter, .problems-counter, .log-counter { flex: none; }
+.recordings-counter { color: var(--muted); }
+.recordings-counter.recording { color: var(--error); border-color: var(--error); }
+
+.rec-row {
+  display: grid;
+  grid-template-columns: 70px minmax(140px, 1fr) 70px 70px minmax(120px, 1fr);
+  gap: 10px;
+  align-items: baseline;
+  padding: 3px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.rec-row.running .rec-kind { color: var(--error); }
+.rec-time, .rec-duration, .rec-size { font-variant-numeric: tabular-nums; }
+.rec-actions { display: flex; gap: 8px; align-items: baseline; }
+.rec-actions button { font-size: 12px; padding: 0 6px; }
+.rec-error { color: var(--error); }
+.rec-note { padding: 4px 16px; font-size: 11px; border-top: 1px solid var(--border); }

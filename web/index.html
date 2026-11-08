@@ -22,6 +22,8 @@
   <span id="element-count" class="muted"></span>
   <span id="pipeline-times" class="muted times" hidden></span>
   <span class="spacer"></span>
+  <button id="recordings-counter" class="recordings-counter"
+    aria-controls="recordings-panel" aria-expanded="false">Recordings</button>
   <button id="problems-counter" class="problems-counter"
     aria-controls="findings-panel" aria-expanded="false">No problems</button>
   <button id="log-counter" class="log-counter" aria-controls="log-panel"
@@ -70,6 +72,19 @@
     <button id="findings-close" class="close" title="Close">×</button>
   </div>
   <div id="findings-rows" class="log-rows"></div>
+</section>
+<section id="recordings-panel" class="log-panel" aria-label="Recordings"
+  hidden>
+  <div class="log-head">
+    <strong>Recordings</strong>
+    <button id="record">● Record</button>
+    <button id="snapshot" title="Save the state of this moment">Snapshot</button>
+    <span id="recordings-error" class="rec-error" hidden></span>
+    <span class="spacer"></span>
+    <button id="recordings-close" class="close" title="Close">×</button>
+  </div>
+  <div id="recordings-rows" class="log-rows"></div>
+  <div id="recordings-note" class="rec-note muted"></div>
 </section>
 <section id="log-panel" class="log-panel" aria-label="Errors and warnings" hidden>
   <div class="log-head">
