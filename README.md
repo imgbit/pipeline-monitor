@@ -50,7 +50,7 @@ On Ubuntu 24.04 or Debian 12 (amd64, arm64), download the `.deb` for your
 system, then:
 
 ```sh
-sudo apt install ./pipeline-monitor_0.8.0-1.ubuntu24.04_amd64.deb
+sudo apt install ./pipeline-monitor_0.10.0-1.ubuntu24.04_amd64.deb
 ```
 
 It goes where the system's GStreamer finds it. To update, install a newer
@@ -196,10 +196,12 @@ e.g. `curl -s http://127.0.0.1:8765/api/findings`; see
 
 ## Status
 
-Version 0.9 shows the pipeline graph, errors and warnings, negotiated caps,
-live values of pinned pads, queue fill, the pipeline's clock and times,
-element properties, live when pinned, latency per element and between pads,
-and detects pipeline issues. Each open page is independent, and the
+Version 0.10 shows the pipeline graph, errors and warnings, negotiated
+caps, live values of pinned pads, queue fill, the pipeline's clock and
+times, element properties, live when pinned, latency per element and
+between pads, and detects pipeline issues. It records what it shows to
+files you can play back later or share, also without the program (the
+`pipeline-monitor` command). Each open page is independent, and the
 interface it uses is documented for other tools
 ([docs/protocol.md](docs/protocol.md), protocol 1).
 It is tested on macOS (Apple Silicon) with GStreamer 1.28.8, and in CI on
