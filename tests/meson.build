@@ -1,7 +1,10 @@
 test_env = environment()
 test_env.set('GST_PLUGIN_PATH', plugin_build_dir)
 test_env.set('GST_REGISTRY', meson.current_build_dir() / 'registry.bin')
-test_env.set('GST_TRACERS', 'pipeline-monitor(port=0)')
+# Recordings go to the build folder, not the user's. In GST_TRACERS a
+# backslash escapes, so Windows paths use "/".
+test_env.set('GST_TRACERS', 'pipeline-monitor(port=0,recordings="@0@")'.format(
+  (meson.current_build_dir() / 'recordings').replace('\\', '/')))
 # The tests only connect to 127.0.0.1: keep the system's proxy settings
 # (read through libproxy, which fails on some macOS exception lists) out.
 test_env.set('GIO_USE_PROXY_RESOLVER', 'dummy')

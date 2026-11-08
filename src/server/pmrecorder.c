@@ -440,14 +440,41 @@ read_header (const gchar * path)
   return header;
 }
 
+typedef struct
+{
+  gchar *name, *kind;
+  gint64 started, last;
+  guint64 size;
+  gboolean running;
+} PmListed;
+
+static void
+listed_free (PmListed * l)
+{
+  g_free (l->name);
+  g_free (l->kind);
+  g_free (l);
+}
+
+static gint
+newer_first (gconstpointer a, gconstpointer b)
+{
+  const PmListed *la = *(PmListed * const *) a, *lb = *(PmListed * const *) b;
+
+  if (la->started != lb->started)
+    return (la->started < lb->started) - (la->started > lb->started);
+  return g_strcmp0 (lb->name, la->name);
+}
+
 /* {"folder","file_max","total_max","recordings":[{"name","kind","started",
- * "last","size","running"}]}, newest first. */
+ * "last","size","running"}]}, the latest started first. */
 gchar *
 pm_recorder_list_json (PmRecorder * self)
 {
   GString *json = g_string_new ("{\"folder\":");
-  GPtrArray *files;
-  gint i;
+  GPtrArray *files, *listed = g_ptr_array_new_with_free_func ((GDestroyNotify)
+      listed_free);
+  guint i;
 
   g_mutex_lock (&self->lock);
   pm_json_append_string (json, self->dir);
@@ -455,32 +482,51 @@ pm_recorder_list_json (PmRecorder * self)
       ",\"total_max\":%" G_GUINT64_FORMAT ",\"recordings\":[",
       self->file_max, self->total_max);
   files = list_files (self);
-  for (i = files->len - 1; i >= 0; i--) {
+  for (i = 0; i < files->len; i++) {
     PmFile *f = g_ptr_array_index (files, i);
-    gboolean running = g_strcmp0 (f->name, self->name) == 0;
-    gchar *path = g_build_filename (self->dir, f->name, NULL);
-    JsonObject *header = running ? NULL : read_header (path);
+    PmListed *l = g_new0 (PmListed, 1);
 
-    if (json->str[json->len - 1] != '[')
-      g_string_append_c (json, ',');
-    g_string_append (json, "{\"name\":");
-    pm_json_append_string (json, f->name);
-    g_string_append (json, ",\"kind\":");
-    pm_json_append_string (json, running ? self->kind : header ?
-        json_object_get_string_member_with_default (header, "kind", NULL) :
-        NULL);
-    g_string_append_printf (json, ",\"started\":%" G_GINT64_FORMAT
-        ",\"last\":%" G_GINT64_FORMAT ",\"size\":%" G_GUINT64_FORMAT
-        ",\"running\":%s}", running ? self->started : header ?
-        json_object_get_int_member_with_default (header, "started", 0) : 0,
-        running ? g_get_real_time () : f->modified, f->size,
-        running ? "true" : "false");
-    if (header != NULL)
-      json_object_unref (header);
-    g_free (path);
+    l->name = g_strdup (f->name);
+    l->size = f->size;
+    l->running = g_strcmp0 (f->name, self->name) == 0;
+    if (l->running) {
+      l->kind = g_strdup (self->kind);
+      l->started = self->started;
+      l->last = g_get_real_time ();
+    } else {
+      gchar *path = g_build_filename (self->dir, f->name, NULL);
+      JsonObject *header = read_header (path);
+
+      l->kind = header ? g_strdup (json_object_get_string_member_with_default
+          (header, "kind", NULL)) : NULL;
+      l->started = header ? json_object_get_int_member_with_default (header,
+          "started", 0) : 0;
+      l->last = f->modified;
+      if (header != NULL)
+        json_object_unref (header);
+      g_free (path);
+    }
+    g_ptr_array_add (listed, l);
   }
   g_ptr_array_unref (files);
   g_mutex_unlock (&self->lock);
+
+  g_ptr_array_sort (listed, newer_first);
+  for (i = 0; i < listed->len; i++) {
+    PmListed *l = g_ptr_array_index (listed, i);
+
+    if (i > 0)
+      g_string_append_c (json, ',');
+    g_string_append (json, "{\"name\":");
+    pm_json_append_string (json, l->name);
+    g_string_append (json, ",\"kind\":");
+    pm_json_append_string (json, l->kind);
+    g_string_append_printf (json, ",\"started\":%" G_GINT64_FORMAT
+        ",\"last\":%" G_GINT64_FORMAT ",\"size\":%" G_GUINT64_FORMAT
+        ",\"running\":%s}", l->started, l->last, l->size,
+        l->running ? "true" : "false");
+  }
+  g_ptr_array_unref (listed);
   g_string_append (json, "]}");
   return g_string_free (json, FALSE);
 }

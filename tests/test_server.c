@@ -344,8 +344,12 @@ ws_next (WsClient * client, const gchar * type)
 {
   gchar *prefix = g_strdup_printf ("{\"type\":\"%s\",", type);
   gchar *message = NULL;
+  /* Other messages keep coming: give up after a while, do not hang. */
+  gint64 end = g_get_monotonic_time () + 10 * G_USEC_PER_SEC;
 
   while (message == NULL) {
+    if (g_get_monotonic_time () > end)
+      g_error ("no \"%s\" message", type);
     if (g_queue_is_empty (&client->messages)) {
       client->got_message = FALSE;
       g_assert_true (wait_for (&client->got_message));
@@ -943,6 +947,30 @@ test_recorder_files (void)
   g_free (dir);
 }
 
+/* A folder that cannot be made: the start fails and says why. */
+static void
+test_recorder_no_folder (void)
+{
+  gchar *dir = g_dir_make_tmp ("pm-rec-XXXXXX", NULL);
+  gchar *file = g_build_filename (dir, "not-a-folder", NULL);
+  PmRecorder *recorder;
+  GError *error = NULL;
+
+  g_assert_true (g_file_set_contents (file, "", 0, NULL));
+  recorder = pm_recorder_new (file, 1024, 1024);
+  g_assert_false (pm_recorder_start (recorder, "recording", "p", NULL, NULL,
+          &error));
+  g_assert_nonnull (error);
+  g_assert_true (g_str_has_prefix (error->message, "Cannot create "));
+  g_assert_false (pm_recorder_running (recorder));
+  g_clear_error (&error);
+  pm_recorder_free (recorder);
+  g_unlink (file);
+  g_rmdir (dir);
+  g_free (file);
+  g_free (dir);
+}
+
 /* A file ends at its limit; the oldest files go when the folder is full. */
 static void
 test_recorder_limits (void)
@@ -991,10 +1019,141 @@ test_recorder_limits (void)
   g_free (line);
 }
 
+static gchar *check_message (const gchar * text);
+
+/* The newest recording in the next "recordings" message: name (to free),
+ * kind and whether it runs; FALSE if the list is empty. */
+static gboolean
+next_recording (WsClient * client, gchar ** name, gchar ** kind,
+    gboolean * running)
+{
+  gchar *message = ws_next (client, "recordings");
+  JsonNode *root = parse (message);
+  JsonArray *list = json_object_get_array_member (json_node_get_object (root),
+      "recordings");
+  gboolean any = json_array_get_length (list) > 0;
+
+  if (any) {
+    JsonObject *r = json_array_get_object_element (list, 0);
+
+    *name = g_strdup (json_object_get_string_member (r, "name"));
+    if (kind != NULL)
+      *kind = g_strdup (json_object_get_string_member (r, "kind"));
+    *running = json_object_get_boolean_member (r, "running");
+  }
+  json_node_unref (root);
+  g_free (message);
+  return any;
+}
+
+/* Record, stop, snapshot, download and delete, as the page does. */
+static void
+test_recordings (void)
+{
+  SoupSession *session = soup_session_new ();
+  gchar *url = server_url ("ws");
+  GstElement *pipeline = start_pipeline ("videotestsrc is-live=true ! "
+      "queue name=rc-queue ! fakesink name=rc-sink");
+  gchar *name = NULL, *kind = NULL, *path, *body, *queue_path, *member;
+  gboolean running = FALSE;
+  JsonObject *error;
+  WsClient client;
+
+  ws_connect (&client, session, url, NULL);
+  ws_send (&client, "{\"type\":\"watch-property\",\"element\":%"
+      G_GINT64_FORMAT ",\"property\":\"stats\"}", element_id ("rc-sink"));
+  ws_send (&client, "{\"type\":\"watch-pad\",\"pad\":%" G_GINT64_FORMAT
+      "}", pad_id ("rc-queue", "src"));
+  g_assert_cmpuint (count_messages (&client, "recordings", 300), >=, 1);
+
+  ws_send (&client, "{\"type\":\"record-start\",\"view\":"
+      "{\"pins\":[\"pipeline0/rc-queue:src\"]}}");
+  do {
+    g_clear_pointer (&name, g_free);
+    g_assert_true (next_recording (&client, &name, NULL, &running));
+  } while (!running);
+  ws_send (&client, "{\"type\":\"record-start\"}");
+  error = next_error (&client);
+  g_assert_cmpstr (json_object_get_string_member (error, "reason"), ==,
+      "A recording is already running.");
+  json_object_unref (error);
+  count_messages (&client, "levels", 2200);
+  ws_send (&client, "{\"type\":\"record-stop\"}");
+  do {
+    g_clear_pointer (&name, g_free);
+    g_assert_true (next_recording (&client, &name, NULL, &running));
+  } while (running);
+  ws_send (&client, "{\"type\":\"record-stop\"}");
+  error = next_error (&client);
+  g_assert_cmpstr (json_object_get_string_member (error, "reason"), ==,
+      "No recording is running.");
+  json_object_unref (error);
+
+  path = g_strconcat ("api/recordings/", name, NULL);
+  g_assert_cmpuint (get_status (path, "GET", NULL, &body, NULL), ==,
+      SOUP_STATUS_OK);
+  g_assert_true (g_str_has_prefix (body, "{\"format\":"
+          "\"pipeline-monitor-recording\""));
+  g_assert_nonnull (strstr (body, "\"view\":{\"pins\":"
+          "[\"pipeline0/rc-queue:src\"]}"));
+  g_assert_nonnull (strstr (body, "\n{\"type\":\"graph\","));
+  g_assert_nonnull (strstr (body, "\n{\"type\":\"pads\","));
+  g_assert_nonnull (strstr (body, "\"name\":\"stats\""));
+  g_assert_true (g_str_has_suffix (body, "\"reason\":\"stopped\"}\n"));
+  g_free (body);
+  g_free (path);
+
+  /* A snapshot: the state of one moment, every element's properties. */
+  ws_send (&client, "{\"type\":\"snapshot\"}");
+  do {
+    g_clear_pointer (&kind, g_free);
+    g_free (name);
+    g_assert_true (next_recording (&client, &name, &kind, &running));
+  } while (running || g_strcmp0 (kind, "snapshot") != 0);
+  path = g_strconcat ("api/recordings/", name, NULL);
+  g_assert_cmpuint (get_status (path, "GET", NULL, &body, NULL), ==,
+      SOUP_STATUS_OK);
+  g_assert_nonnull (strstr (body, "\"kind\":\"snapshot\""));
+  queue_path = graph_path ("rc-queue", NULL);
+  member = g_strdup_printf ("\"path\":\"%s\"", queue_path);
+  g_assert_nonnull (strstr (body, member));
+  g_free (member);
+  g_free (queue_path);
+  g_assert_true (g_str_has_suffix (body, "\"reason\":\"snapshot\"}\n"));
+  g_free (body);
+  g_free (path);
+
+  g_assert_cmpuint (get_status ("api/recordings/other.jsonl", "GET", NULL,
+          NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
+  g_assert_cmpuint (get_status ("api/recordings", "GET", NULL, &body, NULL),
+      ==, SOUP_STATUS_OK);
+  g_free (check_message (body));
+  g_free (body);
+
+  /* Delete both (each answer lists what is left); a name that is not there
+   * is an error. */
+  do {
+    ws_send (&client, "{\"type\":\"record-delete\",\"name\":\"%s\"}",
+        name);
+    g_free (name);
+  } while (next_recording (&client, &name, NULL, &running));
+  ws_send (&client, "{\"type\":\"record-delete\",\"name\":\"x.jsonl\"}");
+  error = next_error (&client);
+  g_assert_cmpstr (json_object_get_string_member (error, "command"), ==,
+      "record-delete");
+  json_object_unref (error);
+
+  g_free (kind);
+  ws_disconnect (&client);
+  stop_pipeline (pipeline);
+  g_free (url);
+  g_object_unref (session);
+}
+
 /* The rules every message follows (docs/protocol.md). */
 static const gchar *message_types[] = { "hello", "graph", "log", "findings",
   "levels", "pads", "properties", "latency", "error", "bye", "watched-pads",
-  NULL
+  "recordings", NULL
 };
 
 /* Each reference to an element or pad has its path next to its id. */
@@ -2964,7 +3123,9 @@ main (int argc, char **argv)
   g_test_add_func ("/recorder/secrets", test_recorder_secrets);
   g_test_add_func ("/recorder/files", test_recorder_files);
   g_test_add_func ("/recorder/limits", test_recorder_limits);
+  g_test_add_func ("/recorder/no-folder", test_recorder_no_folder);
   g_test_add_func ("/server/hello", test_hello);
+  g_test_add_func ("/server/recordings", test_recordings);
   g_test_add_func ("/server/protocol", test_protocol);
   g_test_add_func ("/server/monitor-bad-commands", test_monitor_bad_commands);
   g_test_add_func ("/server/invalid-utf8", test_invalid_utf8);

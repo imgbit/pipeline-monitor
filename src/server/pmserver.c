@@ -23,7 +23,7 @@
 #define PORT_ATTEMPTS 10
 #define UPDATE_INTERVAL_MS 100
 #define STATS_INTERVAL_MS 250
-#define MAX_COMMAND_SIZE 4096
+#define MAX_COMMAND_SIZE 65536
 #define UI_RESOURCE_PATH "/pipeline-monitor/ui/"
 
 struct _PmServer
@@ -75,6 +75,8 @@ struct _PmServer
    * recording already has (they are read once, also when added later). */
   gint state_busy;
   GHashTable *recorded;
+  /* Whether a recording was running at the last update to the pages. */
+  gboolean was_running;
 
   gint update_scheduled;
   /* Set by pm_server_hold_findings, taken by the next flush; and by
@@ -244,12 +246,15 @@ hello_body (void)
 {
   guint major, minor, micro, nano;
   GString *json = g_string_new ("{\"version\":");
+  gchar *program;
 
   gst_version (&major, &minor, &micro, &nano);
   pm_json_append_string (json, VERSION);
   g_string_append_printf (json, ",\"gstreamer\":\"%u.%u.%u\",\"program\":",
       major, minor, micro);
-  pm_json_append_string (json, g_get_prgname ());
+  program = g_get_prgname () ? g_path_get_basename (g_get_prgname ()) : NULL;
+  pm_json_append_string (json, program);
+  g_free (program);
   g_string_append_printf (json, ",\"pid\":%d}", (gint) getpid ());
   return g_string_free (json, FALSE);
 }
@@ -296,6 +301,43 @@ handle_levels (SoupServer * soup, SoupServerMessage * msg,
 
 /* How long a request waits for an element's property getters. */
 #define PROPERTIES_TIMEOUT_US (300 * G_TIME_SPAN_MILLISECOND)
+
+/* GET /api/recordings: the list; GET /api/recordings/<name>: the file. */
+static void
+handle_recordings (SoupServer * soup, SoupServerMessage * msg,
+    const char *path, GHashTable * query, gpointer user_data)
+{
+  PmServer *self = user_data;
+  const gchar *prefix = "/api/recordings/";
+  gchar *file, *disposition;
+  GMappedFile *mapped;
+  GBytes *bytes;
+
+  if (!check_request (self, msg))
+    return;
+  if (g_strcmp0 (path, "/api/recordings") == 0) {
+    set_message_response (msg, "recordings",
+        pm_recorder_list_json (self->recorder));
+    return;
+  }
+  file = g_str_has_prefix (path, prefix) ?
+      pm_recorder_path (self->recorder, path + strlen (prefix)) : NULL;
+  mapped = file ? g_mapped_file_new (file, FALSE, NULL) : NULL;
+  g_free (file);
+  if (mapped == NULL) {
+    soup_server_message_set_status (msg, SOUP_STATUS_NOT_FOUND, NULL);
+    return;
+  }
+  bytes = g_mapped_file_get_bytes (mapped);
+  set_response (msg, "application/jsonl", bytes);
+  disposition = g_strdup_printf ("attachment; filename=\"%s\"",
+      path + strlen (prefix));
+  soup_message_headers_replace (soup_server_message_get_response_headers
+      (msg), "Content-Disposition", disposition);
+  g_free (disposition);
+  g_bytes_unref (bytes);
+  g_mapped_file_unref (mapped);
+}
 
 /* GET /api/properties?element=<id>: all readable properties of an element. */
 static void
@@ -522,9 +564,14 @@ pad_exists (PmServer * self, gint64 id)
   return TRUE;
 }
 
-/* Runs one command; returns why it failed, or NULL. Stopping something
- * whose element or pad is gone succeeds: it is only forgotten. */
-static const gchar *
+static gboolean start_recording (PmServer * self, const gchar * kind,
+    const gchar * view, GError ** error);
+static void send_recordings (PmServer * self, SoupWebsocketConnection * conn);
+static void send_to_all (PmServer * self, const gchar * text);
+
+/* Runs one command; returns why it failed (to free), or NULL. Stopping
+ * something whose element or pad is gone succeeds: it is only forgotten. */
+static gchar *
 run_command (PmServer * self, SoupWebsocketConnection * conn,
     const gchar * command, JsonObject * object)
 {
@@ -543,9 +590,9 @@ run_command (PmServer * self, SoupWebsocketConnection * conn,
     const gchar *reason;
 
     if (element == 0)
-      return NOT_AN_ID ("element");
+      return g_strdup (NOT_AN_ID ("element"));
     if (on && (reason = check_element (self, element, NULL)))
-      return reason;
+      return g_strdup (reason);
     pm_latency_measure_element (self->latency, conn, element, on);
     return NULL;
   }
@@ -556,9 +603,10 @@ run_command (PmServer * self, SoupWebsocketConnection * conn,
     gint64 to = id_member (object, "to");
 
     if (from == 0 || to == 0)
-      return "\"from\" and \"to\" must be positive whole numbers.";
+      return g_strdup ("\"from\" and \"to\" must be positive whole "
+          "numbers.");
     if (on && (!pad_exists (self, from) || !pad_exists (self, to)))
-      return "No pad with this id.";
+      return g_strdup ("No pad with this id.");
     pm_latency_measure_path (self->latency, conn, from, to, on);
     return NULL;
   }
@@ -570,11 +618,12 @@ run_command (PmServer * self, SoupWebsocketConnection * conn,
     const gchar *reason;
 
     if (element == 0)
-      return NOT_AN_ID ("element");
+      return g_strdup (NOT_AN_ID ("element"));
     if (!valid_property_name (property))
-      return "\"property\" must be a name of letters, digits, - and _.";
+      return g_strdup ("\"property\" must be a name of letters, digits, - "
+          "and _.");
     if (on && (reason = check_element (self, element, property)))
-      return reason;
+      return g_strdup (reason);
     watch_property (self, conn, element, property, on);
     return NULL;
   }
@@ -585,7 +634,7 @@ run_command (PmServer * self, SoupWebsocketConnection * conn,
     gint64 pad = id_member (object, "pad");
 
     if (pad == 0)
-      return NOT_AN_ID ("pad");
+      return g_strdup (NOT_AN_ID ("pad"));
     if (!on) {
       pm_monitor_remove (self->monitor, conn, pad);
     } else if (!pm_monitor_add (self->monitor, conn, pad)) {
@@ -598,7 +647,46 @@ run_command (PmServer * self, SoupWebsocketConnection * conn,
     return NULL;
   }
 
-  return "Unknown command.";
+  /* {"type":"record-start","view":{...}}, {"type":"snapshot",...} */
+  if (g_strcmp0 (command, "record-start") == 0 ||
+      g_strcmp0 (command, "snapshot") == 0) {
+    JsonNode *view = json_object_get_member (object, "view");
+    gchar *text = NULL, *reason = NULL;
+    GError *error = NULL;
+
+    if (view != NULL && !JSON_NODE_HOLDS_OBJECT (view) &&
+        !JSON_NODE_HOLDS_NULL (view))
+      return g_strdup ("\"view\" must be an object.");
+    if (view != NULL && JSON_NODE_HOLDS_OBJECT (view))
+      text = json_to_string (view, FALSE);
+    if (!start_recording (self, command[0] == 'r' ? "recording" : "snapshot",
+            text, &error)) {
+      reason = g_strdup (error->message);
+      g_error_free (error);
+    }
+    g_free (text);
+    send_recordings (self, NULL);
+    return reason;
+  }
+
+  if (g_strcmp0 (command, "record-stop") == 0) {
+    if (!self->tapping || !pm_recorder_running (self->recorder))
+      return g_strdup ("No recording is running.");
+    self->tapping = FALSE;
+    pm_recorder_stop (self->recorder, "stopped");
+    send_recordings (self, NULL);
+    return NULL;
+  }
+
+  /* {"type":"record-delete","name":"pipeline-monitor-...jsonl"} */
+  if (g_strcmp0 (command, "record-delete") == 0) {
+    if (!pm_recorder_delete (self->recorder, string_member (object, "name")))
+      return g_strdup ("No recording with this name, or it is running.");
+    send_recordings (self, NULL);
+    return NULL;
+  }
+
+  return g_strdup ("Unknown command.");
 }
 
 /* Commands from the page, {"type":"watch-pad","pad":12} and so on; one that
@@ -609,7 +697,8 @@ on_ws_message (SoupWebsocketConnection * conn, gint type, GBytes * message,
 {
   JsonParser *parser;
   JsonNode *root;
-  const gchar *command, *reason;
+  const gchar *command;
+  gchar *reason;
   gsize size;
   const gchar *data = g_bytes_get_data (message, &size);
 
@@ -618,7 +707,7 @@ on_ws_message (SoupWebsocketConnection * conn, gint type, GBytes * message,
     return;
   }
   if (size > MAX_COMMAND_SIZE) {
-    send_error (conn, NULL, "Commands are at most 4096 bytes.");
+    send_error (conn, NULL, "Commands are at most 64 KiB.");
     return;
   }
 
@@ -634,6 +723,7 @@ on_ws_message (SoupWebsocketConnection * conn, gint type, GBytes * message,
   } else if ((reason = run_command (self, conn, command,
               json_node_get_object (root))) != NULL) {
     send_error (conn, command, reason);
+    g_free (reason);
   }
   g_object_unref (parser);
 }
@@ -863,17 +953,21 @@ start_recording (PmServer * self, const gchar * kind, const gchar * view,
     GError ** error)
 {
   gchar *hello = hello_body ();
-  gchar *parts[4], *text;
+  gchar *parts[4], *text, *program;
   const gchar *types[] = { "graph", "log", "findings", "levels" };
   guint i;
 
   if (self->state_thread != NULL)
     g_clear_pointer (&self->state_thread, g_thread_join);
-  if (!pm_recorder_start (self->recorder, kind, g_get_prgname (), hello, view,
+  /* The program's name without a folder: it may hold the user's name. */
+  program = g_path_get_basename (g_get_prgname () ? g_get_prgname () : "");
+  if (!pm_recorder_start (self->recorder, kind, program, hello, view,
           error)) {
+    g_free (program);
     g_free (hello);
     return FALSE;
   }
+  g_free (program);
   g_free (hello);
   parts[0] = pm_model_to_json (self->model);
   parts[1] = pm_model_log_to_json (self->model, 0, NULL);
@@ -891,6 +985,21 @@ start_recording (PmServer * self, const gchar * kind, const gchar * view,
   g_hash_table_remove_all (self->recorded);
   read_new_elements (self, !self->tapping);
   return TRUE;
+}
+
+/* The recordings in the folder, to one page or (conn NULL) to all. */
+static void
+send_recordings (PmServer * self, SoupWebsocketConnection * conn)
+{
+  gchar *list = pm_recorder_list_json (self->recorder);
+  gchar *text = pm_json_message ("recordings", list);
+
+  if (conn != NULL)
+    send_text (conn, text);
+  else
+    send_to_all (self, text);
+  g_free (text);
+  g_free (list);
 }
 
 /* The properties any page watches, for a recording. */
@@ -990,8 +1099,6 @@ send_properties (PmServer * self, gboolean to_recording)
   g_hash_table_unref (by_element);
 }
 
-static void send_to_all (PmServer * self, const gchar * text);
-
 /* After an error the findings are kept as they were for a while: the
  * program usually stops its pipeline right after, and the pads and states
  * the findings are about go away. */
@@ -1029,6 +1136,9 @@ send_all_stats (gpointer user_data)
   gchar *levels, *latency;
   guint i;
 
+  /* A finished state thread is joined at once. */
+  if (self->state_thread != NULL && !g_atomic_int_get (&self->state_busy))
+    g_clear_pointer (&self->state_thread, g_thread_join);
   pm_monitor_tick (self->monitor);
   g_free (self->last_levels);
   self->last_levels = pm_levels_to_json (self->model);
@@ -1059,9 +1169,16 @@ send_all_stats (gpointer user_data)
   g_free (levels);
   send_properties (self, to_recording);
 
-  /* Findings once per second, sent when they change. */
-  if (self->ticks++ % 4 == 0)
+  /* Findings once per second, sent when they change; the recordings list
+   * once per second while one is running, and once when it ends. */
+  if (self->ticks++ % 4 == 0) {
+    gboolean running = pm_recorder_running (self->recorder);
+
     send_findings (self);
+    if (running || self->was_running)
+      send_recordings (self, NULL);
+    self->was_running = running;
+  }
 
   /* Measured once, sent to each page only what it measures. */
   pm_latency_tick (self->latency);
@@ -1116,6 +1233,7 @@ handle_ws (SoupServer * soup, SoupServerMessage * msg, const char *path,
   text = pm_json_message ("log", log);
   send_text (conn, text);
   g_free (text);
+  send_recordings (self, conn);
   /* Findings are otherwise only sent when they change. */
   if (self->last_findings != NULL) {
     text = pm_json_message ("findings", self->last_findings);
@@ -1357,6 +1475,8 @@ server_thread (gpointer user_data)
   soup_server_add_handler (self->soup, "/api/findings", handle_findings, self,
       NULL);
   soup_server_add_handler (self->soup, "/api/properties", handle_properties,
+      self, NULL);
+  soup_server_add_handler (self->soup, "/api/recordings", handle_recordings,
       self, NULL);
   soup_server_add_handler (self->soup, "/api/pads", handle_watched_pads, self,
       NULL);
