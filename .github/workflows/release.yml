@@ -307,6 +307,10 @@ jobs:
             pipeline-monitor.exe              (the recordings folder)
             pipeline-monitor.exe open FILE    (that recording)
 
+          These files are not signed. Windows may warn before running
+          pipeline-monitor.exe; if the files are blocked, run Unblock-File
+          on them in PowerShell, or use Properties > Unblock.
+
           https://github.com/imgbit/pipeline-monitor
           "@ | Set-Content "dist\$name\README.txt"
           Compress-Archive -Path "dist\$name" -DestinationPath "dist\$name.zip"

@@ -74,6 +74,11 @@ or on Windows with the official GStreamer MSVC package (x86_64), both 1.28
 or newer: download the zip, unpack it and set `GST_PLUGIN_PATH` to its
 folder. To update, replace it with a newer zip.
 
+The zips are not signed. On macOS, remove the quarantine mark after
+unpacking: `xattr -d com.apple.quarantine libgstpipelinemonitor.dylib
+pipeline-monitor`. On Windows, if the files are blocked, run `Unblock-File`
+on them or use Properties → Unblock.
+
 For anything else (other distributions, an older GStreamer, a GStreamer
 built yourself, e.g. with Cerbero), build from source.
 
