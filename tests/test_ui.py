@@ -335,12 +335,14 @@ class Browser:
 RECORDINGS = tempfile.mkdtemp(prefix="pm-ui-rec-")
 
 
-# wait: the program starts only once a page is connected.
-def start_server(serve, pipeline, *args, debug=None, port=0, wait=False):
+# wait: the program starts only once a page is connected; extra: more
+# tracer options.
+def start_server(serve, pipeline, *args, debug=None, port=0, wait=False,
+                 extra=""):
     # In GST_TRACERS a backslash escapes: Windows paths use "/".
     folder = RECORDINGS.replace("\\", "/")
     options = f'port={port},recordings="{folder}"' + \
-        (",wait=true" if wait else "")
+        (",wait=true" if wait else "") + (f",{extra}" if extra else "")
     env = dict(os.environ, GST_TRACERS=f"pipeline-monitor({options})")
     if debug:
         env["GST_DEBUG"] = debug
@@ -1079,7 +1081,7 @@ def check_recordings(browser, serve):
         assert text.startswith('{"format":"pipeline-monitor-recording"'), \
             "download is not a recording"
         assert '"view":{"pins":' in text.split("\n")[0], "no view saved"
-        check_viewer(browser, rows)
+        check_viewer(browser, rows, url)
         # Delete asks for a second click.
         for _ in range(2):
             browser.eval(f"{rows}[0].querySelector('.rec-delete').click()")
@@ -1094,14 +1096,24 @@ def check_recordings(browser, serve):
 
 
 # Open a recording read-only, from the list and from a file, and close it.
-def check_viewer(browser, rows):
+def check_viewer(browser, rows, url):
     banner = "document.getElementById('viewing')"
     status = "document.getElementById('connection')"
+    name = browser.eval(f"{rows}[1].dataset.name")
+    # In the live page, Open opens a viewer tab; this one keeps monitoring.
+    browser.eval("window.open = (u) => { window.opened = u; return null; }")
     browser.eval(f"{rows}[1].querySelector('.rec-open').click()")
+    assert browser.wait("window.opened?.endsWith('#viewer=' + "
+                        f"encodeURIComponent({json.dumps(name)}))"), \
+        "Open did not ask for a viewer tab"
+
+    # That tab: a viewer, not connected to the program.
+    browser.call("Page.navigate", url="about:blank")
+    browser.call("Page.navigate", url=f"{url}#viewer={name}")
     assert browser.wait(f"!{banner}.hidden && "
                         f"{banner}.textContent.includes('Recording of serve')"), \
         "recording not opened"
-    assert browser.wait(f"{status}.textContent === 'recording'")
+    assert browser.wait(f"{status}.textContent === 'viewer'")
     # Playback: shows the end; Play moves on; the slider goes anywhere.
     time_label = "document.getElementById('play-time').textContent"
     assert browser.wait(f"!document.getElementById('playback').hidden && "
@@ -1129,13 +1141,14 @@ def check_viewer(browser, rows):
                         "?.offsetParent"), "Measure shown in a recording"
     assert browser.eval("!document.querySelector('#details .pin-prop')"
                         "?.offsetParent"), "pinning shown in a recording"
+    assert browser.eval("!document.getElementById('record').offsetParent"), \
+        "Record shown in a viewer"
     browser.click("#viewing-close")
-    assert browser.wait(f"{banner}.hidden && "
-                        f"{status}.textContent === 'connected'", timeout=10), \
-        "did not go back to the program"
+    assert browser.wait(f"{banner}.hidden && location.hash === '#viewer' && "
+                        "!document.getElementById('recordings-panel').hidden"), \
+        "Close did not go back to the empty viewer"
 
     # The same file, chosen from the disk.
-    name = browser.eval(f"{rows}[1].dataset.name")
     browser.set_file("#file-input", os.path.join(RECORDINGS, name))
     assert browser.wait(f"!{banner}.hidden"), "file not opened"
     browser.click("#viewing-close")
@@ -1148,8 +1161,63 @@ def check_viewer(browser, rows):
                         ".textContent.includes('not a recording')"), \
         "a file that is not a recording was not refused"
     os.remove(not_one)
-    browser.eval(f"document.getElementById('{'recordings-error'}').hidden "
-                 "= true")
+
+    # Back to the live page for the rest.
+    browser.call("Page.navigate", url="about:blank")
+    browser.call("Page.navigate", url=url)
+    assert browser.wait(f"{status}.textContent === 'connected'")
+    browser.click("#recordings-counter")
+    assert browser.wait(f"{rows}.length === 2")
+
+
+# The pipeline-monitor command: recordings without a program.
+def check_command(browser, serve, tool):
+    server, _ = start_server(serve, RESTART_PIPELINE, extra="record=on")
+    time.sleep(3)
+    server.terminate()
+    server.wait()
+
+    def run(*args):
+        proc = subprocess.Popen([tool, "--no-browser", "--port", "0",
+                                 "--recordings", RECORDINGS, *args],
+                                stdout=subprocess.PIPE, text=True)
+        line = proc.stdout.readline()
+        m = re.match(r"pipeline-monitor: (http://\S+)", line)
+        assert m, f"no address from the command: {line!r}"
+        return proc, m.group(1)
+
+    status = "document.getElementById('connection')"
+    banner = "document.getElementById('viewing')"
+    rows = "document.querySelectorAll('#recordings-rows .rec-row')"
+    tool_proc, url = run()
+    try:
+        # Without "#viewer" the page finds out and shows the viewer.
+        browser.call("Page.navigate", url="about:blank")
+        browser.call("Page.navigate", url=url.split("#")[0])
+        assert browser.wait(f"{status}.textContent === 'viewer' && "
+                            "location.hash === '#viewer'", timeout=10), \
+            "the command's page is not a viewer"
+        assert browser.wait(f"{rows}.length >= 1"), "no recordings listed"
+        path = os.path.join(RECORDINGS, browser.eval(f"{rows}[0].dataset.name"))
+        browser.eval(f"{rows}[0].querySelector('.rec-open').click()")
+        assert browser.wait(f"!{banner}.hidden && !!{element_selector('q-r')}"), \
+            "recording not opened in the command's viewer"
+    finally:
+        tool_proc.terminate()
+        tool_proc.wait()
+
+    tool_proc, url = run("open", path)
+    try:
+        assert url.endswith("#viewer=opened")
+        browser.call("Page.navigate", url="about:blank")
+        browser.call("Page.navigate", url=url)
+        assert browser.wait(f"!{banner}.hidden && !!{element_selector('q-r')}",
+                            timeout=10), "open FILE did not show it"
+    finally:
+        tool_proc.terminate()
+        tool_proc.wait()
+    os.remove(path)
+    assert not browser.errors, f"errors in the page: {browser.errors}"
 
 
 # Measurements are kept by element path: they come back with a new run,
@@ -1377,6 +1445,9 @@ def main():
     serve = sys.argv[1]
     shot = sys.argv[3] if len(sys.argv) > 3 and sys.argv[2] == "--screenshot" \
         else None
+    # The pipeline-monitor command, if given: "--tool PATH".
+    tool = sys.argv[sys.argv.index("--tool") + 1] \
+        if "--tool" in sys.argv else None
     chrome = find_chrome()
     if chrome is None:
         print("Chrome not found, skipping")
@@ -1402,6 +1473,8 @@ def main():
             check_ended(browser, serve)
             check_measure_restart(browser, serve)
             check_recordings(browser, serve)
+            if tool:
+                check_command(browser, serve, tool)
             check_two_pipelines(browser, serve)
             check_format_finding(browser, serve)
     finally:

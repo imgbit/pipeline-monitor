@@ -32,3 +32,15 @@ gstpipelinemonitor = shared_module('gstpipelinemonitor',
   install_dir : plugins_install_dir)
 
 plugin_build_dir = meson.current_build_dir()
+
+# The pipeline-monitor command: shows recordings without a program.
+pipeline_monitor_tool = executable('pipeline-monitor',
+  'tool/pipeline-monitor.c',
+  'core/pmjson.c', 'core/pmmodel.c', 'core/pmmonitor.c', 'core/pmlevels.c',
+  'core/pmprops.c', 'core/pmlatency.c', 'core/pmfindings.c',
+  'server/pmrecorder.c', 'server/pmserver.c',
+  ui_resources,
+  c_args : plugin_c_args,
+  include_directories : include_directories('core', 'server'),
+  dependencies : [gst_dep, soup_dep, json_glib_dep],
+  install : true)

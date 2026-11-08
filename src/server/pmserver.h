@@ -33,6 +33,7 @@ typedef struct
 
 void pm_server_set_recordings (PmServer * server,
     const PmRecordOptions * options);
+void pm_server_set_viewer (PmServer * server, const gchar * opened);
 
 G_END_DECLS
 

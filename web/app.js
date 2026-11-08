@@ -241,9 +241,9 @@ const recordings = new RecordingsView({
   note: $("recordings-note"),
   openFile: $("open-file"),
   fileInput: $("file-input"),
-}, { send, view: pageView, open: (name) => openStored(name),
-  openFile: (file) => file.text().then((text) =>
-    openRecording(text, file.name)) });
+}, { send, view: pageView,
+  open: (name) => viewerMode ? openStored(name) : openInViewer(name),
+  openFile });
 
 const findings = new FindingsView({
   counter: $("problems-counter"),
@@ -756,9 +756,6 @@ function openRecording(text, name) {
       // A last line cut off by a crash.
     }
   }
-  if (!state.viewing)
-    state.live = { collapsed: state.collapsed,
-      selectedPath: state.selectedPath };
   const byType = { graph: [], log: [], findings: [], levels: [], latency: [],
     properties: [] };
   for (const message of messages)
@@ -784,8 +781,6 @@ function openRecording(text, name) {
   seek(end);
   $("ended").hidden = true;
   $("lost").hidden = true;
-  $("connection").textContent = "recording";
-  $("connection").className = "connection viewing";
   recordings.showError(null);
 }
 
@@ -887,36 +882,51 @@ $("speed").addEventListener("click", () => {
   $("speed").textContent = `${v.speed}×`;
 });
 
+// Back to the viewer with nothing open.
 function closeRecording() {
   if (!state.viewing)
     return;
   stopPlaying();
   state.viewing = null;
-  document.body.classList.remove("viewing");
   $("viewing").hidden = true;
   clearState();
-  state.collapsed = state.live.collapsed;
-  state.selectedPath = state.live.selectedPath;
-  state.reselect = state.selectedPath !== null;
   state.places = { tops: new Map() };
+  history.replaceState(null, "", "#viewer");
   update();
-  // The program's state, fresh: a new connection sends all of it.
-  reconnectNow = true;
-  if (socket?.readyState === WebSocket.OPEN)
-    socket.close();
-  else
-    reconnectNow = false;
+  dock.open("recordings");
 }
 
+// A recording in the program's folder (or "opened": the file the command
+// was given).
 async function openStored(name) {
+  const url = name === "opened" ? "api/opened"
+    : `api/recordings/${encodeURIComponent(name)}`;
   try {
-    const r = await fetch(`api/recordings/${encodeURIComponent(name)}`);
+    const r = await fetch(url);
     if (!r.ok)
       throw new Error(r.statusText);
     openRecording(await r.text(), name);
+    history.replaceState(null, "", `#viewer=${encodeURIComponent(name)}`);
   } catch {
     recordings.showError(`Cannot read ${name}.`);
   }
+}
+
+// Recordings open in a viewer tab: the live tab keeps monitoring. A file
+// is handed to the new tab once it has loaded.
+function openInViewer(name, file) {
+  const tab = window.open(`${location.pathname}#viewer` +
+    (name ? `=${encodeURIComponent(name)}` : ""), "_blank");
+  if (tab && file)
+    tab.addEventListener("load", () =>
+      tab.postMessage({ recording: file }, location.origin));
+}
+
+function openFile(file) {
+  if (viewerMode)
+    file.text().then((text) => openRecording(text, file.name));
+  else
+    openInViewer(null, file);
 }
 
 $("viewing-close").addEventListener("click", closeRecording);
@@ -927,13 +937,22 @@ window.addEventListener("drop", (e) => {
   if (!file)
     return;
   e.preventDefault();
-  file.text().then((text) => openRecording(text, file.name));
+  openFile(file);
 });
-
-let reconnectNow = false;
+window.addEventListener("message", (e) => {
+  if (viewerMode && e.origin === location.origin &&
+      e.data?.recording instanceof File)
+    openFile(e.data.recording);
+});
 
 // A message from the program, or from a recording being shown.
 function handleMessage(message) {
+  // The pipeline-monitor command serves recordings only: show the viewer.
+  if (message.type === "hello" && message.viewer) {
+    location.replace(`${location.pathname}#viewer`);
+    location.reload();
+    return;
+  }
   if (message.type === "graph") {
     state.graph = { pipelines: message.pipelines, links: message.links };
     if (state.graph.pipelines.length)
@@ -1010,25 +1029,12 @@ function connect(delay = 1000) {
   };
   ws.onmessage = (event) => {
     const message = JSON.parse(event.data);
-    // While a recording is shown, only the recordings list stays live.
-    if (!state.viewing || message.type === "recordings" ||
-        message.type === "error")
-      handleMessage(message);
+    handleMessage(message);
   };
   ws.onclose = () => {
     // Its last state stays on screen; what the page measures and pins is
     // applied again when a program connects.
     state.connected = false;
-    if (reconnectNow) {
-      reconnectNow = false;
-      connect();
-      return;
-    }
-    if (state.viewing) {
-      recordings.setConnected(false);
-      setTimeout(() => connect(delay), delay);
-      return;
-    }
     measure.disconnected();
     recordings.setConnected(false);
     showMeasureAll();
@@ -1108,5 +1114,31 @@ window.addEventListener("resize", () => {
   elementPins.place();
 });
 
-connect();
+// Each tab is live (connected to the program) or a viewer of recordings,
+// chosen when it opens: "#viewer" or "#viewer=<name>".
+const viewerMode = location.hash.startsWith("#viewer");
+
+async function startViewer() {
+  document.body.classList.add("viewing", "viewer-mode");
+  $("connection").textContent = "viewer";
+  $("connection").className = "connection viewing";
+  $("empty").textContent = "Open a recording: from the list, with Open " +
+    "file…, or drop a file on the page.";
+  dock.open("recordings");
+  try {
+    const r = await fetch("api/recordings");
+    recordings.apply(await r.json());
+    recordings.setConnected(true);
+  } catch {
+    // Without a server only Open file… works.
+  }
+  const name = location.hash.match(/^#viewer=(.+)$/)?.[1];
+  if (name)
+    openStored(decodeURIComponent(name));
+}
+
+if (viewerMode)
+  startViewer();
+else
+  connect();
 refreshProperties();

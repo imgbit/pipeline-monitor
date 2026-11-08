@@ -77,6 +77,10 @@ struct _PmServer
   GHashTable *recorded;
   /* Whether a recording was running at the last update to the pages. */
   gboolean was_running;
+  /* Serving recordings only (the pipeline-monitor command), and the file it
+   * was given, if any. */
+  gboolean viewer;
+  gchar *opened;
 
   gint update_scheduled;
   /* Set by pm_server_hold_findings, taken by the next flush; and by
@@ -240,9 +244,10 @@ set_message_response (SoupServerMessage * msg, const gchar * type,
   g_free (body);
 }
 
-/* {"version","gstreamer","program","pid"}: what the page talks to. */
+/* {"version","gstreamer","program","pid"[,"viewer"]}: what the page talks
+ * to. */
 static gchar *
-hello_body (void)
+hello_body (PmServer * self)
 {
   guint major, minor, micro, nano;
   GString *json = g_string_new ("{\"version\":");
@@ -255,7 +260,8 @@ hello_body (void)
   program = g_get_prgname () ? g_path_get_basename (g_get_prgname ()) : NULL;
   pm_json_append_string (json, program);
   g_free (program);
-  g_string_append_printf (json, ",\"pid\":%d}", (gint) getpid ());
+  g_string_append_printf (json, ",\"pid\":%d%s}", (gint) getpid (),
+      self->viewer ? ",\"viewer\":true" : "");
   return g_string_free (json, FALSE);
 }
 
@@ -264,7 +270,7 @@ handle_hello (SoupServer * soup, SoupServerMessage * msg, const char *path,
     GHashTable * query, gpointer user_data)
 {
   if (check_request (user_data, msg))
-    set_message_response (msg, "hello", hello_body ());
+    set_message_response (msg, "hello", hello_body (user_data));
 }
 
 static void
@@ -301,6 +307,29 @@ handle_levels (SoupServer * soup, SoupServerMessage * msg,
 
 /* How long a request waits for an element's property getters. */
 #define PROPERTIES_TIMEOUT_US (300 * G_TIME_SPAN_MILLISECOND)
+
+/* GET /api/opened: the file the pipeline-monitor command was given. */
+static void
+handle_opened (SoupServer * soup, SoupServerMessage * msg, const char *path,
+    GHashTable * query, gpointer user_data)
+{
+  PmServer *self = user_data;
+  GMappedFile *mapped;
+  GBytes *bytes;
+
+  if (!check_request (self, msg))
+    return;
+  mapped = self->opened ? g_mapped_file_new (self->opened, FALSE, NULL) :
+      NULL;
+  if (mapped == NULL) {
+    soup_server_message_set_status (msg, SOUP_STATUS_NOT_FOUND, NULL);
+    return;
+  }
+  bytes = g_mapped_file_get_bytes (mapped);
+  set_response (msg, "application/jsonl", bytes);
+  g_bytes_unref (bytes);
+  g_mapped_file_unref (mapped);
+}
 
 /* GET /api/recordings: the list; GET /api/recordings/<name>: the file. */
 static void
@@ -952,7 +981,7 @@ static gboolean
 start_recording (PmServer * self, const gchar * kind, const gchar * view,
     GError ** error)
 {
-  gchar *hello = hello_body ();
+  gchar *hello = hello_body (self);
   gchar *parts[4], *text, *program;
   const gchar *types[] = { "graph", "log", "findings", "levels" };
   guint i;
@@ -1213,7 +1242,7 @@ handle_ws (SoupServer * soup, SoupServerMessage * msg, const char *path,
   PmServer *self = user_data;
   gchar *graph = pm_model_to_json (self->model);
   gchar *log = pm_model_log_to_json (self->model, 0, NULL);
-  gchar *hello = hello_body ();
+  gchar *hello = hello_body (self);
   gchar *text;
 
   g_ptr_array_add (self->clients, g_object_ref (conn));
@@ -1480,6 +1509,8 @@ server_thread (gpointer user_data)
       self, NULL);
   soup_server_add_handler (self->soup, "/api/recordings", handle_recordings,
       self, NULL);
+  soup_server_add_handler (self->soup, "/api/opened", handle_opened, self,
+      NULL);
   soup_server_add_handler (self->soup, "/api/pads", handle_watched_pads, self,
       NULL);
   soup_server_add_handler (self->soup, "/ws", handle_ws_request, self, NULL);
@@ -1596,6 +1627,7 @@ pm_server_free (PmServer * self)
   g_mutex_clear (&self->lock);
   g_cond_clear (&self->cond);
   g_free (self->last_graph);
+  g_free (self->opened);
   g_free (self->ui_dir);
   g_free (self->last_levels);
   g_free (self->last_findings);
@@ -1626,6 +1658,36 @@ apply_recordings (gpointer user_data)
   }
   g_free (setup);
   return G_SOURCE_REMOVE;
+}
+
+typedef struct
+{
+  PmServer *server;
+  gchar *opened;
+} PmViewerSetup;
+
+static gboolean
+apply_viewer (gpointer user_data)
+{
+  PmViewerSetup *setup = user_data;
+
+  setup->server->viewer = TRUE;
+  g_free (setup->server->opened);
+  setup->server->opened = setup->opened;
+  g_free (setup);
+  return G_SOURCE_REMOVE;
+}
+
+/* Serves recordings only (no program): pages show the viewer; opened is a
+ * file to serve at /api/opened, or NULL. */
+void
+pm_server_set_viewer (PmServer * self, const gchar * opened)
+{
+  PmViewerSetup *setup = g_new0 (PmViewerSetup, 1);
+
+  setup->server = self;
+  setup->opened = g_strdup (opened);
+  g_main_context_invoke (self->context, apply_viewer, setup);
 }
 
 /* Sets the recordings folder and limits; with record, starts recording. */

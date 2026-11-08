@@ -71,8 +71,8 @@ test('options', test_options,
 python = find_program('python3', required : false)
 if python.found()
   test('ui', python,
-    args : [files('test_ui.py'), serve],
+    args : [files('test_ui.py'), serve, '--tool', pipeline_monitor_tool],
     env : test_env,
-    depends : [gstpipelinemonitor, serve],
+    depends : [gstpipelinemonitor, serve, pipeline_monitor_tool],
     timeout : 120)
 endif
