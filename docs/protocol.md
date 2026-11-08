@@ -107,6 +107,7 @@ belongs to that connection only. A new connection starts with nothing.
 | `pads` | every 250 ms, for watched pads | that connection | – |
 | `properties` | every 250 ms, for watched properties | that connection | `GET /api/properties?element=ID` |
 | `latency` | every 250 ms, while measuring | that connection | – |
+| `recordings` | on connecting, when the list changes, every second while recording | all | `GET /api/recordings` |
 | `error` | a command failed | that connection | – |
 | `bye` | the program is ending | all | – |
 | `watched-pads` | – | – | `GET /api/pads` |
@@ -119,6 +120,8 @@ belongs to that connection only. A new connection starts with nothing.
 ```
 
 `version` is pipeline-monitor's, `program` the program's name (or `null`).
+When the `pipeline-monitor` command serves recordings without a program,
+hello also has `"viewer":true`, and the graph is empty.
 
 ### graph
 
@@ -305,6 +308,27 @@ element: `404`.
 The answer to a command that failed. `command` is the command's `type`, or
 `null` when the message could not be read as a command.
 
+### recordings
+
+The recordings in the folder (see [Recording files](#recording-files)),
+the latest started first.
+
+```json
+{"type":"recordings","protocol":1,"time":…,
+ "folder":"/home/me/.local/share/pipeline-monitor/recordings",
+ "file_max":104857600,"total_max":1073741824,"failure":null,
+ "recordings":[{"name":"pipeline-monitor-serve-20261108-143322.jsonl",
+   "kind":"recording","started":…,"last":…,"size":160768,
+   "running":true}]}
+```
+
+`kind`: `recording` or `snapshot` (`null` for a file whose header cannot
+be read); `started` when it began, `last` the last write (µs since 1970);
+`size` in bytes; `running` while it is being written. `failure`: why the
+last recording ended early (it could not be written, e.g. the disk is
+full), until the next one starts; otherwise `null`.
+`GET /api/recordings/<name>` downloads a file.
+
 ### bye
 
 ```json
@@ -323,7 +347,7 @@ watch each, and the buffers counted.
 
 ## Commands
 
-Sent over the WebSocket as JSON text, at most 4096 bytes:
+Sent over the WebSocket as JSON text, at most 64 KiB:
 
 ```json
 {"type":"watch-pad","pad":12}
@@ -336,13 +360,18 @@ Sent over the WebSocket as JSON text, at most 4096 bytes:
 | `measure-element` / `unmeasure-element` | `element` | that element's latency in `latency` messages |
 | `measure-path` / `unmeasure-path` | `from`, `to` (pads) | the time from one pad to another in `latency` messages |
 | `measure-all` / `unmeasure-all` | – | every element in `latency` messages, while the load allows |
+| `record-start` | `view` (optional object) | starts a recording; `view` is saved in its header |
+| `record-stop` | – | ends the running recording |
+| `snapshot` | `view` (optional object) | saves the state of this moment |
+| `record-delete` | `name` | deletes a recording that is not running |
 
 - Ids are positive whole numbers. Property names are letters, digits, `-`
   and `_`.
 - A command that fails is answered with `error`: binary or too long
   messages, invalid JSON, not an object, a missing or unknown `type`, a
-  field of the wrong type, an element, pad or property that does not
-  exist.
+  field of the wrong type, an element, pad, property or recording that
+  does not exist; for recordings also: one is already running, none is
+  running, or the folder cannot be written (the reason names it).
 - Stopping something whose element or pad is gone always succeeds.
 - Watching a pad that does not exist is answered in `pads` with
   `"gone":true`, not with an error.
@@ -359,9 +388,52 @@ Sent over the WebSocket as JSON text, at most 4096 bytes:
 | `GET /api/levels` | `levels` |
 | `GET /api/properties?element=ID` | `properties` with that element and `reported` |
 | `GET /api/pads` | `watched-pads` |
+| `GET /api/recordings` | `recordings` |
+| `GET /api/recordings/<name>` | the recording file (JSON Lines), as an attachment; 404 if there is none |
+| `GET /api/opened` | the file given to `pipeline-monitor open`; 404 if there is none |
 | `/ws` | the WebSocket |
 
 JSON answers are sent with `Cache-Control: no-store`.
+
+## Recording files
+
+A recording (or a snapshot, a recording of one moment) is a JSON Lines
+file (`.jsonl`): one JSON object per line. Its format has its own version,
+1; like the protocol, it may gain fields and message types without a new
+version, and readers ignore what they do not know.
+
+1. The header:
+
+   ```json
+   {"format":"pipeline-monitor-recording","version":1,"protocol":1,
+    "kind":"recording","started":1794139542123456,
+    "hello":{"version":"0.10.0","gstreamer":"1.28.8","program":"serve","pid":4242},
+    "view":{"pins":[...],"measuring":[...],"selected":"pipeline0/queue0",...}}
+   ```
+
+   `kind` is `recording` or `snapshot`; `started` is µs since 1970;
+   `hello` is the program's [hello](#hello); `view` is what the page that
+   started it showed (pins, measurements, the selected element, collapsed
+   bins), or `null`.
+2. Then messages in the order they were made, as above, each with its
+   `type` and `time`: `graph`, `log`, `findings`, `levels`, `properties`,
+   `pads`, `latency`. At the start: the graph, the whole log, the
+   findings, the levels and every element's properties; then changes to
+   the graph, new log entries and findings as they come, and once a second
+   the levels, pipeline times and what pages watch or measure. An element
+   added later gets its properties once it is in its pipeline.
+3. The last line, `{"type":"end",…,"reason":…}`: `stopped`, `limit` (the
+   file reached its size), `snapshot` (a snapshot is complete),
+   `program-ended` or `error` (it could not be written; see `failure` in
+   [recordings](#recordings)). After a crash it is missing and the last
+   line may be cut off; readers skip lines they cannot read.
+
+Passwords in URIs (`rtsp://user:password@host` becomes
+`rtsp://(hidden)@host`) and the values of properties whose name has a part
+`password`, `passwd`, `passphrase`, `secret`, `token`, `credential(s)` or
+`auth`, or ends in `key`, are replaced by `(hidden)` before writing.
+
+Names: `pipeline-monitor-<program>-<YYYYMMDD-HHMMSS>[-snapshot][-N].jsonl`.
 
 ## Example
 

@@ -166,6 +166,29 @@ Scripts and other tools can read the same data over HTTP and a WebSocket,
 e.g. `curl -s http://127.0.0.1:8765/api/findings`; see
 [docs/protocol.md](docs/protocol.md).
 
+### Recordings
+
+- Open **Recordings** in the page: **Record** saves what the page shows
+  over time, **Snapshot** one moment. Nothing is recorded unless you ask.
+  `pipeline-monitor(record=on)` records from the start, also without a
+  page; the recording ends with the program.
+- The files are JSON Lines in `~/.local/share/pipeline-monitor/recordings`
+  (Windows: `%LOCALAPPDATA%\pipeline-monitor\recordings`), readable only
+  by you on Linux and macOS. `recordings=PATH` sets the folder (on Windows
+  write it with `/`); a recording ends at `record-file-max=SIZE` (default
+  `100M`), and above `record-total-max=SIZE` (default `1G`) the oldest are
+  deleted. Sizes take `K`, `M` or `G`. The format is in
+  [docs/protocol.md](docs/protocol.md#recording-files).
+- Passwords in addresses (`rtsp://user:password@host`) and properties named
+  like secrets (`password`, `token`, `…-key`, …) are hidden in the files.
+  Element names, caps, file paths and messages are kept: check a file
+  before you share it.
+- A recording opens read-only in a viewer tab, with play and a slider to
+  go to any moment. To open one without a program, for example one you
+  were sent, run `pipeline-monitor` (lists the folder) or
+  `pipeline-monitor open FILE.jsonl` (options: `--recordings DIR`,
+  `--port PORT`, `--no-browser`).
+
 ## Status
 
 Version 0.9 shows the pipeline graph, errors and warnings, negotiated caps,
