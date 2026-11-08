@@ -3,8 +3,8 @@
 #include <gst/gst.h>
 #include <string.h>
 
-/* Usage: serve [--warnings] [--set-caps NAME=CAPS]... [--second DESCRIPTION]
- *   [pipeline description]
+/* Usage: serve [--warnings] [--flow-log] [--set-caps NAME=CAPS]...
+ *   [--second DESCRIPTION] [pipeline description]
  * Runs a pipeline until it ends. If it has a tee named "t", a branch is
  * added and removed every two seconds to produce live updates; with
  * --warnings the tee also posts a warning each time. An appsrc named
@@ -14,7 +14,9 @@
  * 60 % full. --set-caps sets the caps of the capsfilter NAME after the
  * pipeline is built, to make negotiation fail when it starts (a pipeline
  * description with such caps would not even link). --second runs another
- * pipeline next to it. */
+ * pipeline next to it. --flow-log prints, every second, the buffers each
+ * sink rendered and the last result of each source's pushes, and when the
+ * branch comes and goes (for tests that find data not flowing). */
 
 #define DEFAULT_PIPELINE \
   "videotestsrc is-live=true ! jpegenc ! decodebin3 ! queue ! tee name=t ! " \
@@ -33,6 +35,55 @@ typedef struct
   GstPad *tee_pad;
   gboolean warnings;
 } Branch;
+
+static gint64 flow_log_start = -1;
+
+static gdouble
+flow_log_time (void)
+{
+  return (g_get_monotonic_time () - flow_log_start) / 1e6;
+}
+
+static gboolean
+log_flow (gpointer user_data)
+{
+  GstIterator *it = gst_bin_iterate_recurse (GST_BIN (user_data));
+  GString *line = g_string_new (NULL);
+  GValue item = G_VALUE_INIT;
+
+  g_string_printf (line, "flow %.1f s:", flow_log_time ());
+  while (gst_iterator_next (it, &item) == GST_ITERATOR_OK) {
+    GstElement *element = g_value_get_object (&item);
+    GstPad *src = gst_element_get_static_pad (element, "src");
+
+    if (GST_OBJECT_FLAG_IS_SET (element, GST_ELEMENT_FLAG_SINK) &&
+        g_object_class_find_property (G_OBJECT_GET_CLASS (element),
+            "stats") != NULL) {
+      GstStructure *stats = NULL;
+      guint64 rendered = 0;
+
+      g_object_get (element, "stats", &stats, NULL);
+      if (stats != NULL) {
+        gst_structure_get_uint64 (stats, "rendered", &rendered);
+        gst_structure_free (stats);
+      }
+      g_string_append_printf (line, " %s=%" G_GUINT64_FORMAT,
+          GST_ELEMENT_NAME (element), rendered);
+    } else if (GST_OBJECT_FLAG_IS_SET (element, GST_ELEMENT_FLAG_SOURCE) &&
+        src != NULL) {
+      g_string_append_printf (line, " %s:%s", GST_ELEMENT_NAME (element),
+          gst_flow_get_name (gst_pad_get_last_flow_return (src)));
+    }
+    if (src != NULL)
+      gst_object_unref (src);
+    g_value_reset (&item);
+  }
+  g_value_unset (&item);
+  gst_iterator_free (it);
+  g_printerr ("%s\n", line->str);
+  g_string_free (line, TRUE);
+  return G_SOURCE_CONTINUE;
+}
 
 static void
 add_branch (Branch * b)
@@ -74,6 +125,9 @@ toggle_branch (gpointer user_data)
     add_branch (b);
   else
     remove_branch (b);
+  if (flow_log_start >= 0)
+    g_printerr ("flow %.1f s: branch %s\n", flow_log_time (),
+        b->queue ? "added" : "removed");
   if (b->warnings)
     GST_ELEMENT_WARNING (b->tee, STREAM, FAILED, ("example warning: %s",
             b->queue ? "branch added" : "branch removed"), (NULL));
@@ -142,6 +196,8 @@ main (int argc, char **argv)
   while (argc > 1 && g_str_has_prefix (argv[1], "--")) {
     if (g_strcmp0 (argv[1], "--warnings") == 0) {
       branch.warnings = TRUE;
+    } else if (g_strcmp0 (argv[1], "--flow-log") == 0) {
+      flow_log_start = g_get_monotonic_time ();
     } else if (g_strcmp0 (argv[1], "--set-caps") == 0 && argc > 2) {
       set_caps = g_list_append (set_caps, argv[2]);
       argv++;
@@ -202,6 +258,8 @@ main (int argc, char **argv)
     g_timeout_add_seconds_full (G_PRIORITY_DEFAULT, 1, push_subtitle, subs,
         gst_object_unref);
 
+  if (flow_log_start >= 0)
+    g_timeout_add_seconds (1, log_flow, branch.pipeline);
   gst_element_set_state (branch.pipeline, GST_STATE_PLAYING);
   if (second != NULL)
     gst_element_set_state (second, GST_STATE_PLAYING);

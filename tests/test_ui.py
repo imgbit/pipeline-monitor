@@ -265,16 +265,20 @@ class Browser:
     def history(self):
         try:
             details = self.eval("JSON.stringify(window.detailsLog || [])")
+            sockets = self.eval("JSON.stringify(window.socketLog || [])")
             state = self.eval(
                 "JSON.stringify({hash: location.hash, connection: "
                 "document.getElementById('connection')?.textContent, "
                 "details: !document.getElementById('details')?.hidden})")
         except RuntimeError as e:
-            details, state = str(e), ""
+            details, state, sockets = "[]", f"cannot read: {e}", "[]"
         return ("last clicks:\n  " + "\n  ".join(self.clicks) +
                 f"\npage: {state}\ndetails shown (time, element):\n  " +
                 "\n  ".join(" ".join(map(str, d))
-                             for d in json.loads(details or "[]")))
+                             for d in json.loads(details or "[]")) +
+                "\nWebSocket (time, event):\n  " +
+                "\n  ".join(" ".join(map(str, d))
+                             for d in json.loads(sockets or "[]")))
 
     # The live graph can move between finding an element and clicking it.
     def click_until(self, selector, condition, tries=3):
@@ -402,6 +406,24 @@ class Browser:
 # it changes, with the time.
 DETAILS_LOG = """
 window.detailsLog = [];
+window.socketLog = [];
+(() => {
+  const Real = window.WebSocket;
+  const note = (what) => {
+    window.socketLog = window.socketLog.slice(-19)
+      .concat([[(Date.now() / 1000).toFixed(2), what]]);
+  };
+  window.WebSocket = function (url, protocols) {
+    const ws = new Real(url, protocols);
+    note("connect " + url);
+    ws.addEventListener("open", () => note("open"));
+    ws.addEventListener("close", (e) => note(`close ${e.code} ${e.reason}`));
+    return ws;
+  };
+  window.WebSocket.prototype = Real.prototype;
+  Object.assign(window.WebSocket, { CONNECTING: 0, OPEN: 1, CLOSING: 2,
+    CLOSED: 3 });
+})();
 document.addEventListener("DOMContentLoaded", () => {
   const details = document.getElementById("details");
   if (!details)
@@ -1635,6 +1657,7 @@ def check_measure_restart(browser, serve):
             f"{json.dumps(name)}", tries=5), f"could not select {name}"
 
     server, url = start_server(serve, RESTART_PIPELINE, port=port)
+    programs = [server]
     try:
         browser.call("Page.navigate", url=url)
         assert browser.wait(f"!!{element_selector('q-r')}", timeout=10)
@@ -1660,6 +1683,7 @@ def check_measure_restart(browser, serve):
 
         # A new run on the same address: both are measured again, by path.
         server, url = start_server(serve, RESTART_PIPELINE, port=port)
+        programs.append(server)
         assert browser.wait("document.getElementById('connection')"
                             ".textContent === 'connected'", timeout=15), \
             "page did not reconnect"
@@ -1680,6 +1704,15 @@ def check_measure_restart(browser, serve):
             browser.eval(f"{section}.querySelector('.measure-toggle')"
                          ".click()")
         assert not browser.errors, f"errors in the page: {browser.errors}"
+    except (AssertionError, RuntimeError):
+        # Why the page lost its selection: its connection and the programs.
+        print(browser.history(), file=sys.stderr)
+        for n, proc in enumerate(programs):
+            print(f"program {n + 1}: exit {proc.poll()}; last output:",
+                  file=sys.stderr)
+            for line in proc.lines[-25:]:
+                print("  " + line, file=sys.stderr)
+        raise
     finally:
         if server.poll() is None:
             server.terminate()
@@ -1858,7 +1891,8 @@ def main():
     if shot:
         server, url = start_server(serve, SHOT_PIPELINE)
     else:
-        server, url = start_server(serve, PIPELINE, "--warnings", debug="2")
+        server, url = start_server(serve, PIPELINE, "--warnings", "--flow-log",
+                                   debug="2")
     browser = None
     try:
         browser = Browser(chrome, profile)
