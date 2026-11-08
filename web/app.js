@@ -244,11 +244,11 @@ const recordings = new RecordingsView({
   close: $("recordings-close"),
   error: $("recordings-error"),
   note: $("recordings-note"),
-  openFile: $("open-file"),
+  addFile: $("add-file"),
   fileInput: $("file-input"),
 }, { send, view: pageView,
   open: (name) => viewerMode ? openStored(name) : openInViewer(name),
-  openFile });
+  openFile, viewer: viewerMode });
 
 const findings = new FindingsView({
   counter: $("problems-counter"),
@@ -754,9 +754,11 @@ function damaged(name) {
   recordings.showError(`${name} cannot be shown: its content is damaged.`);
 }
 
-function openRecording(text, name) {
+// source: the list's row, {name} or {file}, marked as shown.
+function openRecording(text, name, source) {
   try {
-    showRecording(text, name);
+    if (showRecording(text, name))
+      recordings.setShown(source);
   } catch {
     damaged(name);
   }
@@ -816,6 +818,7 @@ function showRecording(text, name) {
   $("ended").hidden = true;
   $("lost").hidden = true;
   recordings.showError(null);
+  return true;
 }
 
 // The last message of a list (in time order) at or before t, or null.
@@ -930,6 +933,7 @@ function closeRecording() {
     return;
   stopPlaying();
   state.viewing = null;
+  recordings.setShown(null);
   $("viewing").hidden = true;
   clearState();
   state.places = { tops: new Map() };
@@ -947,28 +951,41 @@ async function openStored(name) {
     const r = await fetch(url);
     if (!r.ok)
       throw new Error(r.statusText);
-    openRecording(await r.text(), name);
+    openRecording(await r.text(), name, { name });
     history.replaceState(null, "", `#viewer=${encodeURIComponent(name)}`);
   } catch {
     recordings.showError(`Cannot read ${name}.`);
   }
 }
 
-// Recordings open in a viewer tab: the live tab keeps monitoring. A file
-// is handed to the new tab once it has loaded.
-function openInViewer(name, file) {
-  const tab = window.open(`${location.pathname}#viewer` +
-    (name ? `=${encodeURIComponent(name)}` : ""), "_blank");
-  if (tab && file)
-    tab.addEventListener("load", () =>
-      tab.postMessage({ recording: file }, location.origin));
+// Recordings open in a viewer tab: the live tab keeps monitoring. Tabs
+// open only on a click (Open in the list), never later.
+function openTab(hash) {
+  const tab = window.open(`${location.pathname}${hash}`, "_blank");
+  if (!tab)
+    recordings.showError("The browser blocked the new tab: allow pop-ups " +
+      "for this page.");
+  return tab;
 }
 
+function openInViewer(name) {
+  openTab(`#viewer=${encodeURIComponent(name)}`);
+}
+
+// Added files by the viewer tab they were opened in: a tab asks for its
+// file once it has loaded (also after a reload).
+const tabFiles = new Map();
+
+// A file added from this computer: shown here in a viewer, in a new viewer
+// tab from the live page.
 function openFile(file) {
-  if (viewerMode)
-    file.text().then((text) => openRecording(text, file.name));
-  else
-    openInViewer(null, file);
+  if (viewerMode) {
+    file.text().then((text) => openRecording(text, file.name, { file }));
+    return;
+  }
+  const tab = openTab("#viewer-file");
+  if (tab)
+    tabFiles.set(tab, file);
 }
 
 $("viewing-close").addEventListener("click", closeRecording);
@@ -979,12 +996,20 @@ window.addEventListener("drop", (e) => {
   if (!file)
     return;
   e.preventDefault();
-  openFile(file);
+  dock.open("recordings");
+  recordings.addFile(file);
 });
 window.addEventListener("message", (e) => {
-  if (viewerMode && e.origin === location.origin &&
-      e.data?.recording instanceof File)
-    openFile(e.data.recording);
+  if (e.origin !== location.origin)
+    return;
+  if (e.data?.type === "pipeline-monitor-file-wanted" && tabFiles.has(e.source))
+    e.source.postMessage({ type: "pipeline-monitor-file",
+      file: tabFiles.get(e.source) }, location.origin);
+  else if (viewerMode && e.data?.type === "pipeline-monitor-file" &&
+      e.data.file instanceof File) {
+    recordings.addFile(e.data.file);
+    openFile(e.data.file);
+  }
 });
 
 // A message from the program, or from a recording being shown.
@@ -1185,16 +1210,28 @@ function startViewer() {
   document.body.classList.add("viewing", "viewer-mode");
   $("connection").textContent = "viewer";
   $("connection").className = "connection viewing";
-  $("empty").textContent = "Open a recording: from the list, with Open " +
-    "file…, or drop a file on the page.";
+  $("empty").textContent = "Open a recording from the list; add one with " +
+    "Add file…, or drop a file on the page.";
   // With nothing open yet, the list to open one from.
-  if (!location.hash.startsWith("#viewer="))
+  if (!location.hash.startsWith("#viewer=") &&
+      location.hash !== "#viewer-file")
     dock.open("recordings");
-  // Without a server only Open file… works.
+  // Without a server only added files open.
   connectViewer();
   const name = location.hash.match(/^#viewer=(.+)$/)?.[1];
   if (name)
     openStored(decodeURIComponent(name));
+  // A file added in the live tab that opened this one: asked for.
+  if (location.hash === "#viewer-file") {
+    if (window.opener)
+      window.opener.postMessage({ type: "pipeline-monitor-file-wanted" },
+        location.origin);
+    else {
+      dock.open("recordings");
+      recordings.showError("The file was added in another tab: add it " +
+        "here with Add file….");
+    }
+  }
 }
 
 if (viewerMode)

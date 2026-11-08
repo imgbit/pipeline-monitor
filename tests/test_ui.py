@@ -109,9 +109,7 @@ class Browser:
                 output = f.read()[-3000:]
             raise AssertionError(f"Chrome did not start ({self.state}):\n"
                                  f"{output}")
-        self.ws = WebSocket(page["webSocketDebuggerUrl"])
-        self.next_id = 0
-        self.errors = []
+        self.attach(page)
         self.call("Runtime.enable")
         self.call("Page.enable")
         # The last "properties" messages, shown when a check about them
@@ -158,7 +156,41 @@ class Browser:
             self.log.close()
             self.state = (f"exited with code {code}" if code is not None
                           else "no answer within 30 s")
+        self.port = port
         return page
+
+    def attach(self, page):
+        self.target = page["id"]
+        self.ws = WebSocket(page["webSocketDebuggerUrl"])
+        self.next_id = 0
+        self.errors = []
+        self.frames = []
+        self.clicks = []
+        self.coverage_file = None
+
+    # A tab this page opened, whose address ends with end, to control like
+    # this one; close it with close_tab().
+    def other_tab(self, end, timeout=10):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            targets = json.load(urllib.request.urlopen(
+                f"http://127.0.0.1:{self.port}/json/list"))
+            found = [t for t in targets if t["type"] == "page" and
+                     t["id"] != self.target and t["url"].endswith(end)]
+            if found:
+                tab = Browser.__new__(Browser)
+                tab.port = self.port
+                tab.attach(found[0])
+                tab.call("Runtime.enable")
+                tab.call("Page.enable")
+                return tab
+            time.sleep(0.1)
+        raise AssertionError(f"no tab opened at ...{end}")
+
+    def close_tab(self):
+        urllib.request.urlopen(
+            f"http://127.0.0.1:{self.port}/json/close/{self.target}").read()
+        self.ws.close()
 
     def call(self, method, **params):
         # Coverage is per document: kept before the page is replaced.
@@ -1201,17 +1233,71 @@ def check_recordings(browser, serve):
         server.wait()
 
 
+# The row of a file added from this computer.
+def added_row(name):
+    return ("[...document.querySelectorAll('#recordings-rows .rec-row.added')]"
+            f".find(r => r.dataset.file === {json.dumps(name)})")
+
+
+# Opens an added file from the list, with the mouse.
+def open_added(browser, name):
+    open_panel(browser, "recordings")
+    assert browser.wait(f"!!{added_row(name)}"), f"{name} not in the list"
+    browser.click_point(f"{added_row(name)}.querySelector('.rec-open')")
+
+
 # Open a recording read-only, from the list and from a file, and close it.
 def check_viewer(browser, rows, url):
     banner = "document.getElementById('viewing')"
     status = "document.getElementById('connection')"
     name = browser.eval(f"{rows}[1].dataset.name")
     # In the live page, Open opens a viewer tab; this one keeps monitoring.
-    browser.eval("window.open = (u) => { window.opened = u; return null; }")
-    browser.eval(f"{rows}[1].querySelector('.rec-open').click()")
-    assert browser.wait("window.opened?.endsWith('#viewer=' + "
-                        f"encodeURIComponent({json.dumps(name)}))"), \
-        "Open did not ask for a viewer tab"
+    browser.click_point(f"{rows}[1].querySelector('.rec-open')")
+    tab = browser.other_tab("#viewer=" + urllib.parse.quote(name, safe=""))
+    try:
+        assert tab.wait(f"!{banner}.hidden"), "Open: the tab shows nothing"
+        assert not tab.errors, f"errors in the viewer tab: {tab.errors}"
+    finally:
+        tab.close_tab()
+    assert browser.eval(f"{status}.textContent === 'connected'")
+
+    # Add file… puts a file from this computer in the list; its Open opens
+    # a viewer tab that shows it (also after a reload).
+    path = os.path.join(RECORDINGS, name)
+    open_panel(browser, "recordings")
+    browser.set_file("#file-input", path)
+    row = added_row(name)
+    assert browser.wait(f"!!{row} && {row}.querySelector('.rec-kind')"
+                        ".textContent.includes('file')"), "file not added"
+    browser.click_point(f"{row}.querySelector('.rec-open')")
+    tab = browser.other_tab("#viewer-file")
+    try:
+        assert tab.wait(f"!{banner}.hidden && {banner}.textContent"
+                        ".includes('Recording of serve')"), \
+            "an added file did not open in the viewer tab"
+        tab.call("Page.reload")
+        assert tab.wait(f"!{banner}.hidden"), \
+            "an added file not shown again after a reload of its tab"
+        assert not tab.errors, f"errors in the viewer tab: {tab.errors}"
+    finally:
+        tab.close_tab()
+    assert browser.eval(f"{status}.textContent === 'connected'")
+    # Remove takes it off the list only.
+    browser.click_point(f"{row}.querySelector('.rec-remove')")
+    assert browser.wait(f"!{row}"), "Remove did not take the file off"
+    assert os.path.exists(path), "Remove deleted the file"
+    # A dropped file is added too.
+    browser.eval("fetch('api/recordings/' + encodeURIComponent("
+                 f"{json.dumps(name)})).then(r => r.text()).then(t => {{ "
+                 "const d = new DataTransfer(); "
+                 "d.items.add(new File([t], 'dropped.jsonl')); "
+                 "window.dispatchEvent(new DragEvent('drop', "
+                 "{dataTransfer: d, cancelable: true})); })")
+    assert browser.wait(f"!!{added_row('dropped.jsonl')}"), \
+        "a dropped file was not added"
+    browser.click_point(f"{added_row('dropped.jsonl')}"
+                        ".querySelector('.rec-remove')")
+    assert not browser.errors, f"errors in the page: {browser.errors}"
 
     # That tab: a viewer, not connected to the program.
     browser.call("Page.navigate", url="about:blank")
@@ -1220,6 +1306,19 @@ def check_viewer(browser, rows, url):
                         f"{banner}.textContent.includes('Recording of serve')"), \
         "recording not opened"
     assert browser.wait(f"{status}.textContent === 'viewer'")
+    # Its row is marked, and its Open reads it again.
+    stored = (f"[...{rows}].find(r => r.dataset.name === "
+              f"{json.dumps(name)})")
+    assert browser.wait(f"{stored}?.classList.contains('shown') && "
+                        f"{stored}.querySelector('.rec-open').textContent "
+                        "=== 'Reload'"), "the shown recording is not marked"
+    assert browser.eval(f"[...{rows}].filter(r => r.classList.contains("
+                        "'shown')).length === 1")
+    open_panel(browser, "recordings")
+    browser.eval("document.getElementById('viewing').hidden = true")
+    browser.click_point(f"{stored}.querySelector('.rec-open')")
+    assert browser.wait(f"!{banner}.hidden && {stored}.classList.contains("
+                        "'shown')"), "Reload did not show it again"
     # Playback: shows the end; Play moves on; the slider goes anywhere.
     time_label = "document.getElementById('play-time').textContent"
     assert browser.wait(f"!document.getElementById('playback').hidden && "
@@ -1266,10 +1365,16 @@ def check_viewer(browser, rows, url):
     assert browser.wait(f"{banner}.hidden && location.hash === '#viewer' && "
                         "!document.getElementById('recordings-panel').hidden"), \
         "Close did not go back to the empty viewer"
+    assert browser.eval(f"![...{rows}].some(r => r.classList.contains("
+                        "'shown'))"), "a row still marked after Close"
 
-    # The same file, chosen from the disk.
-    browser.set_file("#file-input", os.path.join(RECORDINGS, name))
+    # The same file, added from the disk, opens here; the mark moves to it.
+    browser.set_file("#file-input", path)
+    open_added(browser, name)
     assert browser.wait(f"!{banner}.hidden"), "file not opened"
+    assert browser.wait(f"{added_row(name)}.classList.contains('shown') && "
+                        f"[...{rows}].filter(r => r.classList.contains("
+                        "'shown')).length === 1"), "the mark did not move"
     browser.click("#viewing-close")
     assert browser.wait(f"{banner}.hidden")
     not_one = os.path.join(RECORDINGS, "not-a-recording.jsonl")
@@ -1305,17 +1410,19 @@ def check_bad_recordings(browser, good):
     # the end: the page reads it after it is chosen.
     made = []
 
-    def open_file(text):
+    def open_file(text, opens=True):
         path = os.path.join(RECORDINGS, f"bad-{len(made)}.jsonl")
         made.append(path)
         with open(path, "w") as f:
             f.write(text)
         browser.eval(f"{error}.hidden = true")
         browser.set_file("#file-input", path)
+        if opens:
+            open_added(browser, os.path.basename(path))
 
     for change in ({"version": 2}, {"started": "yesterday"}):
         open_file(json.dumps({**header, **change}) + "\n" +
-                  "\n".join(lines[1:]))
+                  "\n".join(lines[1:]), opens=False)
         assert browser.wait(f"!{error}.hidden && "
                             f"{error}.textContent.includes('not a recording')"), \
             f"a header with {change} was not refused"
@@ -1341,7 +1448,7 @@ def check_bad_recordings(browser, good):
                         f"{error}.textContent.includes('damaged')"), \
         "a damaged recording was not reported"
     assert browser.eval(f"{banner}.hidden && location.hash === '#viewer'")
-    browser.set_file("#file-input", good)
+    open_added(browser, os.path.basename(good))
     assert browser.wait(f"!{banner}.hidden && "
                         f"!!{element_selector('q-r')}"), \
         "a good recording did not open after a damaged one"
@@ -1373,11 +1480,43 @@ def check_record_fails(browser, serve):
         assert browser.eval("!document.querySelector("
                             "'#recordings-counter .count')"), \
             "a failed Record shows as running"
-        assert not browser.errors, f"errors in the page: {browser.errors}"
-        close_panel(browser, "recordings")
-    finally:
+
+        # Without the program the live page adds and opens nothing: its
+        # last state stays on screen.
+        added = os.path.join(RECORDINGS, "added.jsonl")
+        with open(added, "w") as f:
+            f.write(json.dumps({"format": "pipeline-monitor-recording",
+                                "version": 1, "kind": "snapshot",
+                                "started": 1794139542123456}) + "\n")
+        browser.set_file("#file-input", added)
+        assert browser.wait(f"!!{added_row('added.jsonl')}")
         server.terminate()
         server.wait()
+        assert browser.wait("document.getElementById('connection')"
+                            ".textContent !== 'connected'", timeout=10)
+        assert browser.wait(
+            "document.getElementById('add-file').disabled && [...document"
+            ".querySelectorAll('#recordings-rows button')].every(b => "
+            "b.disabled)"), "buttons still on without the program"
+        assert browser.eval("document.querySelector('.rec-offline')"
+                            ".textContent.includes('pipeline-monitor command')")
+        browser.eval("(() => { const d = new DataTransfer(); "
+                     "d.items.add(new File(['{}'], 'late.jsonl')); "
+                     "window.dispatchEvent(new DragEvent('drop', "
+                     "{dataTransfer: d, cancelable: true})); })()")
+        assert browser.wait(f"{error}.textContent.includes("
+                            "'when the program runs')"), \
+            "a file dropped without the program was not refused"
+        assert browser.eval(f"!{added_row('late.jsonl')}")
+        assert browser.eval(f"!!{element_selector('q-r')}"), \
+            "the last state is gone"
+        assert not browser.errors, f"errors in the page: {browser.errors}"
+        close_panel(browser, "recordings")
+        os.remove(added)
+    finally:
+        if server.poll() is None:
+            server.terminate()
+            server.wait()
         os.remove(blocker)
 
 
@@ -1451,6 +1590,17 @@ def check_command(browser, serve, tool):
     assert browser.wait(f"[...{rows}].every(r => [...r.querySelectorAll("
                         "'button')].every(b => b.disabled))", timeout=10), \
         "the list's buttons still work without the command"
+    # And they look it: dimmed, no pointer, no hover colour.
+    delete = f"{rows}[0].querySelector('.rec-delete')"
+    browser.call("Input.dispatchMouseEvent", type="mouseMoved", **dict(zip(
+        ("x", "y"), browser.eval(f"(r => [r.x + r.width / 2, r.y + "
+                                 f"r.height / 2])({delete}"
+                                 ".getBoundingClientRect())"))))
+    assert browser.eval(
+        f"(s => Number(s.opacity) < 1 && s.cursor === 'default' && "
+        f"s.borderTopColor === getComputedStyle(document.getElementById("
+        f"'add-file')).borderTopColor)(getComputedStyle({delete}))"), \
+        "a disabled button does not look disabled"
 
     tool_proc, url = run("open", path)
     try:

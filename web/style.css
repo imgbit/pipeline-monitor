@@ -116,6 +116,8 @@ select, button {
 
 button { cursor: pointer; min-width: 28px; }
 button:hover { border-color: var(--accent); }
+button:disabled { opacity: 0.45; cursor: default; }
+button:disabled:hover { border-color: var(--border); }
 button[aria-pressed="true"] {
   background: var(--accent);
   border-color: var(--accent);
@@ -684,6 +686,18 @@ main {
 .rec-time, .rec-duration, .rec-size { font-variant-numeric: tabular-nums; }
 .rec-actions { display: flex; gap: 8px; align-items: baseline; }
 .rec-actions button { font-size: 12px; padding: 0 6px; }
+.rec-row.shown { background: rgba(80, 140, 255, 0.14); }
+.rec-shown {
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--accent);
+}
+.rec-file {
+  font-size: 11px;
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
 .rec-error { color: var(--error); }
 .rec-note { padding: 4px 16px; font-size: 11px; border-top: 1px solid var(--border); }
 

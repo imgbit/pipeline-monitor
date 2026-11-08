@@ -33,14 +33,47 @@ function duration(us) {
     : `${Math.floor(s / 3600)}:${two(Math.floor(s / 60) % 60)}:${two(s % 60)}`;
 }
 
-// The recordings panel: Record/Stop, Snapshot and the list in the folder of
-// the program's machine. handlers: send(command), view() -> what this page
-// shows (saved with a recording), open(name), openFile(File).
+// What a file holds, from its first and last lines: {kind, started, last},
+// or null if it is not a recording.
+async function readSummary(file) {
+  const head = (await file.slice(0, 1024 * 1024).text()).split("\n")[0];
+  let header;
+  try {
+    header = JSON.parse(head);
+  } catch {
+    return null;
+  }
+  if (header?.format !== "pipeline-monitor-recording" ||
+      header.version !== 1 || !Number.isFinite(header.started))
+    return null;
+  let last = header.started;
+  const tail = await file.slice(Math.max(0, file.size - 65536)).text();
+  for (const line of tail.split("\n")) {
+    try {
+      const time = JSON.parse(line)?.time;
+      if (Number.isFinite(time))
+        last = Math.max(last, time);
+    } catch {
+      // The first line of the tail is cut; a crash may cut the last.
+    }
+  }
+  return { kind: header.kind, started: header.started, last };
+}
+
+// The recordings panel: Record/Stop, Snapshot, Add file… and the list: the
+// recordings in the folder of the program's machine, and files added from
+// this computer (kept in this tab only, never sent anywhere).
+// handlers: send(command), view() -> what this page shows (saved with a
+// recording), open(name), openFile(File); viewer: true in a viewer tab,
+// where added files open without a server.
 export class RecordingsView {
   constructor(nodes, handlers) {
     this.nodes = nodes;
     this.handlers = handlers;
     this.list = [];
+    this.files = [];
+    // The recording this tab shows: {name} or {file}, or null.
+    this.shown = null;
     this.connected = false;
     nodes.record.addEventListener("click", () => {
       this.showError(null);
@@ -48,17 +81,57 @@ export class RecordingsView {
         ? { type: "record-stop" }
         : { type: "record-start", view: this.handlers.view() });
     });
-    nodes.openFile.addEventListener("click", () => nodes.fileInput.click());
+    nodes.addFile.addEventListener("click", () => nodes.fileInput.click());
     nodes.fileInput.addEventListener("change", () => {
       const file = nodes.fileInput.files[0];
       if (file)
-        this.handlers.openFile(file);
+        this.addFile(file);
       nodes.fileInput.value = "";
     });
     nodes.snapshot.addEventListener("click", () => {
       this.showError(null);
       this.handlers.send({ type: "snapshot", view: this.handlers.view() });
     });
+  }
+
+  // Adds a file from this computer to the top of the list (once).
+  async addFile(file) {
+    this.showError(null);
+    if (!this.filesUsable()) {
+      this.showError("Files can be added when the program runs.");
+      return;
+    }
+    const summary = await readSummary(file).catch(() => null);
+    if (!summary) {
+      this.showError(`${file.name} is not a recording this page can open.`);
+      return;
+    }
+    this.files = this.files.filter((f) => f.file.name !== file.name ||
+      f.file.size !== file.size || f.file.lastModified !== file.lastModified);
+    this.files.unshift({ file, ...summary });
+    this.render();
+  }
+
+  setShown(source) {
+    this.shown = source ?? null;
+    this.render();
+  }
+
+  // Marks the row of the recording this tab shows: its Open reads it
+  // again (a recording still being written shows its newer part).
+  markShown(row, open, shown) {
+    if (!shown)
+      return;
+    row.classList.add("shown");
+    add(row.querySelector(".rec-kind"), "span", "shown", "rec-shown");
+    open.textContent = "Reload";
+    open.title = "Read it again";
+  }
+
+  // A live page opens added files in a viewer tab, which needs the
+  // program's server; a viewer shows them itself.
+  filesUsable() {
+    return this.connected || Boolean(this.handlers.viewer);
   }
 
   running() {
@@ -96,6 +169,32 @@ export class RecordingsView {
     this.nodes.error.hidden = !text;
   }
 
+  // A file added from this computer: Open, and Remove (from the list only).
+  fileRow(fragment, f) {
+    const row = add(fragment, "div", undefined, "rec-row added");
+    row.dataset.file = f.file.name;
+    row.title = `${f.file.name}, added from this computer (not uploaded)`;
+    const kind = add(row, "span", undefined, "rec-kind");
+    add(kind, "span", "file", "rec-file");
+    kind.append(` ${f.kind ?? "?"}`);
+    add(row, "span", new Date(f.started / 1000).toLocaleString(), "rec-time");
+    add(row, "span", f.kind === "snapshot" ? "–"
+      : duration(f.last - f.started), "rec-duration");
+    add(row, "span", size(f.file.size), "rec-size");
+    const actions = add(row, "span", undefined, "rec-actions");
+    const open = add(actions, "button", "Open", "rec-open");
+    open.disabled = !this.filesUsable();
+    open.addEventListener("click", () => this.handlers.openFile(f.file));
+    this.markShown(row, open, this.shown?.file === f.file);
+    const remove = add(actions, "button", "Remove", "rec-remove");
+    remove.disabled = !this.filesUsable();
+    remove.title = "Remove from the list (the file stays on your computer)";
+    remove.addEventListener("click", () => {
+      this.files = this.files.filter((x) => x !== f);
+      this.render();
+    });
+  }
+
   render() {
     const { counter, record, snapshot, rows, note } = this.nodes;
     const running = this.running();
@@ -110,12 +209,19 @@ export class RecordingsView {
     record.title = this.connected ? "" : "Needs the program to be running";
 
     const fragment = document.createDocumentFragment();
-    if (!this.connected && this.list.length)
-      add(fragment, "div", "The program is not running: its recordings " +
-        "can be opened, downloaded and deleted again when it runs. Open " +
-        "file… works now.", "rec-offline");
-    if (!this.list.length)
+    this.nodes.addFile.disabled = !this.filesUsable();
+    if (!this.connected && (this.list.length || this.files.length))
+      add(fragment, "div", this.handlers.viewer
+        ? "The pipeline-monitor command is not running: its recordings can " +
+          "be opened, downloaded and deleted again when it runs. Added " +
+          "files open now."
+        : "The program is not running: the list works again when it runs. " +
+          "To open recordings without it, use the pipeline-monitor " +
+          "command.", "rec-offline");
+    if (!this.list.length && !this.files.length)
       add(fragment, "div", "No recordings yet.", "log-empty");
+    for (const f of this.files)
+      this.fileRow(fragment, f);
     for (const r of this.list) {
       const row = add(fragment, "div", undefined,
         `rec-row${r.running ? " running" : ""}`);
@@ -137,6 +243,7 @@ export class RecordingsView {
       const open = add(actions, "button", "Open", "rec-open");
       open.disabled = !this.connected;
       open.addEventListener("click", () => this.handlers.open(r.name));
+      this.markShown(row, open, this.shown?.name === r.name);
       const download = add(actions, "button", "Download", "rec-download");
       download.disabled = !this.connected;
       download.addEventListener("click", () => {
