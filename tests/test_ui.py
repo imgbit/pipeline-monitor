@@ -1036,9 +1036,11 @@ def check_recordings(browser, serve):
         browser.click("#record")
         assert browser.wait(f"{counter}.textContent.startsWith('●')"), \
             "no running recording in the header"
-        assert browser.wait(f"/[0-9]:[0-9]{{2}} · [0-9.]+ (B|KB|MB)$/.test("
-                            f"{counter}.textContent) && {counter}.textContent"
-                            ".includes('0:02')", timeout=8), \
+        # Updated about once a second: at least 2 s, not an exact text.
+        assert browser.wait(f"(m => m && Number(m[1]) * 60 + Number(m[2]) "
+                            f">= 2)(/([0-9]+):([0-9]{{2}}) · [0-9.]+ "
+                            f"(B|KB|MB)$/.exec({counter}.textContent))",
+                            timeout=10), \
             "the running recording's time and size do not grow"
         browser.click("#record")
         assert browser.wait(f"{counter}.textContent === 'Recordings' && "
