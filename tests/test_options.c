@@ -387,7 +387,7 @@ test_record (void)
     gchar *option = g_strdelimit (g_strdup (dir), "\\", '/');
     gchar *tracers = g_strdup_printf ("pipeline-monitor(port=0,record=on,"
         "recordings=\"%s\",record-file-max=10M)", option);
-    GstElement *pipeline;
+    GstElement *pipeline, *late;
     GstBus *bus;
     GstMessage *msg;
     GDir *folder;
@@ -395,10 +395,15 @@ test_record (void)
     gchar *path, *text;
 
     g_free (start_tracer (tracers));
+    /* An element outside any bin for more than a round of reading: it is
+     * read once it is in the pipeline, under its path there. */
+    late = gst_element_factory_make ("queue", "rec-late");
+    g_usleep (1500 * G_TIME_SPAN_MILLISECOND);
     /* About 4 s: the properties of new elements are read once a second,
      * also when sanitizers slow it down. */
     pipeline = gst_parse_launch ("videotestsrc is-live=true num-buffers=120 ! "
         "queue name=rec-queue ! fakesink", NULL);
+    gst_bin_add (GST_BIN (pipeline), late);
     gst_element_set_state (pipeline, GST_STATE_PLAYING);
     bus = gst_element_get_bus (pipeline);
     msg = gst_bus_timed_pop_filtered (bus, 10 * GST_SECOND, GST_MESSAGE_EOS);
@@ -423,13 +428,20 @@ test_record (void)
     /* Elements added after the start get their properties too. */
     {
       gchar **lines = g_strsplit (text, "\n", -1);
-      gboolean found = FALSE;
+      gboolean found = FALSE, found_late = FALSE, unplaced = FALSE;
       guint i;
 
-      for (i = 0; lines[i] != NULL; i++)
-        found |= g_str_has_prefix (lines[i], "{\"type\":\"properties\",") &&
-            strstr (lines[i], "\"path\":\"pipeline0/rec-queue\"") != NULL;
+      for (i = 0; lines[i] != NULL; i++) {
+        if (!g_str_has_prefix (lines[i], "{\"type\":\"properties\","))
+          continue;
+        found |= strstr (lines[i], "\"path\":\"pipeline0/rec-queue\"") != NULL;
+        found_late |= strstr (lines[i], "\"path\":\"pipeline0/rec-late\"")
+            != NULL;
+        unplaced |= strstr (lines[i], "\"path\":\"rec-late\"") != NULL;
+      }
       g_assert_true (found);
+      g_assert_true (found_late);
+      g_assert_false (unplaced);
       g_strfreev (lines);
     }
     g_assert_true (g_str_has_suffix (text, "\"reason\":\"program-ended\"}\n"));

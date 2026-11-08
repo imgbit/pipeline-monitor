@@ -891,10 +891,13 @@ record (PmServer * self, const gchar * text)
     self->tapping = FALSE;
 }
 
+/* Elements in their pipeline, and pipelines: one not in a bin yet (made by
+ * gst_parse_launch, say) would be kept under the wrong path, so it waits
+ * for the next round. */
 static gboolean
-any_element (GstElement * element, gboolean top_level)
+placed_element (GstElement * element, gboolean top_level)
 {
-  return TRUE;
+  return !top_level || GST_IS_PIPELINE (element);
 }
 
 typedef struct
@@ -946,7 +949,7 @@ read_state (gpointer user_data)
 static void
 read_new_elements (PmServer * self, gboolean snapshot)
 {
-  GPtrArray *all = pm_model_find_elements (self->model, any_element);
+  GPtrArray *all = pm_model_find_elements (self->model, placed_element);
   GPtrArray *fresh = g_ptr_array_new_with_free_func ((GDestroyNotify)
       pm_element_ref_free);
   PmStateJob *job;
