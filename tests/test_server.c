@@ -297,6 +297,8 @@ typedef struct
   gboolean connected;
   GQueue messages;
   gboolean got_message;
+  /* Shown in the latency log. */
+  const gchar *name;
 } WsClient;
 
 static void
@@ -2203,12 +2205,64 @@ test_watch_property (void)
 /* Latency */
 
 /* The next "latency" message's entry for element, or NULL. */
+/* The latency messages a test read, printed when one of its checks fails:
+ * which page, the server's time, when it arrived here, "all" and the
+ * elements in it. */
+static GString *latency_log;
+
+static void
+note_latency (WsClient * client, const gchar * message)
+{
+  JsonNode *root = json_from_string (message, NULL);
+  JsonObject *latency;
+  JsonArray *elements;
+  gchar *all;
+  guint i;
+
+  if (latency_log == NULL || root == NULL) {
+    if (root != NULL)
+      json_node_unref (root);
+    return;
+  }
+  latency = json_node_get_object (root);
+  elements = json_object_get_array_member (latency, "elements");
+  all = json_to_string (json_object_get_member (latency, "all"), FALSE);
+  g_string_append_printf (latency_log, "%s time=%" G_GINT64_FORMAT
+      " here=%" G_GINT64_FORMAT " all=%s elements=[", client->name ?
+      client->name : "?", json_object_get_int_member (latency, "time"),
+      g_get_monotonic_time () / 1000, all);
+  for (i = 0; elements && i < json_array_get_length (elements); i++)
+    g_string_append_printf (latency_log, "%s%" G_GINT64_FORMAT, i ? "," : "",
+        json_object_get_int_member (json_array_get_object_element (elements,
+                i), "element"));
+  g_string_append (latency_log, "]\n");
+  g_free (all);
+  json_node_unref (root);
+}
+
+static void
+print_latency_log (const gchar * check)
+{
+  g_printerr ("%s failed; latency messages read (here: ms):\n%s", check,
+      latency_log ? latency_log->str : "(none)\n");
+}
+
+/* For a check that fails: the log first, then the usual assertion. */
+#define LATENCY_CHECK(expr) G_STMT_START { \
+  gboolean ok_ = (expr); \
+  if (!ok_) \
+    print_latency_log (#expr); \
+  g_assert_true (ok_); \
+} G_STMT_END
+
 static JsonNode *
 next_latency (WsClient * client, gint64 element, JsonNode ** all)
 {
   gchar *message = ws_next (client, "latency");
   JsonNode *root = parse (message);
   JsonObject *latency = json_node_get_object (root);
+
+  note_latency (client, message);
   JsonArray *elements = json_object_get_array_member (latency, "elements");
   JsonNode *found = NULL;
   guint i;
@@ -2381,6 +2435,8 @@ count_messages (WsClient * client, const gchar * type, gint ms)
 
     if (g_str_has_prefix (message, prefix))
       n++;
+    if (g_str_has_prefix (message, "{\"type\":\"latency\","))
+      note_latency (client, message);
     g_free (message);
   }
   g_free (prefix);
@@ -2421,24 +2477,29 @@ test_pages_latency (void)
   gboolean on;
   gint tries;
 
+  latency_log = g_string_new (NULL);
+  g_string_append_printf (latency_log, "a=%" G_GINT64_FORMAT " b=%"
+      G_GINT64_FORMAT "\n", a, b);
   ws_connect (&one, session, url, NULL);
   ws_connect (&two, session, url, NULL);
+  one.name = "one";
+  two.name = "two";
 
   /* One measures a, two nothing: two gets no latency at all. */
   ws_send (&one, "{\"type\":\"measure-element\",\"element\":%"
       G_GINT64_FORMAT "}", a);
-  g_assert_true (latency_has (&one, a, NULL));
-  g_assert_cmpuint (count_messages (&two, "latency", 1500), ==, 0);
+  LATENCY_CHECK (latency_has (&one, a, NULL));
+  LATENCY_CHECK (count_messages (&two, "latency", 1500) == 0);
 
   /* Two measures b: each gets only its own. */
   ws_send (&two, "{\"type\":\"measure-element\",\"element\":%"
       G_GINT64_FORMAT "}", b);
   count_messages (&one, "latency", 600);
   count_messages (&two, "latency", 0);
-  g_assert_true (latency_has (&two, b, NULL));
-  g_assert_false (latency_has (&two, a, NULL));
-  g_assert_true (latency_has (&one, a, NULL));
-  g_assert_false (latency_has (&one, b, NULL));
+  LATENCY_CHECK (latency_has (&two, b, NULL));
+  LATENCY_CHECK (!latency_has (&two, a, NULL));
+  LATENCY_CHECK (latency_has (&one, a, NULL));
+  LATENCY_CHECK (!latency_has (&one, b, NULL));
 
   /* Both measure a; one stops: two still gets it, one gets an empty
    * message, then nothing. */
@@ -2447,26 +2508,28 @@ test_pages_latency (void)
   ws_send (&one, "{\"type\":\"unmeasure-element\",\"element\":%"
       G_GINT64_FORMAT "}", a);
   for (tries = 0; tries < 5 && latency_has (&one, a, NULL); tries++);
-  g_assert_cmpint (tries, <, 5);
-  g_assert_cmpuint (count_messages (&one, "latency", 1500), ==, 0);
+  LATENCY_CHECK (tries < 5);
+  LATENCY_CHECK (count_messages (&one, "latency", 1500) == 0);
   count_messages (&two, "latency", 0);
   for (tries = 0; tries < 5 && !latency_has (&two, a, NULL); tries++);
-  g_assert_cmpint (tries, <, 5);
+  LATENCY_CHECK (tries < 5);
 
   /* Measure all in one: one sees it on and gets every element; two keeps
    * only its own, with measure all off. */
   ws_send (&one, "{\"type\":\"measure-all\"}");
   count_messages (&one, "latency", 600);
   for (tries = 0; tries < 5 && !latency_has (&one, b, &on); tries++);
-  g_assert_cmpint (tries, <, 5);
-  g_assert_true (on);
+  LATENCY_CHECK (tries < 5);
+  LATENCY_CHECK (on);
   count_messages (&two, "latency", 0);
   latency_has (&two, b, &on);
-  g_assert_false (on);
+  LATENCY_CHECK (!on);
 
   ws_disconnect (&one);
   ws_disconnect (&two);
   stop_pipeline (pipeline);
+  g_string_free (latency_log, TRUE);
+  latency_log = NULL;
   g_free (url);
   g_object_unref (session);
 }
