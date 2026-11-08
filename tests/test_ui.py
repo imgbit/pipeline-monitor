@@ -117,6 +117,10 @@ class Browser:
         # The last "properties" messages, shown when a check about them
         # fails.
         self.frames = []
+        # The last clicks, and in each page what the details panel showed
+        # and when: printed when a click finds nothing.
+        self.clicks = []
+        self.call("Page.addScriptToEvaluateOnNewDocument", source=DETAILS_LOG)
         self.call("Network.enable")
         self.coverage_file = os.environ.get("PM_JS_COVERAGE")
         self.coverage = {}
@@ -208,10 +212,37 @@ class Browser:
             f"(() => {{ const n = document.querySelector({json.dumps(selector)});"
             " if (!n) return null; const r = n.getBoundingClientRect();"
             " return [r.x + r.width / 2, r.y + r.height / 2]; })()")
-        assert point, f"nothing matches {selector}"
+        assert point, f"nothing matches {selector}\n{self.history()}"
+        self.press(selector, point)
+
+    # Clicks at point, noting what was there.
+    def press(self, what, point):
+        under = self.eval(
+            f"(n => n ? n.tagName + (n.id ? '#' + n.id : '') + "
+            f"(n.getAttribute('class') ? '.' + n.getAttribute('class') : '') + "
+            f"(n.closest('[data-id]') ? ' in ' + "
+            f"n.closest('[data-id]').dataset.id : '') : 'nothing')"
+            f"(document.elementFromPoint({point[0]}, {point[1]}))")
+        self.clicks = self.clicks[-14:] + [
+            f"{time.time():.2f} {what} at {point[0]:.0f},{point[1]:.0f}: "
+            f"{under}"]
         for kind in ("mousePressed", "mouseReleased"):
             self.call("Input.dispatchMouseEvent", type=kind, x=point[0],
                       y=point[1], button="left", clickCount=1)
+
+    def history(self):
+        try:
+            details = self.eval("JSON.stringify(window.detailsLog || [])")
+            state = self.eval(
+                "JSON.stringify({hash: location.hash, connection: "
+                "document.getElementById('connection')?.textContent, "
+                "details: !document.getElementById('details')?.hidden})")
+        except RuntimeError as e:
+            details, state = str(e), ""
+        return ("last clicks:\n  " + "\n  ".join(self.clicks) +
+                f"\npage: {state}\ndetails shown (time, element):\n  " +
+                "\n  ".join(" ".join(map(str, d))
+                             for d in json.loads(details or "[]")))
 
     # The live graph can move between finding an element and clicking it.
     def click_until(self, selector, condition, tries=3):
@@ -227,10 +258,8 @@ class Browser:
             f"(() => {{ const n = {expression}; if (!n) return null;"
             " const r = n.getBoundingClientRect();"
             " return [r.x + r.width / 2, r.y + r.height / 2]; })()")
-        assert point, f"nothing to click: {expression}"
-        for kind in ("mousePressed", "mouseReleased"):
-            self.call("Input.dispatchMouseEvent", type=kind, x=point[0],
-                      y=point[1], button="left", clickCount=1)
+        assert point, f"nothing to click: {expression}\n{self.history()}"
+        self.press(expression[:60], point)
 
     # Drags the element a selector matches by (dx, dy) in small steps.
     def drag(self, selector, dx, dy):
@@ -329,6 +358,28 @@ class Browser:
         self.proc.terminate()
         self.proc.wait()
         self.log.close()
+
+
+# In each page: the element the details panel shows (null: none), each time
+# it changes, with the time.
+DETAILS_LOG = """
+window.detailsLog = [];
+document.addEventListener("DOMContentLoaded", () => {
+  const details = document.getElementById("details");
+  if (!details)
+    return;
+  let last;
+  new MutationObserver(() => {
+    const now = details.hidden ? null
+      : details.querySelector("h2")?.textContent ?? null;
+    if (now !== last) {
+      last = now;
+      window.detailsLog = window.detailsLog.slice(-19)
+        .concat([[(Date.now() / 1000).toFixed(2), now]]);
+    }
+  }).observe(details, { childList: true, subtree: true, attributes: true });
+});
+"""
 
 
 # Recordings of the test runs go here, not to the user's folder.
