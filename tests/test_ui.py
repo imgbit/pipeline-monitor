@@ -1194,13 +1194,17 @@ def check_bad_recordings(browser, good):
     error = "document.getElementById('recordings-error')"
     banner = "document.getElementById('viewing')"
 
+    # A new name each time (the same file again is no change), kept until
+    # the end: the page reads it after it is chosen.
+    made = []
+
     def open_file(text):
-        path = os.path.join(RECORDINGS, "bad.jsonl")
+        path = os.path.join(RECORDINGS, f"bad-{len(made)}.jsonl")
+        made.append(path)
         with open(path, "w") as f:
             f.write(text)
         browser.eval(f"{error}.hidden = true")
         browser.set_file("#file-input", path)
-        os.remove(path)
 
     for change in ({"version": 2}, {"started": "yesterday"}):
         open_file(json.dumps({**header, **change}) + "\n" +
@@ -1237,6 +1241,8 @@ def check_bad_recordings(browser, good):
     browser.click("#viewing-close")
     assert browser.wait(f"{banner}.hidden")
     assert not browser.errors, f"errors in the page: {browser.errors}"
+    for path in made:
+        os.remove(path)
 
 
 # A folder that cannot be made: Record says why, and nothing runs.
