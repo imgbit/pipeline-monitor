@@ -109,11 +109,14 @@ jobs:
           export GST_REGISTRY=$RUNNER_TEMP/registry.bin
           gst-inspect-1.0 pipeline-monitor
           packaging/smoke-test.sh
+      - name: Command
+        run: packaging/command-test.sh
       - name: Remove
         run: |
           plugin=$(dpkg -L pipeline-monitor | grep 'libgstpipelinemonitor\.so$')
           apt-get remove -y pipeline-monitor
           [ ! -e "$plugin" ]
+          [ ! -e /usr/bin/pipeline-monitor ]
 
   macos-framework:
     name: Build macOS zip (GStreamer.framework, universal)
@@ -153,14 +156,17 @@ jobs:
       - name: Package
         run: |
           lib=build/src/libgstpipelinemonitor.dylib
-          lipo -archs $lib | grep -q arm64
-          lipo -archs $lib | grep -q x86_64
-          ! otool -L $lib | grep -q /opt/homebrew
+          tool=build/src/pipeline-monitor
+          for f in $lib $tool; do
+            lipo -archs $f | grep -q arm64
+            lipo -archs $f | grep -q x86_64
+            ! otool -L $f | grep -q /opt/homebrew
+          done
           version=$(meson introspect build --projectinfo |
             python3 -c 'import json, sys; print(json.load(sys.stdin)["version"])')
           name=pipeline-monitor-$version-macos-framework-universal
           mkdir -p dist/$name
-          cp $lib LICENSE dist/$name/
+          cp $lib $tool LICENSE dist/$name/
           cat > dist/$name/README.txt <<EOF
           pipeline-monitor $version for the official GStreamer.framework
           (macOS, Apple Silicon and Intel), GStreamer 1.28 or newer.
@@ -173,9 +179,13 @@ jobs:
             gst-launch-1.0 videotestsrc ! autovideosink
           then open the address it prints.
 
-          A library downloaded with a browser is marked as quarantined, and
-          macOS may refuse to load it. Remove the mark with:
-            xattr -d com.apple.quarantine libgstpipelinemonitor.dylib
+          To open recordings without a program:
+            ./pipeline-monitor              (the recordings folder)
+            ./pipeline-monitor open FILE    (that recording)
+
+          Files downloaded with a browser are marked as quarantined, and
+          macOS may refuse to load or run them. Remove the mark with:
+            xattr -d com.apple.quarantine libgstpipelinemonitor.dylib pipeline-monitor
 
           https://github.com/imgbit/pipeline-monitor
           EOF
@@ -221,6 +231,7 @@ jobs:
           export GST_REGISTRY=$RUNNER_TEMP/arm64.bin
           gst-inspect-1.0 pipeline-monitor
           packaging/smoke-test.sh
+          COMMAND=$PLUGIN_DIR/pipeline-monitor packaging/command-test.sh
       - name: Load (Intel, through Rosetta)
         run: |
           if ! arch -x86_64 /usr/bin/true 2> /dev/null; then
@@ -230,6 +241,8 @@ jobs:
           export GST_PLUGIN_PATH=$PLUGIN_DIR GST_REGISTRY=$RUNNER_TEMP/x86_64.bin
           arch -x86_64 $FW/bin/gst-inspect-1.0 pipeline-monitor
           LAUNCH="arch -x86_64 $FW/bin/gst-launch-1.0" packaging/smoke-test.sh
+          COMMAND="arch -x86_64 $PLUGIN_DIR/pipeline-monitor" \
+            packaging/command-test.sh
       # Reports only: shows whether the xattr step in README.txt is needed.
       - name: Load when quarantined
         run: |
@@ -277,7 +290,7 @@ jobs:
           $version = (meson introspect build --projectinfo | ConvertFrom-Json).version
           $name = "pipeline-monitor-$version-windows-msvc-x86_64"
           New-Item -ItemType Directory -Force "dist\$name" | Out-Null
-          Copy-Item build\src\gstpipelinemonitor.dll, LICENSE "dist\$name"
+          Copy-Item build\src\gstpipelinemonitor.dll, build\src\pipeline-monitor.exe, LICENSE "dist\$name"
           @"
           pipeline-monitor $version for the official GStreamer MSVC x86_64
           package, GStreamer 1.28 or newer.
@@ -288,6 +301,11 @@ jobs:
             gst-launch-1.0 videotestsrc ! autovideosink
           then open the address it prints. Or copy gstpipelinemonitor.dll
           into GStreamer's lib\gstreamer-1.0 folder and skip GST_PLUGIN_PATH.
+
+          To open recordings without a program (GStreamer's bin folder in
+          PATH):
+            pipeline-monitor.exe              (the recordings folder)
+            pipeline-monitor.exe open FILE    (that recording)
 
           https://github.com/imgbit/pipeline-monitor
           "@ | Set-Content "dist\$name\README.txt"
@@ -357,6 +375,31 @@ jobs:
             }
             if (-not $found) { throw "the pipeline is not in ${url}api/graph" }
             Write-Output "smoke test passed: $url"
+          } finally {
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          }
+      - name: Command
+        shell: pwsh
+        run: |
+          $exe = Join-Path $env:GST_PLUGIN_PATH "pipeline-monitor.exe"
+          & $exe --version
+          if ($LASTEXITCODE -ne 0) { throw "the command did not run" }
+          $dir = New-Item -ItemType Directory "$env:RUNNER_TEMP\recordings"
+          $out = "$env:RUNNER_TEMP\command.log"
+          $p = Start-Process $exe -PassThru -NoNewWindow -RedirectStandardOutput $out `
+            -ArgumentList "--no-browser","--port","0","--recordings",$dir.FullName
+          try {
+            $url = $null
+            for ($i = 0; $i -lt 150 -and -not $url; $i++) {
+              Start-Sleep -Milliseconds 200
+              $m = Select-String -Path $out -Pattern '^pipeline-monitor: (http://[^#]+)' -ErrorAction SilentlyContinue
+              if ($m) { $url = $m.Matches[0].Groups[1].Value }
+            }
+            if (-not $url) { Get-Content $out; throw "the command printed no address" }
+            $page = Invoke-WebRequest -UseBasicParsing $url
+            if ($page.Content -notmatch '<title>pipeline-monitor</title>') { throw "no page at $url" }
+            if ((Invoke-WebRequest -UseBasicParsing "${url}api/hello").Content -notmatch '"viewer":true') { throw "not a viewer" }
+            Write-Output "command test passed: $url"
           } finally {
             Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
           }

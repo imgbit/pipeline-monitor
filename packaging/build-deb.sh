@@ -2,7 +2,8 @@
 # SPDX-FileCopyrightText: 2026 Łukasz Huńczak
 # SPDX-License-Identifier: LGPL-2.1-or-later
 #
-# Builds a binary .deb of the plugin for the Debian or Ubuntu release it
+# Builds a binary .deb of the plugin and the pipeline-monitor command for
+# the Debian or Ubuntu release it
 # runs on, from a build configured with --prefix=/usr.
 # Usage: packaging/build-deb.sh BUILD_DIR OUT_DIR
 set -eu
@@ -20,13 +21,16 @@ root="$stage/root"
 DESTDIR="$root" meson install -C "$build" --no-rebuild --strip
 plugin=$(cd "$root" && find . -name 'libgstpipelinemonitor.so')
 [ -n "$plugin" ]
+[ -x "$root/usr/bin/pipeline-monitor" ]
 
-# Depends from the libraries the plugin links; dpkg-shlibdeps wants a
+# Depends from the libraries the plugin and the command link;
+# dpkg-shlibdeps wants a
 # debian/control next to it.
 mkdir -p "$stage/debian"
 printf 'Source: pipeline-monitor\n\nPackage: pipeline-monitor\nArchitecture: any\n' \
   > "$stage/debian/control"
-depends=$(cd "$stage" && dpkg-shlibdeps -O "root/$plugin" |
+depends=$(cd "$stage" && dpkg-shlibdeps -O "root/$plugin" \
+  root/usr/bin/pipeline-monitor |
   sed -n 's/^shlibs:Depends=//p')
 # The symbols alone ask for less than the GStreamer meson.build requires.
 gst=$(sed -n "s/^gst_req = '>= \(.*\)'$/\1/p" meson.build)
@@ -47,7 +51,9 @@ Homepage: https://github.com/imgbit/pipeline-monitor
 Description: See a running GStreamer pipeline live in your browser
  A GStreamer tracer plugin: run a program with GST_TRACERS=pipeline-monitor
  and open the address it prints to see the pipeline graph, caps, live pad
- values, queues, properties, latency, errors and pipeline issues.
+ values, queues, properties, latency, errors and pipeline issues, and
+ record them. The pipeline-monitor command opens recordings without a
+ program.
 EOF
 
 # "." in the file name, not "~": GitHub replaces it in release files.
