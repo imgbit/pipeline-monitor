@@ -376,6 +376,74 @@ test_final_state (void)
   run_in_subprocess ();
 }
 
+/* record=on records from the start into the given folder; the program's
+ * end closes the recording. */
+static void
+test_record (void)
+{
+  if (g_test_subprocess ()) {
+    gchar *dir = g_dir_make_tmp ("pm-rec-XXXXXX", NULL);
+    /* In GST_TRACERS a backslash escapes: Windows paths use "/". */
+    gchar *option = g_strdelimit (g_strdup (dir), "\\", '/');
+    gchar *tracers = g_strdup_printf ("pipeline-monitor(port=0,record=on,"
+        "recordings=\"%s\",record-file-max=10M)", option);
+    GstElement *pipeline;
+    GstBus *bus;
+    GstMessage *msg;
+    GDir *folder;
+    const gchar *name;
+    gchar *path, *text;
+
+    g_free (start_tracer (tracers));
+    pipeline = gst_parse_launch ("videotestsrc is-live=true num-buffers=40 ! "
+        "queue name=rec-queue ! fakesink", NULL);
+    gst_element_set_state (pipeline, GST_STATE_PLAYING);
+    bus = gst_element_get_bus (pipeline);
+    msg = gst_bus_timed_pop_filtered (bus, 10 * GST_SECOND, GST_MESSAGE_EOS);
+    g_assert_nonnull (msg);
+    gst_message_unref (msg);
+    gst_object_unref (bus);
+    gst_element_set_state (pipeline, GST_STATE_NULL);
+    gst_object_unref (pipeline);
+    gst_deinit ();
+
+    folder = g_dir_open (dir, 0, NULL);
+    name = g_dir_read_name (folder);
+    g_assert_nonnull (name);
+    g_assert_true (g_str_has_prefix (name, "pipeline-monitor-"));
+    path = g_build_filename (dir, name, NULL);
+    g_assert_true (g_file_get_contents (path, &text, NULL, NULL));
+    g_assert_true (g_str_has_prefix (text, "{\"format\":"
+            "\"pipeline-monitor-recording\",\"version\":1,"));
+    g_assert_nonnull (strstr (text, "\n{\"type\":\"graph\","));
+    g_assert_nonnull (strstr (text, "rec-queue"));
+    g_assert_nonnull (strstr (text, "\n{\"type\":\"levels\","));
+    /* Elements added after the start get their properties too. */
+    {
+      gchar **lines = g_strsplit (text, "\n", -1);
+      gboolean found = FALSE;
+      guint i;
+
+      for (i = 0; lines[i] != NULL; i++)
+        found |= g_str_has_prefix (lines[i], "{\"type\":\"properties\",") &&
+            strstr (lines[i], "\"path\":\"pipeline0/rec-queue\"") != NULL;
+      g_assert_true (found);
+      g_strfreev (lines);
+    }
+    g_assert_true (g_str_has_suffix (text, "\"reason\":\"program-ended\"}\n"));
+    g_unlink (path);
+    g_dir_close (folder);
+    g_rmdir (dir);
+    g_free (text);
+    g_free (path);
+    g_free (tracers);
+    g_free (option);
+    g_free (dir);
+    return;
+  }
+  run_in_subprocess ();
+}
+
 int
 main (int argc, char **argv)
 {
@@ -389,6 +457,7 @@ main (int argc, char **argv)
   g_test_add_func ("/options/unparsable", test_unparsable_options);
   g_test_add_func ("/options/wait", test_wait);
   g_test_add_func ("/options/final-state", test_final_state);
+  g_test_add_func ("/options/record", test_record);
 
   return g_test_run ();
 }

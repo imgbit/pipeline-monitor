@@ -757,7 +757,9 @@ append_wanted (GString * json, GHashTable * table, gpointer client,
   while (g_hash_table_iter_next (&iter, NULL, &value)) {
     PmMeasure *m = value;
 
-    if (m->json == NULL || !(g_hash_table_contains (m->clients, client) ||
+    /* client NULL: what any page measures. */
+    if (m->json == NULL || !(client == NULL ? g_hash_table_size (m->clients) >
+            0 || m->all : g_hash_table_contains (m->clients, client) ||
             (all && m->all)))
       continue;
     if (any)
@@ -767,6 +769,31 @@ append_wanted (GString * json, GHashTable * table, gpointer client,
   }
   g_string_append (json, "],");
   return any;
+}
+
+/* Everything measured for any page, after pm_latency_tick, for
+ * recordings; NULL when nothing is measured. */
+gchar *
+pm_latency_message_all (PmLatency * latency)
+{
+  gboolean all = g_hash_table_size (latency->all_clients) > 0;
+  GString *json = g_string_new ("{\"elements\":");
+  gboolean any;
+
+  any = append_wanted (json, latency->elements, NULL, all);
+  g_string_append (json, "\"paths\":");
+  any = append_wanted (json, latency->paths, NULL, FALSE) || any;
+  if (!any && !all) {
+    g_string_free (json, TRUE);
+    return NULL;
+  }
+  g_string_append_printf (json, "\"all\":{\"on\":%s,",
+      all ? "true" : "false");
+  pm_json_append_value (json, "buffers_per_s", all ? latency->all_rate : 0);
+  pm_json_append_value (json, "stopped_rate", G_MAXUINT64);
+  pm_json_close (json, '}');
+  g_string_append_c (json, '}');
+  return g_string_free (json, FALSE);
 }
 
 /* The "latency" data for one page, after pm_latency_tick: only the

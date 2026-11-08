@@ -27,6 +27,7 @@ gboolean pm_latency_reported (GstElement * element, gboolean * live,
     GstClockTime * min, GstClockTime * max);
 void pm_latency_tick (PmLatency * latency);
 gchar *pm_latency_message (PmLatency * latency, gpointer client);
+gchar *pm_latency_message_all (PmLatency * latency);
 
 G_END_DECLS
 

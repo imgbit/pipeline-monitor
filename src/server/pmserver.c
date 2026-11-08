@@ -7,6 +7,7 @@
 #include "pmlevels.h"
 #include "pmprops.h"
 #include "pmmonitor.h"
+#include "pmrecorder.h"
 #include "pmui.h"
 
 #include <json-glib/json-glib.h>
@@ -64,6 +65,16 @@ struct _PmServer
   guint64 ticks;
   /* Watched properties: client -> set of "<element id>\n<property>". */
   GHashTable *watches;
+
+  /* Recordings. tapping: a recording (not a snapshot) is running and gets
+   * what is sent; state_thread reads all properties when one starts. */
+  PmRecorder *recorder;
+  gboolean tapping;
+  GThread *state_thread;
+  /* Set while state_thread reads; elements whose properties the running
+   * recording already has (they are read once, also when added later). */
+  gint state_busy;
+  GHashTable *recorded;
 
   gint update_scheduled;
   /* Set by pm_server_hold_findings, taken by the next flush; and by
@@ -753,11 +764,185 @@ result_free (JsonNode * node)
     json_node_unref (node);
 }
 
+/* Adds a message to the running recording; it may end at its limit. */
+static void
+record (PmServer * self, const gchar * text)
+{
+  if (self->tapping && !pm_recorder_write (self->recorder, text))
+    self->tapping = FALSE;
+}
+
+static gboolean
+any_element (GstElement * element, gboolean top_level)
+{
+  return TRUE;
+}
+
+typedef struct
+{
+  PmRecorder *recorder;
+  GPtrArray *elements;
+  gboolean snapshot;
+  gint *busy;
+} PmStateJob;
+
+/* Reads the properties of the job's elements for a recording and writes
+ * them as one "properties" message; ends a snapshot after it. */
+static gpointer
+read_state (gpointer user_data)
+{
+  PmStateJob *job = user_data;
+  GPtrArray *elements = job->elements;
+  GString *json = g_string_new ("{\"elements\":[");
+  gchar *text;
+  guint i;
+
+  for (i = 0; i < elements->len; i++) {
+    PmElementRef *ref = g_ptr_array_index (elements, i);
+    gchar *props = pm_props_read (ref->element, NULL, PROPERTIES_TIMEOUT_US);
+
+    if (i > 0)
+      g_string_append_c (json, ',');
+    g_string_append_printf (json, "{\"element\":%" G_GUINT64_FORMAT ",",
+        ref->id);
+    pm_json_append_member_string (json, "path", ref->path);
+    g_string_append (json, props + 1);
+    g_free (props);
+  }
+  g_string_append (json, "]}");
+  text = pm_json_message ("properties", json->str);
+  pm_recorder_write (job->recorder, text);
+  if (job->snapshot)
+    pm_recorder_stop (job->recorder, "snapshot");
+  g_free (text);
+  g_string_free (json, TRUE);
+  g_ptr_array_unref (elements);
+  g_atomic_int_set (job->busy, 0);
+  g_free (job);
+  return NULL;
+}
+
+/* Reads, on state_thread, the properties of the elements the recording
+ * does not have yet. */
+static void
+read_new_elements (PmServer * self, gboolean snapshot)
+{
+  GPtrArray *all = pm_model_find_elements (self->model, any_element);
+  GPtrArray *fresh = g_ptr_array_new_with_free_func ((GDestroyNotify)
+      pm_element_ref_free);
+  PmStateJob *job;
+  guint i;
+
+  for (i = 0; i < all->len; i++) {
+    PmElementRef *ref = g_ptr_array_index (all, i);
+
+    if (g_hash_table_add (self->recorded, GSIZE_TO_POINTER (ref->id)))
+      g_ptr_array_add (fresh, g_ptr_array_steal_index_fast (all, i--));
+  }
+  g_ptr_array_unref (all);
+  if (fresh->len == 0 && !snapshot) {
+    g_ptr_array_unref (fresh);
+    return;
+  }
+  if (self->state_thread != NULL)
+    g_clear_pointer (&self->state_thread, g_thread_join);
+  job = g_new0 (PmStateJob, 1);
+  job->recorder = self->recorder;
+  job->elements = fresh;
+  job->snapshot = snapshot;
+  job->busy = &self->state_busy;
+  g_atomic_int_set (&self->state_busy, 1);
+  self->state_thread = g_thread_new ("pm-record-state", read_state, job);
+}
+
+/* Starts a recording ("recording" or "snapshot") with the state as it is
+ * now: graph, the whole log, findings, levels, and every element's
+ * properties (read on another thread). view: the page's, or NULL. */
+static gboolean
+start_recording (PmServer * self, const gchar * kind, const gchar * view,
+    GError ** error)
+{
+  gchar *hello = hello_body ();
+  gchar *parts[4], *text;
+  const gchar *types[] = { "graph", "log", "findings", "levels" };
+  guint i;
+
+  if (self->state_thread != NULL)
+    g_clear_pointer (&self->state_thread, g_thread_join);
+  if (!pm_recorder_start (self->recorder, kind, g_get_prgname (), hello, view,
+          error)) {
+    g_free (hello);
+    return FALSE;
+  }
+  g_free (hello);
+  parts[0] = pm_model_to_json (self->model);
+  parts[1] = pm_model_log_to_json (self->model, 0, NULL);
+  parts[2] = g_strdup (self->last_findings ? self->last_findings :
+      "{\"findings\":[]}");
+  parts[3] = self->last_levels ? g_strdup (self->last_levels) :
+      pm_levels_to_json (self->model);
+  for (i = 0; i < G_N_ELEMENTS (parts); i++) {
+    text = pm_json_message (types[i], parts[i]);
+    pm_recorder_write (self->recorder, text);
+    g_free (text);
+    g_free (parts[i]);
+  }
+  self->tapping = g_strcmp0 (kind, "recording") == 0;
+  g_hash_table_remove_all (self->recorded);
+  read_new_elements (self, !self->tapping);
+  return TRUE;
+}
+
+/* The properties any page watches, for a recording. */
+static void
+record_properties (PmServer * self, GHashTable * by_element,
+    GHashTable * results)
+{
+  GString *json = g_string_new ("{\"elements\":[");
+  GHashTableIter iter;
+  gpointer key, value;
+  gchar *text;
+
+  g_hash_table_iter_init (&iter, by_element);
+  while (g_hash_table_iter_next (&iter, &key, &value)) {
+    JsonNode *result = g_hash_table_lookup (results, key);
+    GPtrArray *names = g_ptr_array_new ();
+    gchar *values, *path;
+    guint i;
+
+    if (result == NULL) {
+      g_ptr_array_unref (names);
+      continue;
+    }
+    for (i = 0; i < ((GPtrArray *) value)->len; i++)
+      if (g_ptr_array_index ((GPtrArray *) value, i) != NULL)
+        g_ptr_array_add (names, g_ptr_array_index ((GPtrArray *) value, i));
+    values = watched_values (result, names);
+    path = pm_model_path (self->model, *(gint64 *) key);
+    if (json->str[json->len - 1] != '[')
+      g_string_append_c (json, ',');
+    g_string_append_printf (json, "{\"element\":%" G_GINT64_FORMAT ",",
+        *(gint64 *) key);
+    pm_json_append_member_string (json, "path", path);
+    g_string_append (json, values + 1);
+    g_free (path);
+    g_free (values);
+    g_ptr_array_unref (names);
+  }
+  g_string_append (json, "]}");
+  if (json->str[json->len - 3] != '[') {
+    text = pm_json_message ("properties", json->str);
+    record (self, text);
+    g_free (text);
+  }
+  g_string_free (json, TRUE);
+}
+
 /* Reads the watched properties, once per element however many pages watch
  * it, and sends each page {"type":"properties","elements":[...]} with its
  * elements; an element that is gone is reported once, then dropped. */
 static void
-send_properties (PmServer * self)
+send_properties (PmServer * self, gboolean to_recording)
 {
   GHashTable *by_element = g_hash_table_new_full (g_int64_hash,
       g_int64_equal, g_free, (GDestroyNotify) g_ptr_array_unref);
@@ -799,6 +984,8 @@ send_properties (PmServer * self)
   g_hash_table_iter_init (&iter, self->watches);
   while (g_hash_table_iter_next (&iter, &key, &value))
     send_watched (self, key, value, results);
+  if (to_recording)
+    record_properties (self, by_element, results);
   g_hash_table_unref (results);
   g_hash_table_unref (by_element);
 }
@@ -827,6 +1014,7 @@ send_findings (PmServer * self)
   }
   text = pm_json_message ("findings", findings);
   send_to_all (self, text);
+  record (self, text);
   g_free (text);
   g_free (self->last_findings);
   self->last_findings = findings;
@@ -836,14 +1024,29 @@ static gboolean
 send_all_stats (gpointer user_data)
 {
   PmServer *self = user_data;
-  guint i;
-
+  /* Recordings keep levels, pads, properties and latency once a second. */
+  gboolean to_recording = self->tapping && self->ticks % 4 == 0;
   gchar *levels, *latency;
+  guint i;
 
   pm_monitor_tick (self->monitor);
   g_free (self->last_levels);
   self->last_levels = pm_levels_to_json (self->model);
   levels = pm_json_message ("levels", self->last_levels);
+  if (to_recording) {
+    gchar *stats = pm_monitor_stats_json (self->monitor, NULL);
+
+    if (!g_atomic_int_get (&self->state_busy))
+      read_new_elements (self, FALSE);
+    record (self, levels);
+    if (stats != NULL) {
+      gchar *text = pm_json_message ("pads", stats);
+
+      record (self, text);
+      g_free (text);
+      g_free (stats);
+    }
+  }
   for (i = 0; i < self->clients->len; i++) {
     SoupWebsocketConnection *conn = g_ptr_array_index (self->clients, i);
     gchar *stats = pm_monitor_stats_json (self->monitor, conn);
@@ -854,7 +1057,7 @@ send_all_stats (gpointer user_data)
     g_free (stats);
   }
   g_free (levels);
-  send_properties (self);
+  send_properties (self, to_recording);
 
   /* Findings once per second, sent when they change. */
   if (self->ticks++ % 4 == 0)
@@ -873,6 +1076,13 @@ send_all_stats (gpointer user_data)
       g_free (text);
       g_free (latency);
     }
+  }
+  if (to_recording && (latency = pm_latency_message_all (self->latency))) {
+    gchar *text = pm_json_message ("latency", latency);
+
+    record (self, text);
+    g_free (text);
+    g_free (latency);
   }
   return G_SOURCE_CONTINUE;
 }
@@ -941,6 +1151,7 @@ send_update (gpointer user_data)
   if (g_strcmp0 (graph, self->last_graph) != 0) {
     text = pm_json_message ("graph", graph);
     send_to_all (self, text);
+    record (self, text);
     g_free (text);
     g_free (self->last_graph);
     self->last_graph = graph;
@@ -953,6 +1164,7 @@ send_update (gpointer user_data)
   if (seq > self->log_sent) {
     text = pm_json_message ("log", log);
     send_to_all (self, text);
+    record (self, text);
     g_free (text);
     self->log_sent = seq;
   }
@@ -1025,6 +1237,8 @@ flush_now (gpointer user_data)
 
     send_to_all (self, bye);
     g_free (bye);
+    self->tapping = FALSE;
+    pm_recorder_stop (self->recorder, "program-ended");
   }
   source = g_timeout_source_new (100);
   g_source_set_callback (source, flush_done, flush,
@@ -1200,6 +1414,14 @@ pm_server_new (PmModel * model, guint port, const gchar * ui_dir,
         g_ascii_strtoull (g_getenv ("PM_MEASURE_ALL_LIMIT"), NULL, 10));
   self->ui_dir = g_strdup (ui_dir);
   self->requested_port = port;
+  self->recorded = g_hash_table_new (NULL, NULL);
+  {
+    gchar *dir = pm_recorder_default_dir ();
+
+    self->recorder = pm_recorder_new (dir, PM_RECORD_FILE_MAX,
+        PM_RECORD_TOTAL_MAX);
+    g_free (dir);
+  }
   self->context = g_main_context_new ();
   self->loop = g_main_loop_new (self->context, FALSE);
   self->clients = g_ptr_array_new ();
@@ -1237,6 +1459,10 @@ pm_server_free (PmServer * self)
   g_source_attach (source, self->context);
   g_source_unref (source);
   g_thread_join (self->thread);
+  if (self->state_thread != NULL)
+    g_thread_join (self->state_thread);
+  pm_recorder_free (self->recorder);
+  g_hash_table_unref (self->recorded);
 
   g_ptr_array_unref (self->clients);
   g_hash_table_unref (self->watches);
@@ -1253,6 +1479,47 @@ pm_server_free (PmServer * self)
   g_free (self->last_findings);
   g_free (self->url);
   g_free (self);
+}
+
+typedef struct
+{
+  PmServer *server;
+  PmRecorder *recorder;
+  gboolean record;
+} PmRecordSetup;
+
+static gboolean
+apply_recordings (gpointer user_data)
+{
+  PmRecordSetup *setup = user_data;
+  PmServer *self = setup->server;
+  GError *error = NULL;
+
+  pm_recorder_free (self->recorder);
+  self->recorder = setup->recorder;
+  if (setup->record &&
+      !start_recording (self, "recording", NULL, &error)) {
+    g_printerr ("pipeline-monitor: cannot record: %s\n", error->message);
+    g_error_free (error);
+  }
+  g_free (setup);
+  return G_SOURCE_REMOVE;
+}
+
+/* Sets the recordings folder and limits; with record, starts recording. */
+void
+pm_server_set_recordings (PmServer * self, const PmRecordOptions * options)
+{
+  PmRecordSetup *setup = g_new0 (PmRecordSetup, 1);
+  gchar *dir = options->dir ? g_strdup (options->dir) :
+      pm_recorder_default_dir ();
+
+  setup->server = self;
+  setup->recorder = pm_recorder_new (dir, options->file_max,
+      options->total_max);
+  setup->record = options->record;
+  g_main_context_invoke (self->context, apply_recordings, setup);
+  g_free (dir);
 }
 
 const gchar *

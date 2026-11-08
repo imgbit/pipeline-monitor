@@ -625,16 +625,55 @@ get_bool_option (const GstStructure * s, const gchar * name, gboolean def)
       g_ascii_strcasecmp (str, "no") == 0 || g_strcmp0 (str, "0") == 0);
 }
 
+/* A size like 100M or 1G (K, M, G: powers of 1024), or def. */
+static guint64
+get_size_option (const GstStructure * s, const gchar * name, guint64 def)
+{
+  const gchar *str = gst_structure_get_string (s, name);
+  gint value;
+  gchar *end = NULL;
+  guint64 size;
+
+  if (str == NULL)
+    return gst_structure_get_int (s, name, &value) && value > 0 ? value : def;
+  size = g_ascii_strtoull (str, &end, 10);
+  switch (g_ascii_toupper (*end)) {
+    case 'G':
+      size *= 1024;
+      /* fall through */
+    case 'M':
+      size *= 1024;
+      /* fall through */
+    case 'K':
+      size *= 1024;
+      end++;
+      break;
+    default:
+      break;
+  }
+  if (size == 0 || end == str || *end != '\0') {
+    g_printerr ("pipeline-monitor: invalid %s '%s', using the default\n", name,
+        str);
+    return def;
+  }
+  return size;
+}
+
 /* Options come from
  * GST_TRACERS="pipeline-monitor(port=9000,ui-dir=web,log=false)". */
 static guint
-parse_options (GstPipelineMonitorTracer * self, gchar ** ui_dir)
+parse_options (GstPipelineMonitorTracer * self, gchar ** ui_dir,
+    PmRecordOptions * record)
 {
   gchar *params = NULL, *desc;
   GstStructure *s;
   gint port = DEFAULT_PORT;
 
   *ui_dir = NULL;
+  record->dir = NULL;
+  record->file_max = PM_RECORD_FILE_MAX;
+  record->total_max = PM_RECORD_TOTAL_MAX;
+  record->record = FALSE;
   g_object_get (self, "params", &params, NULL);
   if (params == NULL)
     return DEFAULT_PORT;
@@ -655,6 +694,12 @@ parse_options (GstPipelineMonitorTracer * self, gchar ** ui_dir)
     self->log = get_bool_option (s, "log", TRUE);
     self->flow = get_bool_option (s, "flow", TRUE);
     self->wait = get_bool_option (s, "wait", FALSE);
+    record->dir = g_strdup (gst_structure_get_string (s, "recordings"));
+    record->file_max = get_size_option (s, "record-file-max",
+        PM_RECORD_FILE_MAX);
+    record->total_max = get_size_option (s, "record-total-max",
+        PM_RECORD_TOTAL_MAX);
+    record->record = get_bool_option (s, "record", FALSE);
     gst_structure_free (s);
   }
   g_free (desc);
@@ -680,6 +725,7 @@ gst_pipeline_monitor_tracer_constructed (GObject * object)
 {
   GstPipelineMonitorTracer *self = GST_PIPELINE_MONITOR_TRACER (object);
   GError *error = NULL;
+  PmRecordOptions record;
   gchar *ui_dir;
   guint port;
 
@@ -688,7 +734,7 @@ gst_pipeline_monitor_tracer_constructed (GObject * object)
 
   self->log = TRUE;
   self->flow = TRUE;
-  port = parse_options (self, &ui_dir);
+  port = parse_options (self, &ui_dir, &record);
   pm_model_set_log_enabled (self->model, self->log);
   if (self->flow) {
     GstTracer *tracer = GST_TRACER (self);
@@ -712,8 +758,11 @@ gst_pipeline_monitor_tracer_constructed (GObject * object)
   if (self->server == NULL) {
     g_printerr ("pipeline-monitor: cannot start server: %s\n", error->message);
     g_error_free (error);
+    g_free ((gchar *) record.dir);
     return;
   }
+  pm_server_set_recordings (self->server, &record);
+  g_free ((gchar *) record.dir);
   pm_model_set_changed_func (self->model,
       (PmModelChangedFunc) pm_server_notify, self->server);
   g_printerr ("pipeline-monitor: %s\n", pm_server_get_url (self->server));

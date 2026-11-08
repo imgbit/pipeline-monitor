@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "envelope.h"
+#include "pmrecorder.h"
 #include "pmserver.h"
 
 static gchar *pad_finding (const gchar * kind, const gchar * element,
@@ -834,6 +835,160 @@ next_error (WsClient * client)
   json_node_unref (root);
   g_free (message);
   return error;
+}
+
+/* Recordings */
+
+static gchar *
+read_file (const gchar * dir, const gchar * name)
+{
+  gchar *path = g_build_filename (dir, name, NULL);
+  gchar *text = NULL;
+
+  g_assert_true (g_file_get_contents (path, &text, NULL, NULL));
+  g_free (path);
+  return text;
+}
+
+/* The names in a recordings list, newest first, comma separated. */
+static gchar *
+recording_names (PmRecorder * recorder)
+{
+  gchar *list = pm_recorder_list_json (recorder);
+  JsonNode *root = parse (list);
+  JsonArray *items = json_object_get_array_member (json_node_get_object
+      (root), "recordings");
+  GString *names = g_string_new (NULL);
+  guint i;
+
+  for (i = 0; i < json_array_get_length (items); i++)
+    g_string_append_printf (names, "%s%s", i ? "," : "",
+        json_object_get_string_member (json_array_get_object_element (items,
+                i), "name"));
+  json_node_unref (root);
+  g_free (list);
+  return g_string_free (names, FALSE);
+}
+
+/* Passwords in URIs and secret properties are hidden; the rest is not. */
+static void
+test_recorder_secrets (void)
+{
+  gchar *out = pm_recorder_hide_secrets ("{\"type\":\"log\",\"text\":"
+      "\"cannot open rtsp://admin:s3cret@cam/1 now\",\"properties\":["
+      "{\"name\":\"password\",\"value\":\"pw\"},"
+      "{\"name\":\"srtp-key\",\"value\":\"00ff\",\"default\":\"aa\"},"
+      "{\"name\":\"key-int-max\",\"value\":30},"
+      "{\"name\":\"location\",\"value\":\"file:///tmp/a.mp4\"}]}");
+
+  g_assert_null (strstr (out, "s3cret"));
+  g_assert_nonnull (strstr (out, "rtsp://(hidden)@cam/1"));
+  g_assert_null (strstr (out, "\"pw\""));
+  g_assert_null (strstr (out, "00ff"));
+  g_assert_null (strstr (out, "\"aa\""));
+  g_assert_nonnull (strstr (out, "\"key-int-max\",\"value\":30"));
+  g_assert_nonnull (strstr (out, "file:///tmp/a.mp4"));
+  g_free (out);
+}
+
+/* A recording: header, messages, end line; listed, downloadable by name,
+ * deletable when it is not running. */
+static void
+test_recorder_files (void)
+{
+  gchar *dir = g_dir_make_tmp ("pm-rec-XXXXXX", NULL);
+  PmRecorder *recorder = pm_recorder_new (dir, 1024 * 1024, 1024 * 1024);
+  gchar *names, *text, *path;
+  gchar **lines;
+
+  g_assert_true (pm_recorder_start (recorder, "recording", "my prog",
+          "{\"version\":\"x\"}", "{\"pins\":[]}", NULL));
+  g_assert_false (pm_recorder_start (recorder, "snapshot", "p", NULL, NULL,
+          NULL));
+  g_assert_true (pm_recorder_write (recorder, "{\"type\":\"levels\"}"));
+  names = recording_names (recorder);
+  g_assert_true (g_str_has_prefix (names, "pipeline-monitor-my_prog-"));
+  g_assert_true (g_str_has_suffix (names, ".jsonl"));
+  g_assert_false (pm_recorder_delete (recorder, names));
+  pm_recorder_stop (recorder, "stopped");
+  g_assert_false (pm_recorder_write (recorder, "{\"type\":\"levels\"}"));
+
+  text = read_file (dir, names);
+  lines = g_strsplit (text, "\n", -1);
+  g_assert_cmpuint (g_strv_length (lines), ==, 4);
+  g_assert_true (g_str_has_prefix (lines[0], "{\"format\":"
+          "\"pipeline-monitor-recording\",\"version\":1,\"protocol\":1,"
+          "\"kind\":\"recording\",\"started\":"));
+  g_assert_nonnull (strstr (lines[0], "\"view\":{\"pins\":[]}"));
+  g_assert_cmpstr (lines[1], ==, "{\"type\":\"levels\"}");
+  g_assert_true (g_str_has_prefix (lines[2], "{\"type\":\"end\","));
+  g_assert_nonnull (strstr (lines[2], "\"reason\":\"stopped\""));
+  g_assert_cmpstr (lines[3], ==, "");
+  g_strfreev (lines);
+  g_free (text);
+
+  path = pm_recorder_path (recorder, names);
+  g_assert_nonnull (path);
+  g_free (path);
+  g_assert_null (pm_recorder_path (recorder, "../pipeline-monitor-x.jsonl"));
+  g_assert_null (pm_recorder_path (recorder, "other.jsonl"));
+  g_assert_true (pm_recorder_delete (recorder, names));
+  g_free (names);
+  names = recording_names (recorder);
+  g_assert_cmpstr (names, ==, "");
+  g_free (names);
+
+  pm_recorder_free (recorder);
+  g_rmdir (dir);
+  g_free (dir);
+}
+
+/* A file ends at its limit; the oldest files go when the folder is full. */
+static void
+test_recorder_limits (void)
+{
+  gchar *dir = g_dir_make_tmp ("pm-rec-XXXXXX", NULL);
+  PmRecorder *recorder = pm_recorder_new (dir, 2000, 5000);
+  gchar *line = g_strdup_printf ("{\"type\":\"levels\",\"pad\":\"%s\"}",
+      "0123456789012345678901234567890123456789");
+  gchar *names, *text, **list;
+  gint i, written = 0;
+
+  g_assert_true (pm_recorder_start (recorder, "recording", "p", NULL, NULL,
+          NULL));
+  for (i = 0; i < 100 && pm_recorder_write (recorder, line); i++)
+    written++;
+  g_assert_cmpint (written, >, 10);
+  g_assert_cmpint (written, <, 60);
+  g_assert_false (pm_recorder_running (recorder));
+  names = recording_names (recorder);
+  text = read_file (dir, names);
+  g_assert_nonnull (strstr (text, "\"reason\":\"limit\""));
+  g_free (text);
+  g_free (names);
+
+  /* Each about 2 KB: with 5 KB in total, the oldest are removed. */
+  for (i = 0; i < 4; i++) {
+    g_usleep (1100 * G_TIME_SPAN_MILLISECOND);
+    g_assert_true (pm_recorder_start (recorder, "recording", "p", NULL,
+            NULL, NULL));
+    while (pm_recorder_write (recorder, line));
+  }
+  names = recording_names (recorder);
+  list = g_strsplit (names, ",", -1);
+  g_assert_cmpuint (g_strv_length (list), <=, 3);
+  g_strfreev (list);
+  g_free (names);
+
+  for (names = recording_names (recorder), list = g_strsplit (names, ",", -1),
+      i = 0; list[i] != NULL && *list[i] != '\0'; i++)
+    g_assert_true (pm_recorder_delete (recorder, list[i]));
+  g_strfreev (list);
+  g_free (names);
+  pm_recorder_free (recorder);
+  g_rmdir (dir);
+  g_free (dir);
+  g_free (line);
 }
 
 /* The rules every message follows (docs/protocol.md). */
@@ -2806,6 +2961,9 @@ main (int argc, char **argv)
   g_test_add_func ("/server/websocket-log", test_websocket_log);
   g_test_add_func ("/server/monitor", test_monitor);
   g_test_add_func ("/server/monitor-values", test_monitor_values);
+  g_test_add_func ("/recorder/secrets", test_recorder_secrets);
+  g_test_add_func ("/recorder/files", test_recorder_files);
+  g_test_add_func ("/recorder/limits", test_recorder_limits);
   g_test_add_func ("/server/hello", test_hello);
   g_test_add_func ("/server/protocol", test_protocol);
   g_test_add_func ("/server/monitor-bad-commands", test_monitor_bad_commands);
