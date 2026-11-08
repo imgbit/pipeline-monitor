@@ -16,6 +16,7 @@ import { cannotMeasure, latencyRows } from "./latency.js";
 import { Measuring } from "./measure.js";
 import { FindingsView } from "./findings.js";
 import { RecordingsView } from "./recordings.js";
+import { Dock } from "./dock.js";
 
 const $ = (id) => document.getElementById(id);
 const COLLAPSED_KEY = "pipeline-monitor.collapsed";
@@ -254,6 +255,16 @@ const findings = new FindingsView({
     if (buildIndex(state.graph).elements.has(id))
       view.handlers.select(id);
   },
+});
+
+// One panel at the bottom at a time, opened from the header.
+const dock = new Dock({
+  findings: { button: $("problems-counter"), panel: $("findings-panel"),
+    close: $("findings-close") },
+  log: { button: $("log-counter"), panel: $("log-panel"),
+    close: $("log-close") },
+  recordings: { button: $("recordings-counter"),
+    panel: $("recordings-panel"), close: $("recordings-close") },
 });
 
 // The worst severity per place, for the graph.
@@ -748,40 +759,138 @@ function openRecording(text, name) {
   if (!state.viewing)
     state.live = { collapsed: state.collapsed,
       selectedPath: state.selectedPath };
-  state.viewing = { header, properties: new Map() };
+  const byType = { graph: [], log: [], findings: [], levels: [], latency: [],
+    properties: [] };
+  for (const message of messages)
+    byType[message.type]?.push(message);
+  const start = header.started;
+  const end = Math.max(start, messages.at(-1)?.time ?? start);
+  stopPlaying();
+  state.viewing = { header, properties: new Map(), byType, start, end,
+    at: end, shownGraph: undefined, speed: 1, timer: null };
   clearState();
   state.collapsed = new Set(header.view?.collapsed ?? []);
   state.selectedPath = header.view?.selected ?? null;
   state.reselect = state.selectedPath !== null;
   state.places = { tops: new Map() };
   document.body.classList.add("viewing");
-  for (const message of messages) {
-    if (message.type === "properties")
-      message.elements.filter((e) => !e.gone).forEach(keepProperties);
-    else if (["graph", "log", "findings", "levels", "latency"]
-      .includes(message.type))
-      handleMessage(message);
-  }
-  const last = messages.at(-1)?.time ?? header.started;
   const program = header.hello?.program ?? "a program";
   const when = new Date(header.started / 1000).toLocaleString();
   $("viewing-text").textContent = header.kind === "snapshot"
-    ? `Snapshot of ${program}, ${when}`
-    : `Recording of ${program}, ${when}, ` +
-      `${Math.round((last - header.started) / 1e6)} s`;
+    ? `Snapshot of ${program}, ${when}` : `Recording of ${program}, ${when}`;
+  $("playback").hidden = header.kind === "snapshot";
+  $("speed").textContent = "1×";
   $("viewing").hidden = false;
+  seek(end);
   $("ended").hidden = true;
   $("lost").hidden = true;
   $("connection").textContent = "recording";
   $("connection").className = "connection viewing";
   recordings.showError(null);
-  update();
-  refreshProperties();
 }
+
+// The last message of a list (in time order) at or before t, or null.
+function latestAt(list, t) {
+  let lo = 0;
+  let hi = list.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (list[mid].time <= t)
+      lo = mid + 1;
+    else
+      hi = mid;
+  }
+  return lo > 0 ? list[lo - 1] : null;
+}
+
+const NO_LATENCY = { elements: [], paths: [],
+  all: { on: false, buffers_per_s: 0, stopped_rate: null } };
+
+function clock(us) {
+  const s = Math.max(0, Math.floor(us / 1e6));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
+// Shows the recording as it was at t (µs since 1970).
+function seek(t) {
+  const v = state.viewing;
+  v.at = Math.max(v.start, Math.min(t, v.end));
+  const at = v.at;
+  const graph = latestAt(v.byType.graph, at);
+  if (graph !== v.shownGraph) {
+    v.shownGraph = graph;
+    if (graph)
+      handleMessage(graph);
+    else {
+      state.graph = { pipelines: [], links: [] };
+      update();
+    }
+  }
+  findings.apply(latestAt(v.byType.findings, at) ?? { findings: [] });
+  showProblems();
+  applyLevels(latestAt(v.byType.levels, at) ?? { queues: [], pipelines: [] });
+  applyLatency(latestAt(v.byType.latency, at) ?? NO_LATENCY);
+  log.reset();
+  for (const message of v.byType.log) {
+    if (message.time > at)
+      break;
+    log.apply(message);
+  }
+  v.properties = new Map();
+  for (const message of v.byType.properties) {
+    if (message.time > at)
+      break;
+    message.elements.filter((e) => !e.gone).forEach(keepProperties);
+  }
+  refreshProperties();
+  const span = v.end - v.start;
+  $("seek").value = span > 0 ? String(Math.round((at - v.start) / span *
+    1000)) : "1000";
+  $("play-time").textContent = `${clock(at - v.start)} / ${clock(span)}`;
+}
+
+function stopPlaying() {
+  if (state.viewing?.timer) {
+    clearInterval(state.viewing.timer);
+    state.viewing.timer = null;
+  }
+  $("play").textContent = "▶";
+  $("play").title = "Play";
+}
+
+$("play").addEventListener("click", () => {
+  const v = state.viewing;
+  if (!v || v.timer) {
+    stopPlaying();
+    return;
+  }
+  if (v.at >= v.end)
+    seek(v.start);
+  $("play").textContent = "❚❚";
+  $("play").title = "Pause";
+  v.timer = setInterval(() => {
+    seek(v.at + 250000 * v.speed);
+    if (v.at >= v.end)
+      stopPlaying();
+  }, 250);
+});
+$("seek").addEventListener("input", (e) => {
+  const v = state.viewing;
+  if (v)
+    seek(v.start + (v.end - v.start) * Number(e.target.value) / 1000);
+});
+$("speed").addEventListener("click", () => {
+  const v = state.viewing;
+  if (!v)
+    return;
+  v.speed = v.speed === 1 ? 4 : v.speed === 4 ? 16 : 1;
+  $("speed").textContent = `${v.speed}×`;
+});
 
 function closeRecording() {
   if (!state.viewing)
     return;
+  stopPlaying();
   state.viewing = null;
   document.body.classList.remove("viewing");
   $("viewing").hidden = true;

@@ -5,6 +5,7 @@
 // and the findings panel.
 
 import { parseCaps } from "./caps.js";
+import { setCounter } from "./dock.js";
 
 function add(parent, tag, content, cls) {
   const node = document.createElement(tag);
@@ -53,20 +54,12 @@ function capsColumn(title, caps, other) {
 }
 
 export class FindingsView {
-  // nodes: {counter, panel, rows, close}; handlers: select(elementId),
+  // nodes: {counter, rows}; handlers: select(elementId),
   // name(findingElementId) -> short element name for the place button.
   constructor(nodes, handlers) {
     this.nodes = nodes;
     this.handlers = handlers;
     this.list = [];
-    nodes.counter.addEventListener("click",
-      () => this.setOpen(nodes.panel.hidden));
-    nodes.close.addEventListener("click", () => this.setOpen(false));
-  }
-
-  setOpen(open) {
-    this.nodes.panel.hidden = !open;
-    this.nodes.counter.setAttribute("aria-expanded", String(open));
   }
 
   // Findings by place, for the graph and tooltips: {pads: Map pad id ->
@@ -92,10 +85,10 @@ export class FindingsView {
     const { counter, rows } = this.nodes;
     const errors = this.list.filter((f) => f.severity === "error").length;
     const warnings = this.list.filter((f) => f.severity === "warning").length;
-    counter.textContent = this.list.length
-      ? plural(this.list.length, "problem") : "No problems";
-    counter.className = "problems-counter" + (errors ? " has-errors"
-      : warnings ? " has-warnings" : "");
+    setCounter(counter, "Problems", this.list.length || null,
+      errors ? "error" : warnings ? "warning" : "info");
+    counter.title = this.list.length ? plural(this.list.length, "problem") +
+      " found in the running pipeline" : "No problems found";
 
     if (!this.list.length) {
       rows.replaceChildren();

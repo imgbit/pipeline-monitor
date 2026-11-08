@@ -302,14 +302,12 @@ main {
 
 /* Errors and warnings */
 
-.log-counter { color: var(--muted); }
-.log-counter.has-warnings { color: var(--warning); border-color: var(--warning); }
-.log-counter.has-errors { color: var(--error); border-color: var(--error); }
 
 .log-panel {
+  position: relative;
   display: flex;
   flex-direction: column;
-  height: 35vh;
+  height: var(--panel-height, 35vh);
   min-height: 120px;
   border-top: 1px solid var(--border);
   background: var(--panel);
@@ -604,9 +602,6 @@ main {
 
 /* Problems */
 
-.problems-counter { color: var(--muted); }
-.problems-counter.has-warnings { color: var(--warning); border-color: var(--warning); }
-.problems-counter.has-errors { color: var(--error); border-color: var(--error); }
 
 .finding {
   display: grid;
@@ -675,8 +670,6 @@ main {
 
 /* The header's buttons keep their size; the times line gives way. */
 .recordings-counter, .problems-counter, .log-counter { flex: none; }
-.recordings-counter { color: var(--muted); }
-.recordings-counter.recording { color: var(--error); border-color: var(--error); }
 
 .rec-row {
   display: grid;
@@ -701,3 +694,34 @@ main {
 body.viewing #pins, body.viewing #pin-lines, body.viewing #measure-all,
 body.viewing #record, body.viewing #snapshot, body.viewing .measure-toggle,
 body.viewing .mute-toggle, body.viewing #details .pin-prop { display: none; }
+
+/* Header buttons: a name and, when there is something, a count. */
+.recordings-counter, .problems-counter, .log-counter {
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.count {
+  padding: 0 6px;
+  border-radius: 9px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: #fff;
+  background: var(--muted);
+}
+.count.error, .count.recording { background: var(--error); }
+.count.warning { background: var(--warning); }
+
+/* The bottom panels' top edge: drag to resize. */
+.panel-resize {
+  position: absolute;
+  top: -4px;
+  left: 0;
+  right: 0;
+  height: 8px;
+  cursor: ns-resize;
+  z-index: 5;
+}
+.rec-offline { padding: 6px 16px; color: var(--muted); border-bottom: 1px solid var(--border); }
+.playback { display: inline-flex; align-items: center; gap: 6px; margin-left: 8px; }
+.playback[hidden] { display: none; }
+.playback input[type="range"] { width: 220px; }
+.play-time { font-variant-numeric: tabular-nums; color: var(--muted); }

@@ -23,11 +23,13 @@
   <span id="pipeline-times" class="muted times" hidden></span>
   <span class="spacer"></span>
   <button id="recordings-counter" class="recordings-counter"
-    aria-controls="recordings-panel" aria-expanded="false">Recordings</button>
+    aria-controls="recordings-panel" aria-expanded="false"
+    aria-pressed="false">Recordings</button>
   <button id="problems-counter" class="problems-counter"
-    aria-controls="findings-panel" aria-expanded="false">No problems</button>
+    aria-controls="findings-panel" aria-expanded="false"
+    aria-pressed="false">Problems</button>
   <button id="log-counter" class="log-counter" aria-controls="log-panel"
-    aria-expanded="false" hidden>No errors</button>
+    aria-expanded="false" aria-pressed="false" hidden>Log</button>
   <span id="connection" class="connection">connecting</span>
 </header>
 <div id="about" class="about" role="dialog" aria-label="About pipeline-monitor"
@@ -52,6 +54,13 @@
     last known state, which may be out of date. Reconnecting…</div>
   <div id="viewing" class="ended-banner viewing-banner" hidden>
     <span id="viewing-text"></span> · read-only
+    <span id="playback" class="playback">
+      <button id="play" title="Play">▶</button>
+      <input id="seek" type="range" min="0" max="1000" value="1000"
+        aria-label="Time in the recording">
+      <span id="play-time" class="play-time"></span>
+      <button id="speed" title="Playback speed">1×</button>
+    </span>
     <button id="viewing-close">Close</button></div>
   <div id="pick-hint" class="pick-hint" hidden>Click the pad to measure from · Esc to cancel</div>
   <div class="toolbar">

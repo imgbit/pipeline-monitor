@@ -4,6 +4,8 @@
 // Errors and warnings: the browser's copy of the log, the header counter and
 // the log panel. Clear and mute only affect this browser.
 
+import { setCounter } from "./dock.js";
+
 const MAX_ENTRIES = 500;
 const MUTED_KEY = "pipeline-monitor.muted";
 
@@ -31,8 +33,6 @@ export class LogView {
     this.clearedElements = new Map();
     this.muted = this.loadMuted();
 
-    nodes.counter.addEventListener("click", () => this.setOpen(nodes.panel.hidden));
-    nodes.close.addEventListener("click", () => this.setOpen(false));
     nodes.clear.addEventListener("click", () => handlers.clear());
   }
 
@@ -93,11 +93,6 @@ export class LogView {
     this.handlers.changed();
   }
 
-  setOpen(open) {
-    this.nodes.panel.hidden = !open || !this.enabled;
-    this.nodes.counter.setAttribute("aria-expanded", String(open));
-  }
-
   newCount(entry) {
     return entry.count - (this.clearedCounts.get(entry.id) || 0);
   }
@@ -143,12 +138,12 @@ export class LogView {
     counter.hidden = !this.enabled;
     if (!this.enabled)
       panel.hidden = true;
-    counter.className = "log-counter" +
-      (errors ? " has-errors" : warnings ? " has-warnings" : "");
-    counter.textContent = errors || warnings
+    setCounter(counter, "Log", errors + warnings || null,
+      errors ? "error" : "warning");
+    counter.title = errors || warnings
       ? [errors && plural(errors, "error"), warnings &&
           plural(warnings, "warning")].filter(Boolean).join(" · ")
-      : "No errors";
+      : "No errors or warnings";
 
     mutedList.replaceChildren();
     if (this.muted.size) {

@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Łukasz Huńczak
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
+import { setCounter } from "./dock.js";
+
 const COMMANDS = ["record-start", "record-stop", "snapshot", "record-delete"];
 
 function add(parent, tag, text, cls) {
@@ -40,9 +42,6 @@ export class RecordingsView {
     this.handlers = handlers;
     this.list = [];
     this.connected = false;
-    nodes.counter.addEventListener("click",
-      () => this.setOpen(nodes.panel.hidden));
-    nodes.close.addEventListener("click", () => this.setOpen(false));
     nodes.record.addEventListener("click", () => {
       this.showError(null);
       this.handlers.send(this.running()?.kind === "recording"
@@ -60,11 +59,6 @@ export class RecordingsView {
       this.showError(null);
       this.handlers.send({ type: "snapshot", view: this.handlers.view() });
     });
-  }
-
-  setOpen(open) {
-    this.nodes.panel.hidden = !open;
-    this.nodes.counter.setAttribute("aria-expanded", String(open));
   }
 
   running() {
@@ -102,10 +96,9 @@ export class RecordingsView {
     const { counter, record, snapshot, rows, note } = this.nodes;
     const running = this.running();
     const recording = running?.kind === "recording";
-    counter.textContent = recording
+    setCounter(counter, "Recordings", recording
       ? `● ${duration(running.last - running.started)} · ${size(running.size)}`
-      : running ? "Saving snapshot…" : "Recordings";
-    counter.classList.toggle("recording", recording);
+      : running ? "saving…" : null, "recording");
     record.textContent = recording ? "■ Stop" : "● Record";
     // A snapshot takes a moment; nothing else starts meanwhile.
     record.disabled = !this.connected || (Boolean(running) && !recording);
@@ -113,6 +106,10 @@ export class RecordingsView {
     record.title = this.connected ? "" : "Needs the program to be running";
 
     const fragment = document.createDocumentFragment();
+    if (!this.connected && this.list.length)
+      add(fragment, "div", "The program is not running: its recordings " +
+        "can be opened, downloaded and deleted again when it runs. Open " +
+        "file… works now.", "rec-offline");
     if (!this.list.length)
       add(fragment, "div", "No recordings yet.", "log-empty");
     for (const r of this.list) {
@@ -132,11 +129,18 @@ export class RecordingsView {
           "muted");
         continue;
       }
+      // The files are on the program's machine, served by the program.
       const open = add(actions, "button", "Open", "rec-open");
+      open.disabled = !this.connected;
       open.addEventListener("click", () => this.handlers.open(r.name));
-      const link = add(actions, "a", "Download", "rec-download");
-      link.href = `api/recordings/${encodeURIComponent(r.name)}`;
-      link.download = r.name;
+      const download = add(actions, "button", "Download", "rec-download");
+      download.disabled = !this.connected;
+      download.addEventListener("click", () => {
+        const link = document.createElement("a");
+        link.href = `api/recordings/${encodeURIComponent(r.name)}`;
+        link.download = r.name;
+        link.click();
+      });
       // A second click within 3 s deletes; kept here, as the list is redrawn
       // every second while recording.
       const armed = this.armed?.name === r.name &&

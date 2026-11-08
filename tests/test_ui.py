@@ -459,8 +459,9 @@ def check(browser, url):
     check_element_pins(browser)
     check_latency(browser)
     # The test pipeline is healthy.
-    assert browser.wait("document.getElementById('problems-counter')"
-                        ".textContent === 'No problems'"), \
+    assert browser.wait("!document.querySelector('#problems-counter .count')"
+                        " && document.getElementById('problems-counter')"
+                        ".textContent === 'Problems'"), \
         "problems found in a healthy pipeline"
     check_pins(browser)
     check_paths(browser)
@@ -482,9 +483,9 @@ def check_log(browser):
     tee = element_selector("t")
     badge = f"{tee}?.querySelector('.badge')"
 
-    assert browser.wait(f"{counter}.textContent.includes('warning')"), \
-        "warning counter did not appear"
-    assert browser.eval(f"{counter}.classList.contains('has-warnings')")
+    assert browser.wait(f"!!{counter}.querySelector('.count.warning')"), \
+        "warning count did not appear"
+    assert browser.eval(f"{counter}.title.includes('warning')")
     assert browser.wait(f"!!{badge}"), "no badge on the tee"
 
     browser.click("#log-counter")
@@ -513,7 +514,8 @@ def check_log(browser):
 
     browser.click("#log-clear")
     assert browser.wait(f"{rows} === 0"), "clear did not empty the panel"
-    assert browser.eval(f"{counter}.textContent") == "No errors"
+    assert browser.eval(f"!{counter}.querySelector('.count')"), \
+        "count shown after clear"
     assert browser.wait(f"{rows} > 0", timeout=6), \
         "new warnings did not appear after clear"
     assert browser.eval("document.querySelector('#log-rows .log-count')"
@@ -860,11 +862,18 @@ def check_findings(browser, serve):
     try:
         counter = "document.getElementById('problems-counter')"
         browser.call("Page.navigate", url=url)
-        assert browser.wait(f"/^[0-9]+ problems?$/.test({counter}"
-                            ".textContent)", timeout=10), \
+        assert browser.wait(f"/^[0-9]+$/.test({counter}.querySelector("
+                            "'.count.warning')?.textContent)", timeout=10), \
             "no problems found in a faulty pipeline"
-        assert browser.eval(f"{counter}.classList.contains('has-warnings')")
+        # One panel at a time; the open one's button is pressed.
+        browser.click("#log-counter")
+        assert browser.wait("!document.getElementById('log-panel').hidden")
         browser.click("#problems-counter")
+        assert browser.wait("document.getElementById('log-panel').hidden && "
+                            "!document.getElementById('findings-panel')"
+                            ".hidden"), "two panels open"
+        assert browser.eval(f"{counter}.getAttribute('aria-pressed')") == \
+            "true"
         rows = "document.getElementById('findings-rows')"
         assert browser.wait(f"{rows}.textContent.includes('Data flow "
                             "blocked at')"), "blocked finding not listed"
@@ -1041,24 +1050,32 @@ def check_recordings(browser, serve):
                             ".hidden")
         assert browser.wait("!document.getElementById('record').disabled")
         browser.click("#record")
-        assert browser.wait(f"{counter}.textContent.startsWith('●')"), \
+        count = f"{counter}.querySelector('.count')"
+        assert browser.wait(f"{count}?.textContent.startsWith('●')"), \
             "no running recording in the header"
         # Updated about once a second: at least 2 s, not an exact text.
         assert browser.wait(f"(m => m && Number(m[1]) * 60 + Number(m[2]) "
                             f">= 2)(/([0-9]+):([0-9]{{2}}) · [0-9.]+ "
-                            f"(B|KB|MB)$/.exec({counter}.textContent))",
+                            f"(B|KB|MB)$/.exec({count}?.textContent))",
                             timeout=10), \
             "the running recording's time and size do not grow"
         browser.click("#record")
-        assert browser.wait(f"{counter}.textContent === 'Recordings' && "
-                            f"{rows}.length === 1"), "recording did not stop"
+        assert browser.wait(f"!{count} && {rows}.length === 1"), \
+            "recording did not stop"
+        # The panel's top edge resizes it.
+        height = browser.eval("document.getElementById('recordings-panel')"
+                              ".offsetHeight")
+        browser.drag("#recordings-panel .panel-resize", 0, -80)
+        assert browser.wait("document.getElementById('recordings-panel')"
+                            f".offsetHeight > {height + 40}"), "no resize"
         browser.click("#snapshot")
         assert browser.wait(f"{rows}.length === 2 && {rows}[0].querySelector("
                             "'.rec-kind').textContent === 'snapshot' && "
                             f"!{rows}[0].classList.contains('running')",
                             timeout=8), "no snapshot in the list"
-        href = browser.eval(f"{rows}[1].querySelector('.rec-download').href")
-        text = browser.eval(f"fetch({json.dumps(href)}).then(r => r.text())")
+        name = browser.eval(f"{rows}[1].dataset.name")
+        text = browser.eval(f"fetch('api/recordings/' + "
+                            f"{json.dumps(name)}).then(r => r.text())")
         assert text.startswith('{"format":"pipeline-monitor-recording"'), \
             "download is not a recording"
         assert '"view":{"pins":' in text.split("\n")[0], "no view saved"
@@ -1085,6 +1102,19 @@ def check_viewer(browser, rows):
                         f"{banner}.textContent.includes('Recording of serve')"), \
         "recording not opened"
     assert browser.wait(f"{status}.textContent === 'recording'")
+    # Playback: shows the end; Play moves on; the slider goes anywhere.
+    time_label = "document.getElementById('play-time').textContent"
+    assert browser.wait(f"!document.getElementById('playback').hidden && "
+                        f"/^0:0[0-9] \\/ 0:0[0-9]$/.test({time_label})"), \
+        "no playback controls"
+    browser.eval("(s => { s.value = 0; s.dispatchEvent(new Event('input')); })"
+                 "(document.getElementById('seek'))")
+    assert browser.wait(f"{time_label}.startsWith('0:00 /')"), \
+        "the slider did not go to the start"
+    browser.click("#play")
+    assert browser.wait(f"!{time_label}.startsWith('0:00 /')", timeout=4), \
+        "playing did not move on"
+    browser.click("#play")
     assert browser.wait(f"!!{element_selector('q-r')}"), "no recorded graph"
     node = browser.eval(f"{element_selector('q-r')}?.dataset.id")
     assert browser.click_until(
@@ -1099,7 +1129,7 @@ def check_viewer(browser, rows):
                         "?.offsetParent"), "Measure shown in a recording"
     assert browser.eval("!document.querySelector('#details .pin-prop')"
                         "?.offsetParent"), "pinning shown in a recording"
-    browser.eval(f"{banner}.querySelector('button').click()")
+    browser.click("#viewing-close")
     assert browser.wait(f"{banner}.hidden && "
                         f"{status}.textContent === 'connected'", timeout=10), \
         "did not go back to the program"
@@ -1108,7 +1138,7 @@ def check_viewer(browser, rows):
     name = browser.eval(f"{rows}[1].dataset.name")
     browser.set_file("#file-input", os.path.join(RECORDINGS, name))
     assert browser.wait(f"!{banner}.hidden"), "file not opened"
-    browser.eval(f"{banner}.querySelector('button').click()")
+    browser.click("#viewing-close")
     assert browser.wait(f"{banner}.hidden")
     not_one = os.path.join(RECORDINGS, "not-a-recording.jsonl")
     with open(not_one, "w") as f:
