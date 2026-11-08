@@ -2,7 +2,7 @@
 
 See a running GStreamer pipeline live in your browser.
 
-![pipeline-monitor measuring latency: a label under every element, the audio queue's details with its measured and reported latency, and its properties](.github/screenshot.png)
+![pipeline-monitor recording a pipeline: latency under every element, a pinned pad's live values, and the audio queue's level, latency and properties](.github/screenshot.png)
 
 Short videos: [Fix your GStreamer pipeline](https://www.youtube.com/playlist?list=PLHYOr70akpmI)
 on YouTube, one problem per episode.
