@@ -395,7 +395,9 @@ test_record (void)
     gchar *path, *text;
 
     g_free (start_tracer (tracers));
-    pipeline = gst_parse_launch ("videotestsrc is-live=true num-buffers=40 ! "
+    /* About 4 s: the properties of new elements are read once a second,
+     * also when sanitizers slow it down. */
+    pipeline = gst_parse_launch ("videotestsrc is-live=true num-buffers=120 ! "
         "queue name=rec-queue ! fakesink", NULL);
     gst_element_set_state (pipeline, GST_STATE_PLAYING);
     bus = gst_element_get_bus (pipeline);
