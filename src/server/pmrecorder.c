@@ -4,10 +4,17 @@
 #include "pmjson.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <glib/gstdio.h>
 #include <json-glib/json-glib.h>
 #include <stdio.h>
 #include <string.h>
+#ifdef G_OS_WIN32
+#include <io.h>
+#define fdopen _fdopen
+#else
+#define O_BINARY 0
+#endif
 
 #define NAME_PREFIX "pipeline-monitor-"
 #define NAME_SUFFIX ".jsonl"
@@ -25,6 +32,8 @@ struct _PmRecorder
   gchar *kind;
   gint64 started;
   guint64 size;
+  /* Why the last recording ended early, until the next one starts. */
+  gchar *failure;
 };
 
 PmRecorder *
@@ -35,7 +44,8 @@ pm_recorder_new (const gchar * dir, guint64 file_max, guint64 total_max)
   g_mutex_init (&self->lock);
   self->dir = g_strdup (dir);
   self->file_max = file_max;
-  self->total_max = total_max;
+  /* A finished recording must fit, or keep_total would delete it. */
+  self->total_max = MAX (total_max, file_max);
   return self;
 }
 
@@ -44,6 +54,7 @@ pm_recorder_free (PmRecorder * self)
 {
   pm_recorder_stop (self, "program-ended");
   g_free (self->dir);
+  g_free (self->failure);
   g_mutex_clear (&self->lock);
   g_free (self);
 }
@@ -282,13 +293,14 @@ keep_total (PmRecorder * self)
   g_ptr_array_unref (files);
 }
 
-static void
+static gboolean
 write_line (PmRecorder * self, const gchar * text)
 {
-  fputs (text, self->file);
-  fputc ('\n', self->file);
-  fflush (self->file);
+  if (fputs (text, self->file) < 0 || fputc ('\n', self->file) == EOF ||
+      fflush (self->file) != 0)
+    return FALSE;
   self->size += strlen (text) + 1;
+  return TRUE;
 }
 
 static void
@@ -297,6 +309,7 @@ close_file (PmRecorder * self, const gchar * reason)
   gchar *body = g_strdup_printf ("{\"reason\":\"%s\"}", reason);
   gchar *end = pm_json_message ("end", body);
 
+  /* After a failed write this may fail too: readers do without it. */
   write_line (self, end);
   fclose (self->file);
   self->file = NULL;
@@ -304,6 +317,18 @@ close_file (PmRecorder * self, const gchar * reason)
   g_clear_pointer (&self->kind, g_free);
   g_free (end);
   g_free (body);
+}
+
+/* Ends the recording after a failed write (e.g. the disk is full). */
+static void
+write_failed (PmRecorder * self)
+{
+  gint err = errno;
+
+  g_free (self->failure);
+  self->failure = g_strdup_printf ("The recording %s ended: %s.", self->name,
+      g_strerror (err));
+  close_file (self, "error");
 }
 
 /* Creates a recording (kind "recording" or "snapshot") and writes its
@@ -314,8 +339,9 @@ pm_recorder_start (PmRecorder * self, const gchar * kind,
     GError ** error)
 {
   GString *header;
-  gchar *path, *hidden;
+  gchar *path = NULL, *hidden;
   gboolean ok = FALSE;
+  gint fd = -1, tries;
 
   g_mutex_lock (&self->lock);
   if (self->file != NULL) {
@@ -331,15 +357,28 @@ pm_recorder_start (PmRecorder * self, const gchar * kind,
     goto done;
   }
   keep_total (self);
+  g_clear_pointer (&self->failure, g_free);
 
-  self->name = new_name (self, kind, program);
-  path = g_build_filename (self->dir, self->name, NULL);
-  self->file = g_fopen (path, "wb");
+  /* Only the user may read it: it shows what the program does. A name
+   * taken since new_name looked is tried again. */
+  for (tries = 0; tries < 5; tries++) {
+    self->name = new_name (self, kind, program);
+    path = g_build_filename (self->dir, self->name, NULL);
+    fd = g_open (path, O_WRONLY | O_CREAT | O_EXCL | O_BINARY, 0600);
+    if (fd >= 0 || errno != EEXIST)
+      break;
+    g_clear_pointer (&self->name, g_free);
+    g_clear_pointer (&path, g_free);
+  }
+  if (fd >= 0 && (self->file = fdopen (fd, "wb")) == NULL)
+    g_close (fd, NULL);
   if (self->file == NULL) {
     gint err = errno;
 
     g_set_error (error, G_FILE_ERROR, g_file_error_from_errno (err),
-        "Cannot write %s: %s", path, g_strerror (err));
+        "Cannot write in %s: %s", self->dir, g_strerror (err));
+    if (path != NULL && fd >= 0)
+      g_unlink (path);
     g_clear_pointer (&self->name, g_free);
     g_free (path);
     goto done;
@@ -357,10 +396,22 @@ pm_recorder_start (PmRecorder * self, const gchar * kind,
       ",\"hello\":%s,\"view\":%s}", self->started, hello ? hello : "null",
       view ? view : "null");
   hidden = pm_recorder_hide_secrets (header->str);
-  write_line (self, hidden);
+  ok = write_line (self, hidden);
+  if (!ok) {
+    gint err = errno;
+
+    g_set_error (error, G_FILE_ERROR, g_file_error_from_errno (err),
+        "Cannot write %s: %s", self->name, g_strerror (err));
+    fclose (self->file);
+    self->file = NULL;
+    path = g_build_filename (self->dir, self->name, NULL);
+    g_unlink (path);
+    g_free (path);
+    g_clear_pointer (&self->name, g_free);
+    g_clear_pointer (&self->kind, g_free);
+  }
   g_free (hidden);
   g_string_free (header, TRUE);
-  ok = TRUE;
 
 done:
   g_mutex_unlock (&self->lock);
@@ -381,9 +432,11 @@ pm_recorder_write (PmRecorder * self, const gchar * message)
     if (self->size + strlen (hidden) + 1 > self->file_max) {
       close_file (self, "limit");
       keep_total (self);
-    } else {
-      write_line (self, hidden);
+    } else if (write_line (self, hidden)) {
       written = TRUE;
+    } else {
+      write_failed (self);
+      keep_total (self);
     }
     g_free (hidden);
   }
@@ -466,8 +519,8 @@ newer_first (gconstpointer a, gconstpointer b)
   return g_strcmp0 (lb->name, la->name);
 }
 
-/* {"folder","file_max","total_max","recordings":[{"name","kind","started",
- * "last","size","running"}]}, the latest started first. */
+/* {"folder","file_max","total_max","failure","recordings":[{"name","kind",
+ * "started","last","size","running"}]}, the latest started first. */
 gchar *
 pm_recorder_list_json (PmRecorder * self)
 {
@@ -479,8 +532,10 @@ pm_recorder_list_json (PmRecorder * self)
   g_mutex_lock (&self->lock);
   pm_json_append_string (json, self->dir);
   g_string_append_printf (json, ",\"file_max\":%" G_GUINT64_FORMAT
-      ",\"total_max\":%" G_GUINT64_FORMAT ",\"recordings\":[",
+      ",\"total_max\":%" G_GUINT64_FORMAT ",\"failure\":",
       self->file_max, self->total_max);
+  pm_json_append_string (json, self->failure);
+  g_string_append (json, ",\"recordings\":[");
   files = list_files (self);
   for (i = 0; i < files->len; i++) {
     PmFile *f = g_ptr_array_index (files, i);

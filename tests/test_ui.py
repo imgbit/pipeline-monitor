@@ -1127,6 +1127,19 @@ def check_viewer(browser, rows, url):
     assert browser.wait(f"!{time_label}.startsWith('0:00 /')", timeout=4), \
         "playing did not move on"
     browser.click("#play")
+    # At 16× it plays to the end and stops; Play again starts over.
+    for speed in ("4×", "16×"):
+        browser.click("#speed")
+        assert browser.wait("document.getElementById('speed').textContent "
+                            f"=== {json.dumps(speed)}")
+    browser.click("#play")
+    assert browser.wait("document.getElementById('play').title === 'Play' && "
+                        f"(t => t[0] === t[1])({time_label}.split(' / '))",
+                        timeout=6), "playing did not stop at the end"
+    browser.click("#play")
+    assert browser.wait("document.getElementById('play').title === 'Play'",
+                        timeout=6), "playing again did not stop at the end"
+    browser.click("#speed")
     assert browser.wait(f"!!{element_selector('q-r')}"), "no recorded graph"
     node = browser.eval(f"{element_selector('q-r')}?.dataset.id")
     assert browser.click_until(
@@ -1161,6 +1174,7 @@ def check_viewer(browser, rows, url):
                         ".textContent.includes('not a recording')"), \
         "a file that is not a recording was not refused"
     os.remove(not_one)
+    check_bad_recordings(browser, os.path.join(RECORDINGS, name))
 
     # Back to the live page for the rest.
     browser.call("Page.navigate", url="about:blank")
@@ -1168,6 +1182,89 @@ def check_viewer(browser, rows, url):
     assert browser.wait(f"{status}.textContent === 'connected'")
     browser.click("#recordings-counter")
     assert browser.wait(f"{rows}.length === 2")
+
+
+# Files that are not what pipeline-monitor writes, made from a good one:
+# refused, opened without their bad lines, or closed again if damaged.
+def check_bad_recordings(browser, good):
+    with open(good) as f:
+        lines = f.read().splitlines()
+    header = json.loads(lines[0])
+    started = header["started"]
+    error = "document.getElementById('recordings-error')"
+    banner = "document.getElementById('viewing')"
+
+    def open_file(text):
+        path = os.path.join(RECORDINGS, "bad.jsonl")
+        with open(path, "w") as f:
+            f.write(text)
+        browser.eval(f"{error}.hidden = true")
+        browser.set_file("#file-input", path)
+        os.remove(path)
+
+    for change in ({"version": 2}, {"started": "yesterday"}):
+        open_file(json.dumps({**header, **change}) + "\n" +
+                  "\n".join(lines[1:]))
+        assert browser.wait(f"!{error}.hidden && "
+                            f"{error}.textContent.includes('not a recording')"), \
+            f"a header with {change} was not refused"
+        assert browser.eval(f"{banner}.hidden")
+
+    # Lines that are not messages, of unknown types or without a time, and
+    # a last line cut off: left out.
+    junk = ["null", "5", '"text"', '{"type":"constructor","time":1}',
+            '{"type":"levels"}', '{"type":"graph","time":"soon"}',
+            json.dumps({"type": "future", "time": started})]
+    open_file("\n".join([lines[0], *junk, *lines[1:], lines[1][:20]]) + "\n")
+    assert browser.wait(f"!{banner}.hidden && "
+                        f"!!{element_selector('q-r')}"), \
+        "a recording with bad lines was not opened"
+    browser.click("#viewing-close")
+    assert browser.wait(f"{banner}.hidden")
+
+    # A graph that is not one: the page says so and stays usable.
+    open_file("\n".join([json.dumps({**header, "view": {"collapsed": 5}}),
+                         json.dumps({"type": "graph", "time": started + 1,
+                                     "pipelines": 5})]) + "\n")
+    assert browser.wait(f"!{error}.hidden && "
+                        f"{error}.textContent.includes('damaged')"), \
+        "a damaged recording was not reported"
+    assert browser.eval(f"{banner}.hidden && location.hash === '#viewer'")
+    browser.set_file("#file-input", good)
+    assert browser.wait(f"!{banner}.hidden && "
+                        f"!!{element_selector('q-r')}"), \
+        "a good recording did not open after a damaged one"
+    browser.click("#viewing-close")
+    assert browser.wait(f"{banner}.hidden")
+    assert not browser.errors, f"errors in the page: {browser.errors}"
+
+
+# A folder that cannot be made: Record says why, and nothing runs.
+def check_record_fails(browser, serve):
+    blocker = os.path.join(RECORDINGS, "not-a-folder")
+    with open(blocker, "w"):
+        pass
+    folder = os.path.join(blocker, "recordings").replace("\\", "/")
+    server, url = start_server(serve, RESTART_PIPELINE,
+                               extra=f'recordings="{folder}"')
+    try:
+        browser.call("Page.navigate", url=url)
+        assert browser.wait(f"!!{element_selector('q-r')}", timeout=10)
+        browser.click("#recordings-counter")
+        assert browser.wait("!document.getElementById('record').disabled")
+        browser.click("#record")
+        error = "document.getElementById('recordings-error')"
+        assert browser.wait(f"!{error}.hidden && "
+                            f"{error}.textContent.startsWith('Cannot create')"), \
+            "a failed Record was not reported"
+        assert browser.eval("!document.querySelector("
+                            "'#recordings-counter .count')"), \
+            "a failed Record shows as running"
+        assert not browser.errors, f"errors in the page: {browser.errors}"
+    finally:
+        server.terminate()
+        server.wait()
+        os.remove(blocker)
 
 
 # The pipeline-monitor command: recordings without a program.
@@ -1185,6 +1282,19 @@ def check_command(browser, serve, tool):
         m = re.match(r"pipeline-monitor: (http://\S+)", line)
         assert m, f"no address from the command: {line!r}"
         return proc, m.group(1)
+
+    def fails(code, *args):
+        done = subprocess.run([tool, *args], capture_output=True, text=True,
+                              timeout=10)
+        assert done.returncode == code, f"{args}: exit {done.returncode}"
+
+    out = subprocess.run([tool, "--version"], capture_output=True, text=True,
+                         timeout=10).stdout
+    assert re.match(r"pipeline-monitor \d+\.\d+", out), out
+    fails(2, "--port")
+    fails(2, "play")
+    fails(2, "open", "a", "b")
+    fails(1, "open", os.path.join(RECORDINGS, "missing.jsonl"))
 
     status = "document.getElementById('connection')"
     banner = "document.getElementById('viewing')"
@@ -1473,6 +1583,7 @@ def main():
             check_ended(browser, serve)
             check_measure_restart(browser, serve)
             check_recordings(browser, serve)
+            check_record_fails(browser, serve)
             if tool:
                 check_command(browser, serve, tool)
             check_two_pipelines(browser, serve)

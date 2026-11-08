@@ -735,7 +735,22 @@ function keepProperties(entry) {
     path: entry.path, properties: [...byName.values()] });
 }
 
+// A file whose content does not fit (edited, or from a newer version that
+// changed a message) is closed again, with a word why.
+function damaged(name) {
+  closeRecording();
+  recordings.showError(`${name} cannot be shown: its content is damaged.`);
+}
+
 function openRecording(text, name) {
+  try {
+    showRecording(text, name);
+  } catch {
+    damaged(name);
+  }
+}
+
+function showRecording(text, name) {
   const lines = text.split("\n").filter((line) => line.trim());
   let header = null;
   try {
@@ -744,7 +759,7 @@ function openRecording(text, name) {
     // Not JSON: said below.
   }
   if (header?.format !== "pipeline-monitor-recording" ||
-      header.version !== 1) {
+      header.version !== 1 || !Number.isFinite(header.started)) {
     recordings.showError(`${name} is not a recording this page can open.`);
     return;
   }
@@ -758,16 +773,23 @@ function openRecording(text, name) {
   }
   const byType = { graph: [], log: [], findings: [], levels: [], latency: [],
     properties: [] };
+  // Only messages of the types shown, with their times.
   for (const message of messages)
-    byType[message.type]?.push(message);
+    if (Object.hasOwn(byType, message?.type) &&
+        Number.isFinite(message.time))
+      byType[message.type].push(message);
   const start = header.started;
-  const end = Math.max(start, messages.at(-1)?.time ?? start);
+  const end = messages.reduce((latest, m) =>
+    Number.isFinite(m?.time) ? Math.max(latest, m.time) : latest, start);
   stopPlaying();
-  state.viewing = { header, properties: new Map(), byType, start, end,
+  state.viewing = { name, header, properties: new Map(), byType, start, end,
     at: end, shownGraph: undefined, speed: 1, timer: null };
   clearState();
-  state.collapsed = new Set(header.view?.collapsed ?? []);
-  state.selectedPath = header.view?.selected ?? null;
+  const view = header.view ?? {};
+  state.collapsed = new Set(Array.isArray(view.collapsed)
+    ? view.collapsed : []);
+  state.selectedPath = typeof view.selected === "string"
+    ? view.selected : null;
   state.reselect = state.selectedPath !== null;
   state.places = { tops: new Map() };
   document.body.classList.add("viewing");
@@ -778,7 +800,7 @@ function openRecording(text, name) {
   $("playback").hidden = header.kind === "snapshot";
   $("speed").textContent = "1×";
   $("viewing").hidden = false;
-  seek(end);
+  seekTo(end);
   $("ended").hidden = true;
   $("lost").hidden = true;
   recordings.showError(null);
@@ -808,6 +830,14 @@ function clock(us) {
 
 // Shows the recording as it was at t (µs since 1970).
 function seek(t) {
+  try {
+    seekTo(t);
+  } catch {
+    damaged(state.viewing.name);
+  }
+}
+
+function seekTo(t) {
   const v = state.viewing;
   v.at = Math.max(v.start, Math.min(t, v.end));
   const at = v.at;

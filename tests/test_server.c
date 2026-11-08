@@ -7,6 +7,11 @@
 #include <libsoup/soup.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef G_OS_UNIX
+#include <signal.h>
+#include <sys/resource.h>
+#include <unistd.h>
+#endif
 
 #include "envelope.h"
 #include "pmrecorder.h"
@@ -1018,6 +1023,189 @@ test_recorder_limits (void)
   g_free (dir);
   g_free (line);
 }
+
+/* Removes the files in a test folder, then the folder. */
+static void
+remove_folder (const gchar * dir)
+{
+  GDir *d = g_dir_open (dir, 0, NULL);
+  const gchar *name;
+
+  while (d != NULL && (name = g_dir_read_name (d)) != NULL) {
+    gchar *path = g_build_filename (dir, name, NULL);
+
+    g_unlink (path);
+    g_free (path);
+  }
+  if (d != NULL)
+    g_dir_close (d);
+  g_rmdir (dir);
+}
+
+static JsonObject *
+recordings_list (PmRecorder * recorder)
+{
+  gchar *text = pm_recorder_list_json (recorder);
+  JsonNode *root = parse (text);
+  JsonObject *list = json_object_ref (json_node_get_object (root));
+
+  json_node_unref (root);
+  g_free (text);
+  return list;
+}
+
+/* Files in the folder that are not (whole) recordings are listed without a
+ * kind and can be deleted; the folder's limits keep a file in. */
+static void
+test_recorder_broken_files (void)
+{
+  gchar *dir = g_dir_make_tmp ("pm-rec-XXXXXX", NULL);
+  const gchar *contents[] = { "", "not json\n", "[1,2]\n",
+    "{\"format\":\"pipeline-monitor-recording\"}\n"
+  };
+  PmRecorder *recorder = pm_recorder_new (dir, 5000, 1000);
+  JsonObject *list;
+  JsonArray *items;
+  guint i;
+
+  for (i = 0; i < G_N_ELEMENTS (contents); i++) {
+    gchar *name = g_strdup_printf ("pipeline-monitor-broken-%u.jsonl", i);
+    gchar *path = g_build_filename (dir, name, NULL);
+
+    g_assert_true (g_file_set_contents (path, contents[i], -1, NULL));
+    g_free (path);
+    g_free (name);
+  }
+  list = recordings_list (recorder);
+  g_assert_cmpint (json_object_get_int_member (list, "total_max"), ==, 5000);
+  g_assert_true (json_object_get_null_member (list, "failure"));
+  items = json_object_get_array_member (list, "recordings");
+  g_assert_cmpuint (json_array_get_length (items), ==, 4);
+  for (i = 0; i < 4; i++) {
+    JsonObject *item = json_array_get_object_element (items, i);
+
+    g_assert_true (json_object_get_null_member (item, "kind"));
+    g_assert_cmpint (json_object_get_int_member (item, "started"), ==, 0);
+    g_assert_true (pm_recorder_delete (recorder,
+            json_object_get_string_member (item, "name")));
+  }
+  json_object_unref (list);
+  pm_recorder_free (recorder);
+  remove_folder (dir);
+  g_free (dir);
+}
+
+#ifdef G_OS_UNIX
+/* Recordings are only for the user to read. */
+static void
+test_recorder_private (void)
+{
+  gchar *dir = g_dir_make_tmp ("pm-rec-XXXXXX", NULL);
+  PmRecorder *recorder = pm_recorder_new (dir, 5000, 5000);
+  gchar *names, *path;
+  GStatBuf st;
+
+  g_assert_true (pm_recorder_start (recorder, "snapshot", "p", NULL, NULL,
+          NULL));
+  pm_recorder_stop (recorder, "snapshot");
+  names = recording_names (recorder);
+  path = g_build_filename (dir, names, NULL);
+  g_assert_cmpint (g_stat (path, &st), ==, 0);
+  g_assert_cmpint (st.st_mode & 0777, ==, 0600);
+  g_free (path);
+  g_free (names);
+  pm_recorder_free (recorder);
+  remove_folder (dir);
+  g_free (dir);
+}
+
+/* A folder the user may not write in: the start fails and says why. */
+static void
+test_recorder_read_only (void)
+{
+  gchar *dir = g_dir_make_tmp ("pm-rec-XXXXXX", NULL);
+  PmRecorder *recorder = pm_recorder_new (dir, 5000, 5000);
+  GError *error = NULL;
+  gchar *names;
+
+  if (geteuid () == 0) {
+    g_test_skip ("root may write anywhere");
+    pm_recorder_free (recorder);
+    g_rmdir (dir);
+    g_free (dir);
+    return;
+  }
+  g_assert_cmpint (g_chmod (dir, 0500), ==, 0);
+  g_assert_false (pm_recorder_start (recorder, "recording", "p", NULL, NULL,
+          &error));
+  g_assert_nonnull (error);
+  g_assert_true (g_str_has_prefix (error->message, "Cannot write in "));
+  g_clear_error (&error);
+  g_assert_false (pm_recorder_running (recorder));
+  g_assert_false (pm_recorder_write (recorder, "{\"type\":\"levels\"}"));
+  names = recording_names (recorder);
+  g_assert_cmpstr (names, ==, "");
+  g_free (names);
+  g_chmod (dir, 0700);
+  pm_recorder_free (recorder);
+  remove_folder (dir);
+  g_free (dir);
+}
+
+/* A full disk (here: a file size limit for the process). A recording that
+ * cannot write its header does not start and leaves no file; one that
+ * cannot write a message ends, and the list says why. */
+static void
+test_recorder_disk_full (void)
+{
+  gchar *dir = g_dir_make_tmp ("pm-rec-XXXXXX", NULL);
+  PmRecorder *recorder = pm_recorder_new (dir, 1000000, 1000000);
+  struct rlimit saved, small;
+  void (*handler) (int) = signal (SIGXFSZ, SIG_IGN);
+  GError *error = NULL;
+  JsonObject *list;
+  gchar *names;
+  gint i;
+
+  g_assert_cmpint (getrlimit (RLIMIT_FSIZE, &saved), ==, 0);
+  small = saved;
+  small.rlim_cur = 0;
+  g_assert_cmpint (setrlimit (RLIMIT_FSIZE, &small), ==, 0);
+  g_assert_false (pm_recorder_start (recorder, "recording", "p", NULL, NULL,
+          &error));
+  g_assert_nonnull (error);
+  g_clear_error (&error);
+  names = recording_names (recorder);
+  g_assert_cmpstr (names, ==, "");
+  g_free (names);
+
+  small.rlim_cur = 2000;
+  g_assert_cmpint (setrlimit (RLIMIT_FSIZE, &small), ==, 0);
+  g_assert_true (pm_recorder_start (recorder, "recording", "p", NULL, NULL,
+          NULL));
+  for (i = 0; i < 1000 && pm_recorder_write (recorder,
+          "{\"type\":\"levels\",\"queues\":[]}"); i++);
+  g_assert_cmpint (setrlimit (RLIMIT_FSIZE, &saved), ==, 0);
+  signal (SIGXFSZ, handler);
+  g_assert_cmpint (i, <, 1000);
+  g_assert_false (pm_recorder_running (recorder));
+  list = recordings_list (recorder);
+  g_assert_nonnull (strstr (json_object_get_string_member (list, "failure"),
+          "ended"));
+  json_object_unref (list);
+
+  /* The next recording starts afresh. */
+  g_assert_true (pm_recorder_start (recorder, "snapshot", "p", NULL, NULL,
+          NULL));
+  pm_recorder_stop (recorder, "snapshot");
+  list = recordings_list (recorder);
+  g_assert_true (json_object_get_null_member (list, "failure"));
+  json_object_unref (list);
+  pm_recorder_free (recorder);
+  remove_folder (dir);
+  g_free (dir);
+}
+#endif
 
 static gchar *check_message (const gchar * text);
 
@@ -2269,7 +2457,8 @@ test_pages_latency (void)
    * only its own, with measure all off. */
   ws_send (&one, "{\"type\":\"measure-all\"}");
   count_messages (&one, "latency", 600);
-  g_assert_true (latency_has (&one, b, &on));
+  for (tries = 0; tries < 5 && !latency_has (&one, b, &on); tries++);
+  g_assert_cmpint (tries, <, 5);
   g_assert_true (on);
   count_messages (&two, "latency", 0);
   latency_has (&two, b, &on);
@@ -3124,6 +3313,12 @@ main (int argc, char **argv)
   g_test_add_func ("/recorder/files", test_recorder_files);
   g_test_add_func ("/recorder/limits", test_recorder_limits);
   g_test_add_func ("/recorder/no-folder", test_recorder_no_folder);
+  g_test_add_func ("/recorder/broken-files", test_recorder_broken_files);
+#ifdef G_OS_UNIX
+  g_test_add_func ("/recorder/private", test_recorder_private);
+  g_test_add_func ("/recorder/read-only", test_recorder_read_only);
+  g_test_add_func ("/recorder/disk-full", test_recorder_disk_full);
+#endif
   g_test_add_func ("/server/hello", test_hello);
   g_test_add_func ("/server/recordings", test_recordings);
   g_test_add_func ("/server/protocol", test_protocol);

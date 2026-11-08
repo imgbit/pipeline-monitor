@@ -76,6 +76,10 @@ export class RecordingsView {
     this.folder = message.folder;
     this.fileMax = message.file_max;
     this.totalMax = message.total_max;
+    // Why the last recording ended early (e.g. the disk is full).
+    if (message.failure && message.failure !== this.failure)
+      this.showError(message.failure);
+    this.failure = message.failure;
     this.render();
   }
 
