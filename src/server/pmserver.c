@@ -994,6 +994,8 @@ send_recordings (PmServer * self, SoupWebsocketConnection * conn)
   gchar *list = pm_recorder_list_json (self->recorder);
   gchar *text = pm_json_message ("recordings", list);
 
+  /* The pages hear when it ends, also if that is before the next tick. */
+  self->was_running = pm_recorder_running (self->recorder);
   if (conn != NULL)
     send_text (conn, text);
   else
