@@ -615,6 +615,14 @@ def check(browser, url):
     assert not browser.errors, f"errors in the page: {browser.errors}"
 
 
+# Closes the details panel and waits until it is gone: the page hides it a
+# moment after the click, and a selection made before then is lost.
+def close_details(browser):
+    browser.click("#details .close")
+    assert browser.wait("document.getElementById('details').hidden"), \
+        f"the details panel did not close\n{browser.history()}"
+
+
 PANELS = {"log": "log", "problems": "findings", "recordings": "recordings"}
 
 
@@ -854,8 +862,7 @@ def check_levels(browser):
 
 def check_properties(browser):
     # The open panel covers the right side, where the sink is.
-    browser.click("#details .close")
-    assert browser.wait("document.getElementById('details').hidden")
+    close_details(browser)
     sink = browser.eval(f"{element_selector('fakesink0')}?.dataset.id")
     rows = "[...document.querySelectorAll('#details table.props tr')]"
     assert browser.click_until(
@@ -955,7 +962,7 @@ def check_latency(browser):
         "measure all labels did not go away"
     browser.eval(f"{section}.querySelector('.measure-toggle').click()")
     assert browser.wait(f"{labels} === 0", timeout=4)
-    browser.click("#details .close")
+    close_details(browser)
 
 
 def check_paths(browser):
@@ -1054,7 +1061,7 @@ def check_findings(browser, serve):
             "no problems in the details"
         # The panels cover the sink.
         close_panel(browser, "problems")
-        browser.click("#details .close")
+        close_details(browser)
         sink = browser.eval(f"{element_selector('fakesink1')}?.dataset.id")
         box = f'#graph .node[data-id="{sink}"] > rect.box'
         # On a slow machine the graph can still be moving, or something
@@ -1675,7 +1682,7 @@ def check_measure_restart(browser, serve):
         assert browser.wait(f"{section}.textContent.includes("
                             "'starts when the program runs')")
         # Turned on while nothing is connected.
-        browser.click("#details .close")
+        close_details(browser)
         select("i-r")
         browser.eval(f"{section}.querySelector('.measure-toggle').click()")
         assert browser.wait(f"{section}.textContent.includes("
@@ -1694,12 +1701,12 @@ def check_measure_restart(browser, serve):
             "selection not kept across the restart"
         assert browser.wait(measured, timeout=8), "identity not measured " \
             "after the restart"
-        browser.click("#details .close")
+        close_details(browser)
         select("q-r")
         assert browser.wait(measured, timeout=8), "queue not measured " \
             "after the restart"
         for name in ("q-r", "i-r"):
-            browser.click("#details .close")
+            close_details(browser)
             select(name)
             browser.eval(f"{section}.querySelector('.measure-toggle')"
                          ".click()")
