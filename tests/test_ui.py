@@ -1641,9 +1641,9 @@ def check_site(browser, serve):
     shutil.copytree(web, os.path.join(site, "pipeline-monitor"))
     root = os.path.join(site, "pipeline-monitor")
     index = os.path.join(root, "index.html")
-    with open(index) as f:
+    with open(index, encoding="utf-8") as f:
         page = f.read()
-    with open(index, "w") as f:
+    with open(index, "w", encoding="utf-8") as f:
         f.write(page.replace('<meta charset="utf-8">', '<meta charset="utf-8">'
                              '\n<meta name="pipeline-monitor-site" '
                              'content="demos/demos.json">', 1))
