@@ -12,6 +12,7 @@ import functools
 import http.server
 import json
 import os
+import random
 import re
 import shutil
 import socket
@@ -1578,6 +1579,63 @@ def check_record_fails(browser, serve):
         os.remove(blocker)
 
 
+# Damaged versions of a recording (fixed seed: repeatable): lines lost,
+# doubled, swapped or cut; values of the wrong type, null, huge, negative;
+# unknown types; deep nesting; garbage.
+def damaged_recordings(text, count, seed=11):
+    rnd = random.Random(seed)
+    lines = text.splitlines()
+    odd = [None, "", "x", -1, 2 ** 63, -(2 ** 63), 1e308, [], {}, [1, "a"],
+           {"a": {"b": [None]}}, True]
+
+    def shake(value, depth=0):
+        if isinstance(value, dict) and value and depth < 6:
+            key = rnd.choice(list(value))
+            if rnd.random() < 0.6:
+                value[key] = shake(value[key], depth + 1)
+            elif rnd.random() < 0.5:
+                del value[key]
+            else:
+                value[key] = rnd.choice(odd)
+            return value
+        if isinstance(value, list) and value and depth < 6:
+            i = rnd.randrange(len(value))
+            value[i] = shake(value[i], depth + 1)
+            return value
+        return rnd.choice(odd)
+
+    for _ in range(count):
+        out = list(lines)
+        for _ in range(rnd.randint(1, 4)):
+            # The header (line 0) now and then too.
+            i = rnd.randrange(0 if rnd.random() < 0.15 else 1, len(out))
+            kind = rnd.randrange(8)
+            if kind == 0:
+                del out[i]
+            elif kind == 1:
+                out.insert(i, out[i])
+            elif kind == 2:
+                j = rnd.randrange(1, len(out))
+                out[i], out[j] = out[j], out[i]
+            elif kind == 3:
+                out[i] = out[i][:rnd.randrange(len(out[i]) + 1)]
+            elif kind == 4:
+                out.insert(i, rnd.choice(["null", "5", "[]", "{}", "\x00",
+                                          "{" * 200, "garbage"]))
+            else:
+                try:
+                    message = json.loads(out[i])
+                except ValueError:
+                    continue
+                if kind == 5 and isinstance(message, dict):
+                    message["type"] = rnd.choice(["graph", "levels", "pads",
+                                                  "properties", "latency",
+                                                  "zzz", 7])
+                message = shake(message)
+                out[i] = json.dumps(message)
+        yield "\n".join(out) + "\n"
+
+
 # A recording made from a live page with a pinned pad and a pinned
 # property, as a user makes one; returns its file.
 def record_with_pins(browser, serve):
@@ -1787,6 +1845,49 @@ def check_site(browser, serve):
                             f"{error}.textContent.includes('drop it')"), \
             "an unreadable link said nothing"
         assert browser.eval(f"{banner}.hidden")
+
+        # Damaged recordings: each opens (and plays) or is reported; the
+        # page never fails and stays usable.
+        fixture = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "data", "recording-0.10.0.jsonl")
+        with open(fixture, encoding="utf-8") as f:
+            good = f.read()
+        browser.call("Page.navigate", url="about:blank")
+        browser.call("Page.navigate", url=f"{base}/pipeline-monitor/")
+        assert browser.wait(f"!!{demo}")
+        for n, text in enumerate(damaged_recordings(good, 40)):
+            name = f"damaged-{n}.jsonl"
+            browser.eval(f"{error}.hidden = true")
+            browser.eval("(() => { const d = new DataTransfer(); "
+                         f"d.items.add(new File([{json.dumps(text)}], "
+                         f"{json.dumps(name)})); window.dispatchEvent("
+                         "new DragEvent('drop', {dataTransfer: d, "
+                         "cancelable: true})); })()")
+            assert browser.wait(f"!!{added_row(name)} || !{error}.hidden"), \
+                f"{name}: neither added nor refused"
+            if browser.eval(f"!{added_row(name)}"):
+                continue
+            open_panel(browser, "recordings")
+            browser.click_point(f"{added_row(name)}.querySelector('.rec-open')")
+            assert browser.wait(f"!{banner}.hidden || !{error}.hidden"), \
+                f"{name}: neither shown nor reported"
+            for at in (0, 500, 1000):
+                if browser.eval(f"{banner}.hidden"):
+                    break
+                browser.eval(seek.format(at))
+            if not browser.eval(f"{banner}.hidden"):
+                browser.click("#viewing-close")
+            assert not browser.errors, \
+                f"{name}: errors in the page: {browser.errors}\n{text[:2000]}"
+        # Still usable: the good recording opens (its row is below the 40
+        # added ones: scrolled to first).
+        open_panel(browser, "recordings")
+        browser.eval(f"{demo}.scrollIntoView({{block: 'center'}})")
+        browser.click_point(f"{demo}.querySelector('.rec-open')")
+        assert browser.wait(f"!{banner}.hidden && "
+                            f"!!{element_selector('q-r')}"), \
+            "the page did not recover from damaged recordings"
+        browser.click("#viewing-close")
 
         # The site never tries to connect to a server.
         assert browser.eval("(window.socketLog || []).length === 0"), \
