@@ -95,14 +95,15 @@ add_branch (Branch * b)
   g_object_set (b->sink, "async", FALSE, NULL);
   gst_bin_add_many (GST_BIN (b->pipeline), b->queue, b->sink, NULL);
   gst_element_link (b->queue, b->sink);
+  /* Playing before the tee is linked: a buffer pushed into a stopped queue
+   * returns FLUSHING, which stops the tee's source for good. */
+  gst_element_sync_state_with_parent (b->sink);
+  gst_element_sync_state_with_parent (b->queue);
 
   b->tee_pad = gst_element_request_pad_simple (b->tee, "src_%u");
   sinkpad = gst_element_get_static_pad (b->queue, "sink");
   gst_pad_link (b->tee_pad, sinkpad);
   gst_object_unref (sinkpad);
-
-  gst_element_sync_state_with_parent (b->sink);
-  gst_element_sync_state_with_parent (b->queue);
 }
 
 static void
