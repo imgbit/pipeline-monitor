@@ -1136,9 +1136,9 @@ SECOND_PIPELINE = "videotestsrc is-live=true ! fakesink name=other-sink"
 def check_two_pipelines(browser, serve):
     server, url = start_server(serve, TWO_PIPELINES, "--second",
                                SECOND_PIPELINE)
+    select = "document.getElementById('pipeline-select')"
     try:
         browser.call("Page.navigate", url=url)
-        select = "document.getElementById('pipeline-select')"
         assert browser.wait(f"!{select}.hidden && {select}.options.length "
                             "=== 2", timeout=10), "no pipeline selector"
         for want in ("other-sink", "retime"):
@@ -1167,6 +1167,26 @@ def check_two_pipelines(browser, serve):
         browser.eval("document.querySelector('#details .latency-section "
                      ".measure-toggle').click()")
         assert not browser.errors, f"errors in the page: {browser.errors}"
+    except (AssertionError, RuntimeError):
+        # What the page and the program showed.
+        for what, expression in (
+                ("selector", f"JSON.stringify({{hidden: {select}?.hidden, "
+                 f"options: [...({select}?.options ?? [])].map(o => "
+                 "o.textContent)})"),
+                ("api/graph pipelines", "fetch('/api/graph').then(r => "
+                 "r.json()).then(g => JSON.stringify(g.pipelines.map(p => "
+                 "[p.name, p.state, p.children.length])))")):
+            try:
+                print(f"{what}: {browser.eval(expression)}", file=sys.stderr)
+            except RuntimeError as e:
+                print(f"{what}: not readable: {str(e)[:200]}",
+                      file=sys.stderr)
+        print(f"page errors: {browser.errors}", file=sys.stderr)
+        print(browser.history(), file=sys.stderr)
+        print(f"program: exit {server.poll()}; last output:", file=sys.stderr)
+        for line in server.lines[-40:]:
+            print("  " + line, file=sys.stderr)
+        raise
     finally:
         server.terminate()
         server.wait()
