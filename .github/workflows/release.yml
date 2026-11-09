@@ -121,7 +121,7 @@ jobs:
   macos-framework:
     name: Build macOS zip (GStreamer.framework, universal)
     runs-on: macos-latest
-    timeout-minutes: 25
+    timeout-minutes: 45
     env:
       GST_VERSION: 1.28.8
       GST_SHA256: d371ab04a7632713626836c2fc234e863cc98484c74c473eba99b0fbd9b3a3fe
@@ -129,17 +129,22 @@ jobs:
       FW: /Library/Frameworks/GStreamer.framework/Versions/1.0
     steps:
       - uses: actions/checkout@v4
+      # The installers, kept between runs: the download server drops long
+      # transfers. Tag runs restore what a run on main saved.
+      - uses: actions/cache@v4
+        with:
+          path: gst-pkg
+          key: gst-osx-${{ env.GST_VERSION }}-${{ env.GST_SHA256 }}-${{ env.GST_DEVEL_SHA256 }}
       - name: Install GStreamer.framework
-        timeout-minutes: 15
+        timeout-minutes: 30
         run: |
           base=https://gstreamer.freedesktop.org/data/pkg/osx/$GST_VERSION
+          mkdir -p gst-pkg
           for p in "gstreamer-1.0-$GST_VERSION-universal.pkg:$GST_SHA256" \
                    "gstreamer-1.0-devel-$GST_VERSION-universal.pkg:$GST_DEVEL_SHA256"; do
             f=${p%%:*}
-            curl -fsSL --retry 3 -o "$f" "$base/$f"
-            echo "${p##*:}  $f" | shasum -a 256 -c
-            sudo installer -pkg "$f" -target /
-            rm "$f"
+            packaging/fetch.sh "$base/$f" "${p##*:}" "gst-pkg/$f"
+            sudo installer -pkg "gst-pkg/$f" -target /
           done
       - name: Install Meson
         run: brew install meson ninja pkgconf
@@ -200,7 +205,7 @@ jobs:
     name: Check macOS zip
     needs: macos-framework
     runs-on: macos-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
     env:
       GST_VERSION: 1.28.8
       GST_SHA256: d371ab04a7632713626836c2fc234e863cc98484c74c473eba99b0fbd9b3a3fe
@@ -212,15 +217,19 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: macos-framework
+      - uses: actions/cache@v4
+        with:
+          path: gst-pkg
+          key: gst-osx-runtime-${{ env.GST_VERSION }}-${{ env.GST_SHA256 }}
       - name: Install GStreamer.framework (runtime only)
-        timeout-minutes: 15
+        timeout-minutes: 30
         run: |
           f=gstreamer-1.0-$GST_VERSION-universal.pkg
-          curl -fsSL --retry 3 -o "$f" \
-            "https://gstreamer.freedesktop.org/data/pkg/osx/$GST_VERSION/$f"
-          echo "$GST_SHA256  $f" | shasum -a 256 -c
-          sudo installer -pkg "$f" -target /
-          rm "$f"
+          mkdir -p gst-pkg
+          packaging/fetch.sh \
+            "https://gstreamer.freedesktop.org/data/pkg/osx/$GST_VERSION/$f" \
+            "$GST_SHA256" "gst-pkg/$f"
+          sudo installer -pkg "gst-pkg/$f" -target /
       - name: Unpack
         run: |
           unzip -q pipeline-monitor-*.zip
