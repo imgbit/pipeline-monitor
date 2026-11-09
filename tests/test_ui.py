@@ -8,6 +8,8 @@ With PM_JS_COVERAGE=FILE, writes which lines of the page code ran to FILE.
 """
 
 import base64
+import functools
+import http.server
 import json
 import os
 import re
@@ -752,6 +754,8 @@ def check_caps(browser):
                         f" && {tip}.querySelector('.caps-media')"
                         "?.textContent.startsWith('video/x-raw')"), \
         "no pad tooltip with caps"
+    assert browser.eval(f"{tip}.textContent.includes('click to pin')"), \
+        "the live pad tooltip does not offer pinning"
     browser.hover("[...document.querySelectorAll('#graph .edge-hit')]"
                   ".find(p => p.dataset.edge)")
     assert browser.wait(f"!{tip}.hidden && {tip}.textContent.includes('→')"), \
@@ -1316,7 +1320,7 @@ def check_viewer(browser, rows, url):
     open_panel(browser, "recordings")
     browser.set_file("#file-input", path)
     row = added_row(name)
-    assert browser.wait(f"!!{row} && {row}.querySelector('.rec-kind')"
+    assert browser.wait(f"!!{row} && {row}.querySelector('.rec-source')"
                         ".textContent.includes('file')"), "file not added"
     browser.click_point(f"{row}.querySelector('.rec-open')")
     tab = browser.other_tab("#viewer-file")
@@ -1368,11 +1372,16 @@ def check_viewer(browser, rows, url):
     browser.click_point(f"{stored}.querySelector('.rec-open')")
     assert browser.wait(f"!{banner}.hidden && {stored}.classList.contains("
                         "'shown')"), "Reload did not show it again"
-    # Playback: shows the end; Play moves on; the slider goes anywhere.
+    # Playback: opens at the start; the slider goes anywhere; Play moves on.
     time_label = "document.getElementById('play-time').textContent"
     assert browser.wait(f"!document.getElementById('playback').hidden && "
-                        f"/^0:0[0-9] \\/ 0:0[0-9]$/.test({time_label})"), \
-        "no playback controls"
+                        f"/^0:00 \\/ 0:0[0-9]$/.test({time_label}) && "
+                        "document.getElementById('seek').value === '0'"), \
+        "the recording did not open at its start"
+    browser.eval("(s => { s.value = 1000; s.dispatchEvent(new Event('input'));"
+                 " })(document.getElementById('seek'))")
+    assert browser.wait(f"(t => t[0] === t[1])({time_label}.split(' / '))"), \
+        "the slider did not go to the end"
     browser.eval("(s => { s.value = 0; s.dispatchEvent(new Event('input')); })"
                  "(document.getElementById('seek'))")
     assert browser.wait(f"{time_label}.startsWith('0:00 /')"), \
@@ -1567,6 +1576,228 @@ def check_record_fails(browser, serve):
             server.terminate()
             server.wait()
         os.remove(blocker)
+
+
+# A recording made from a live page with a pinned pad and a pinned
+# property, as a user makes one; returns its file.
+def record_with_pins(browser, serve):
+    server, url = start_server(serve, RESTART_PIPELINE)
+    try:
+        browser.call("Page.navigate", url="about:blank")
+        browser.call("Page.navigate", url=url)
+        assert browser.wait(f"!!{element_selector('fakesink0')}", timeout=10)
+        cards = "document.querySelectorAll('.pin-card').length"
+        pad = (f"{element_selector('fakesink0')}"
+               "?.querySelector('.pad[data-port]')")
+        for _ in range(5):
+            browser.try_click_point(pad)
+            if browser.wait(f"{cards} === 1", timeout=3):
+                break
+        assert browser.eval(f"{cards} === 1"), "could not pin the pad"
+        sink = browser.eval(f"{element_selector('fakesink0')}?.dataset.id")
+        rows = "[...document.querySelectorAll('#details table.props tr')]"
+        stats = f"{rows}.find(r => r.cells[1]?.textContent === 'stats')"
+        assert browser.click_until(f'#graph .node[data-id="{sink}"] > rect.box',
+                                   f"!!{stats}", tries=5), "no properties"
+        browser.eval(f"{stats}.querySelector('.pin-prop').click()")
+        assert browser.wait(f"{cards} === 2"), "could not pin the property"
+        close_details(browser)
+        open_panel(browser, "recordings")
+        assert browser.wait("!document.getElementById('record').disabled")
+        before = set(os.listdir(RECORDINGS))
+        browser.click("#record")
+        time.sleep(3)
+        browser.click("#record")
+        assert browser.wait("!document.querySelector("
+                            "'#recordings-counter .count')"), "did not stop"
+        close_panel(browser, "recordings")
+        # Unpinned again, so later checks start without them.
+        for _ in range(2):
+            browser.eval("document.querySelector('.pin-card .pin-close')"
+                         ".click()")
+        assert browser.wait(f"{cards} === 0")
+    finally:
+        server.terminate()
+        server.wait()
+    made = [n for n in set(os.listdir(RECORDINGS)) - before
+            if n.endswith(".jsonl")]
+    assert len(made) == 1, f"recordings made: {made}"
+    return os.path.join(RECORDINGS, made[0])
+
+
+# The published site: the page with no pipeline-monitor server behind it,
+# served as static files with the site's <meta> line and demo recordings.
+def check_site(browser, serve):
+    server, _ = start_server(serve, RESTART_PIPELINE, extra="record=on")
+    time.sleep(3)
+    server.terminate()
+    server.wait()
+    recorded = max((os.path.join(RECORDINGS, n) for n in os.listdir(RECORDINGS)
+                    if n.endswith(".jsonl")), key=os.path.getmtime)
+    pinned = record_with_pins(browser, serve)
+
+    site = tempfile.mkdtemp(prefix="pm-site-")
+    web = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "web")
+    shutil.copytree(web, os.path.join(site, "pipeline-monitor"))
+    root = os.path.join(site, "pipeline-monitor")
+    index = os.path.join(root, "index.html")
+    with open(index) as f:
+        page = f.read()
+    with open(index, "w") as f:
+        f.write(page.replace('<meta charset="utf-8">', '<meta charset="utf-8">'
+                             '\n<meta name="pipeline-monitor-site" '
+                             'content="demos/demos.json">', 1))
+    os.makedirs(os.path.join(root, "demos"))
+    # The demo is a real recording made with 0.10.0 (format version 1):
+    # every later version must still show it.
+    shutil.copy(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "data", "recording-0.10.0.jsonl"),
+                os.path.join(root, "demos", "example.jsonl"))
+    shutil.copy(recorded, os.path.join(site, "shared.jsonl"))
+    shutil.copy(pinned, os.path.join(root, "demos", "pins.jsonl"))
+    with open(os.path.join(root, "demos", "demos.json"), "w") as f:
+        json.dump([{"title": "Example pipeline", "file": "example.jsonl",
+                    "kind": "recording", "started": 1794251433282725,
+                    "last": 1794251437392505, "size": 22013},
+                   {"title": "Pinned", "file": "pins.jsonl",
+                    "kind": "recording"}], f)
+
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler,
+                                directory=site)
+    handler.log_message = lambda *args: None
+    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{httpd.server_address[1]}"
+    banner = "document.getElementById('viewing')"
+    error = "document.getElementById('recordings-error')"
+    demo = ("document.querySelector('#recordings-rows .rec-row.demo')")
+    pins_demo = ("[...document.querySelectorAll('#recordings-rows "
+                 ".rec-row.demo')].find(r => r.textContent.includes("
+                 "'Pinned'))")
+    try:
+        browser.call("Page.navigate", url="about:blank")
+        browser.call("Page.navigate", url=f"{base}/pipeline-monitor/")
+        assert browser.wait(f"!!{demo}"), "no demo recording listed"
+        assert browser.eval("document.getElementById('connection')"
+                            ".textContent === 'viewer'")
+        assert browser.eval("document.querySelector('.rec-offline')"
+                            ".textContent.includes('never uploaded')")
+        # Open, with the mouse: shown here, marked, no server needed.
+        browser.click_point(f"{demo}.querySelector('.rec-open')")
+        assert browser.wait(f"!{banner}.hidden && !!{element_selector('q-r')}"
+                            f" && {demo}.classList.contains('shown')"), \
+            "the 0.10.0 recording did not open"
+        assert browser.wait("!document.getElementById('playback').hidden && "
+                            "/^0:0[0-9] \\/ 0:0[0-9]$/.test(document"
+                            ".getElementById('play-time').textContent)"), \
+            "no playback for the 0.10.0 recording"
+        # A recording's state is just its state, not "last known".
+        state = "document.getElementById('pipeline-state').textContent"
+        assert browser.wait(f"!!{state} && !{state}.includes('last known')"), \
+            "a recording's state says 'last known'"
+        # Its pipeline was built after the start and removed before the
+        # end: both ends of the slider still show it.
+        for end in (0, 1000):
+            browser.eval(f"(s => {{ s.value = {end}; s.dispatchEvent("
+                         "new Event('input')); })(document.getElementById("
+                         "'seek'))")
+            assert browser.wait(f"!!{element_selector('q-r')} && "
+                                "document.getElementById('empty').hidden && "
+                                "document.getElementById('pipeline-times')"
+                                ".textContent.includes('clock')"), \
+                f"no pipeline or clock line at slider position {end}"
+        # The row: one title, a Download button, marked by its colour.
+        assert browser.eval(f"{demo}.querySelector('.rec-title')"
+                            ".textContent === 'Example pipeline'")
+        assert browser.eval(f"{demo}.querySelector('.rec-download')"
+                            ".tagName === 'BUTTON'"), "Download is not a button"
+        assert browser.eval(f"{demo}.getAttribute('aria-current') === 'true'"
+                            f" && !{demo}.textContent.includes('shown')")
+        node = browser.eval(f"{element_selector('q-r')}?.dataset.id")
+        assert browser.click_until(
+            f'#graph .node[data-id="{node}"] > rect.box',
+            "[...document.querySelectorAll('#details table.props tr')]"
+            ".some(r => r.cells[1]?.textContent === 'max-size-buffers')",
+            tries=5), "no recorded properties from the 0.10.0 recording"
+        close_details(browser)
+        # A recording's pads cannot be pinned: the tooltip does not offer it.
+        tip = "document.querySelector('.tooltip')"
+        browser.hover(f"{element_selector('q-r')}?.querySelector("
+                      "'.pad[data-port]')")
+        assert browser.wait(f"!{tip}.hidden && "
+                            f"{tip}.textContent.includes('q-r:')"), \
+            "no pad tooltip in a recording"
+        assert browser.eval(f"!{tip}.textContent.includes('pin')"), \
+            "a recording's pad tooltip offers pinning"
+        browser.click("#viewing-close")
+        assert browser.wait(f"{banner}.hidden")
+        # The page's pins when it recorded: read-only cards, their values
+        # following the slider (blank before the first recorded values).
+        cards = "document.querySelectorAll('.pin-card')"
+        open_panel(browser, "recordings")
+        browser.click_point(f"{pins_demo}.querySelector('.rec-open')")
+        assert browser.wait(f"!{banner}.hidden && {cards}.length === 2"), \
+            "no pin cards in a recording made with pins"
+        seek = ("(s => {{ s.value = {}; s.dispatchEvent(new Event('input'));"
+                " }})(document.getElementById('seek'))")
+        browser.eval(seek.format(1000))
+        assert browser.wait(f"/^[1-9]/.test({pin_row('buffers/s')}) && "
+                            f"/^[0-9]+/.test({pin_row('rendered')})"), \
+            "a recording's pin cards have no values"
+        browser.eval(seek.format(0))
+        pad_card = ("[...document.querySelectorAll('.pin-card')].find(c => "
+                    "c.querySelector('.pin-title').textContent.includes(':'))")
+        assert browser.wait(f"{pad_card}.querySelector('dl').hidden && "
+                            f"{pad_card}.textContent.includes('waiting')"), \
+            "a pad card shows values before the first were recorded"
+        assert browser.eval("!document.querySelector('.pin-card .pin-from')"
+                            "?.offsetParent"), "path measuring in a recording"
+        # A recording's cards fold but are not removed: they could not be
+        # pinned again there.
+        assert browser.eval("![...document.querySelectorAll('.pin-card "
+                            ".pin-close, .pin-card .pin-prop-close')].some("
+                            "b => b.offsetParent) && !!document.querySelector("
+                            "'.pin-card .pin-fold')?.offsetParent"), \
+            "a recording's card or property can be removed, or not folded"
+        browser.click("#viewing-close")
+        assert browser.wait(f"{banner}.hidden && {cards}.length === 0"), \
+            "pin cards stayed after Close"
+        # Added files work as anywhere else.
+        browser.set_file("#file-input", recorded)
+        open_added(browser, os.path.basename(recorded))
+        assert browser.wait(f"!{banner}.hidden"), "an added file did not open"
+        browser.click("#viewing-close")
+
+        # A link to a recording: added and shown.
+        browser.call("Page.navigate", url="about:blank")
+        browser.call("Page.navigate", url=f"{base}/pipeline-monitor/#file="
+                     + urllib.parse.quote(f"{base}/shared.jsonl", safe=""))
+        assert browser.wait(f"!{banner}.hidden && "
+                            f"!!{added_row('shared.jsonl')}"), \
+            "a recording from a link did not open"
+        assert browser.eval(f"{added_row('shared.jsonl')}"
+                            ".querySelector('.rec-remove').title === "
+                            "'Remove from the list'"), \
+            "a file from a link says it stays on your computer"
+        # A link that cannot be read: said so.
+        browser.call("Page.navigate", url="about:blank")
+        browser.call("Page.navigate", url=f"{base}/pipeline-monitor/#file="
+                     + urllib.parse.quote(f"{base}/missing.jsonl", safe=""))
+        assert browser.wait(f"!{error}.hidden && "
+                            f"{error}.textContent.includes('drop it')"), \
+            "an unreadable link said nothing"
+        assert browser.eval(f"{banner}.hidden")
+
+        # The site never tries to connect to a server.
+        assert browser.eval("(window.socketLog || []).length === 0"), \
+            f"the site tried to connect: {browser.history()}"
+        assert not browser.errors, f"errors in the page: {browser.errors}"
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        shutil.rmtree(site)
+        os.remove(recorded)
+        os.remove(pinned)
 
 
 # The pipeline-monitor command: recordings without a program.
@@ -1948,6 +2179,7 @@ def main():
             check_record_fails(browser, serve)
             if tool:
                 check_command(browser, serve, tool)
+            check_site(browser, serve)
             check_two_pipelines(browser, serve)
             check_format_finding(browser, serve)
     finally:

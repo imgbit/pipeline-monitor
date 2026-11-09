@@ -80,6 +80,8 @@ function button(parent, cls, icon, title) {
 }
 
 function load(key) {
+  if (!key)
+    return [];
   try {
     return JSON.parse(localStorage.getItem(key)) || [];
   } catch {
@@ -140,6 +142,8 @@ export class Pins {
   }
 
   save() {
+    if (!this.key)
+      return;
     const list = [...this.pins.values()].map((pin) => this.saved(pin));
     try {
       localStorage.setItem(this.key, JSON.stringify(list));
@@ -230,6 +234,29 @@ export class Pins {
     pin.sent = false;
     pin.id = null;
     this.fill(pin);
+  }
+
+  // Replaces every card, e.g. with the pins saved in a recording.
+  replaceAll(saved) {
+    for (const pin of this.pins.values())
+      pin.card.remove();
+    this.pins.clear();
+    this.hovered = null;
+    for (const s of saved)
+      this.create(s);
+    this.place();
+  }
+
+  // The values of a recording at one moment: a "pads" message, or null
+  // before the first one. Unlike apply(), cards without an entry go blank.
+  showStats(message) {
+    for (const pin of this.pins.values()) {
+      const entry = message?.pads?.find((e) => e.pad === pin.id);
+      pin.gone = Boolean(entry?.gone);
+      pin.stats = entry && !entry.gone ? entry : null;
+      this.fill(pin);
+    }
+    this.place();
   }
 
   // A "pads" message.
@@ -391,6 +418,10 @@ export class Pins {
     pin.note.textContent = pin.gone
       ? (s ? `${this.noun} is gone, last values:` : `${this.noun} is gone`)
       : "waiting for data…";
+    // No values (yet, or at this moment of a recording): no old ones.
+    const rows = card.querySelector("dl");
+    if (rows)
+      rows.hidden = !s;
     if (!s) {
       pin.summary.textContent = "";
       return;
@@ -514,8 +545,8 @@ function isStructure(v) {
 // (counters) also show how fast they grow.
 export class ElementPins extends Pins {
   // texts: {valueText(value), propertyText(property), isTime(property)}.
-  constructor(layer, lines, handlers, texts) {
-    super(layer, lines, handlers, ELEMENT_PINS_KEY, "element");
+  constructor(layer, lines, handlers, texts, key = ELEMENT_PINS_KEY) {
+    super(layer, lines, handlers, key, "element");
     this.texts = texts;
   }
 
@@ -584,6 +615,19 @@ export class ElementPins extends Pins {
       }
       pin.gone = false;
       pin.stats = { ...entry, time: message.time };
+      this.fill(pin);
+    }
+    this.place();
+  }
+
+  // A recording's property values at one moment ({time, elements}).
+  // Rates start again: the slider jumps.
+  showStats(message) {
+    for (const pin of this.pins.values()) {
+      const entry = message.elements.find((e) => e.element === pin.id);
+      pin.gone = false;
+      pin.stats = entry ? { ...entry, time: message.time } : null;
+      pin.rates = new Map();
       this.fill(pin);
     }
     this.place();

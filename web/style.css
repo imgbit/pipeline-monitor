@@ -675,7 +675,7 @@ main {
 
 .rec-row {
   display: grid;
-  grid-template-columns: 70px minmax(140px, 1fr) 70px 70px minmax(120px, 1fr);
+  grid-template-columns: 44px 76px minmax(140px, 1fr) 70px 70px minmax(120px, 1fr);
   gap: 10px;
   align-items: baseline;
   padding: 3px 16px;
@@ -683,16 +683,16 @@ main {
 }
 
 .rec-row.running .rec-kind { color: var(--error); }
+.rec-kind, .rec-title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .rec-time, .rec-duration, .rec-size { font-variant-numeric: tabular-nums; }
 .rec-actions { display: flex; gap: 8px; align-items: baseline; }
 .rec-actions button { font-size: 12px; padding: 0 6px; }
 .rec-row.shown { background: rgba(80, 140, 255, 0.14); }
-.rec-shown {
-  margin-left: 6px;
-  font-size: 11px;
-  color: var(--accent);
-}
-.rec-file {
+.rec-tag {
   font-size: 11px;
   padding: 0 4px;
   border: 1px solid var(--border);
@@ -705,9 +705,14 @@ main {
 .viewing-banner { border-left-color: var(--accent); }
 .viewing-banner button { margin-left: 8px; }
 .connection.viewing::before { background: var(--accent); }
-body.viewing #pins, body.viewing #pin-lines, body.viewing #measure-all,
-body.viewing #record, body.viewing #snapshot, body.viewing .measure-toggle,
-body.viewing .mute-toggle, body.viewing #details .pin-prop { display: none; }
+/* A recording shows its pin cards, but nothing that would change what the
+   program measures. */
+body.viewing #measure-all, body.viewing #record, body.viewing #snapshot,
+body.viewing .measure-toggle, body.viewing .mute-toggle,
+body.viewing #details .pin-prop, body.viewing .pin-card .pin-from,
+body.viewing .pin-card .pin-close, body.viewing .pin-card .pin-prop-close {
+  display: none;
+}
 
 /* Header buttons: a name and, when there is something, a count. */
 .recordings-counter, .problems-counter, .log-counter {

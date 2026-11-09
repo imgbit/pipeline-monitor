@@ -64,14 +64,17 @@ async function readSummary(file) {
 // recordings in the folder of the program's machine, and files added from
 // this computer (kept in this tab only, never sent anywhere).
 // handlers: send(command), view() -> what this page shows (saved with a
-// recording), open(name), openFile(File); viewer: true in a viewer tab,
-// where added files open without a server.
+// recording), open(name), openFile(File), openDemo(demo); viewer: true in
+// a viewer tab, where added files open without a server; site: true on
+// the published site (no server at all, demo recordings instead).
 export class RecordingsView {
   constructor(nodes, handlers) {
     this.nodes = nodes;
     this.handlers = handlers;
     this.list = [];
     this.files = [];
+    // The site's demo recordings: {title, url, kind, started, last, size}.
+    this.demos = [];
     // The recording this tab shows: {name} or {file}, or null.
     this.shown = null;
     this.connected = false;
@@ -94,8 +97,9 @@ export class RecordingsView {
     });
   }
 
-  // Adds a file from this computer to the top of the list (once).
-  async addFile(file) {
+  // Adds a file to the top of the list (once): from this computer, or
+  // from a link (its URL).
+  async addFile(file, link = null) {
     this.showError(null);
     if (!this.filesUsable()) {
       this.showError("Files can be added when the program runs.");
@@ -108,7 +112,12 @@ export class RecordingsView {
     }
     this.files = this.files.filter((f) => f.file.name !== file.name ||
       f.file.size !== file.size || f.file.lastModified !== file.lastModified);
-    this.files.unshift({ file, ...summary });
+    this.files.unshift({ file, link, ...summary });
+    this.render();
+  }
+
+  setDemos(demos) {
+    this.demos = demos;
     this.render();
   }
 
@@ -123,7 +132,8 @@ export class RecordingsView {
     if (!shown)
       return;
     row.classList.add("shown");
-    add(row.querySelector(".rec-kind"), "span", "shown", "rec-shown");
+    row.setAttribute("aria-current", "true");
+    row.title += " (shown now)";
     open.textContent = "Reload";
     open.title = "Read it again";
   }
@@ -173,10 +183,10 @@ export class RecordingsView {
   fileRow(fragment, f) {
     const row = add(fragment, "div", undefined, "rec-row added");
     row.dataset.file = f.file.name;
-    row.title = `${f.file.name}, added from this computer (not uploaded)`;
-    const kind = add(row, "span", undefined, "rec-kind");
-    add(kind, "span", "file", "rec-file");
-    kind.append(` ${f.kind ?? "?"}`);
+    row.title = f.link ? `${f.file.name}, opened from ${f.link}`
+      : `${f.file.name}, added from this computer (not uploaded)`;
+    add(add(row, "span", undefined, "rec-source"), "span", "file", "rec-tag");
+    add(row, "span", f.kind ?? "?", "rec-kind");
     add(row, "span", new Date(f.started / 1000).toLocaleString(), "rec-time");
     add(row, "span", f.kind === "snapshot" ? "–"
       : duration(f.last - f.started), "rec-duration");
@@ -188,11 +198,37 @@ export class RecordingsView {
     this.markShown(row, open, this.shown?.file === f.file);
     const remove = add(actions, "button", "Remove", "rec-remove");
     remove.disabled = !this.filesUsable();
-    remove.title = "Remove from the list (the file stays on your computer)";
+    remove.title = f.link ? "Remove from the list"
+      : "Remove from the list (the file stays on your computer)";
     remove.addEventListener("click", () => {
       this.files = this.files.filter((x) => x !== f);
       this.render();
     });
+  }
+
+  // A demo recording on the site: Open and Download.
+  demoRow(fragment, d) {
+    const row = add(fragment, "div", undefined, "rec-row demo");
+    row.dataset.demo = d.url;
+    row.title = d.title;
+    add(add(row, "span", undefined, "rec-source"), "span", "demo", "rec-tag");
+    add(row, "span", d.kind ?? "?", "rec-kind");
+    add(row, "span", d.title, "rec-time rec-title");
+    add(row, "span", d.kind === "snapshot" ? "–"
+      : d.started && d.last ? duration(d.last - d.started) : "",
+    "rec-duration");
+    add(row, "span", d.size ? size(d.size) : "", "rec-size");
+    const actions = add(row, "span", undefined, "rec-actions");
+    const open = add(actions, "button", "Open", "rec-open");
+    open.addEventListener("click", () => this.handlers.openDemo(d));
+    add(actions, "button", "Download", "rec-download")
+      .addEventListener("click", () => {
+        const link = document.createElement("a");
+        link.href = d.url;
+        link.download = d.url.split("/").pop();
+        link.click();
+      });
+    this.markShown(row, open, this.shown?.url === d.url);
   }
 
   render() {
@@ -210,7 +246,10 @@ export class RecordingsView {
 
     const fragment = document.createDocumentFragment();
     this.nodes.addFile.disabled = !this.filesUsable();
-    if (!this.connected && (this.list.length || this.files.length))
+    if (this.handlers.site)
+      add(fragment, "div", "Demo recordings, and files you add: they are " +
+        "read in this browser and never uploaded.", "rec-offline");
+    else if (!this.connected && (this.list.length || this.files.length))
       add(fragment, "div", this.handlers.viewer
         ? "The pipeline-monitor command is not running: its recordings can " +
           "be opened, downloaded and deleted again when it runs. Added " +
@@ -218,15 +257,18 @@ export class RecordingsView {
         : "The program is not running: the list works again when it runs. " +
           "To open recordings without it, use the pipeline-monitor " +
           "command.", "rec-offline");
-    if (!this.list.length && !this.files.length)
+    if (!this.list.length && !this.files.length && !this.demos.length)
       add(fragment, "div", "No recordings yet.", "log-empty");
     for (const f of this.files)
       this.fileRow(fragment, f);
+    for (const d of this.demos)
+      this.demoRow(fragment, d);
     for (const r of this.list) {
       const row = add(fragment, "div", undefined,
         `rec-row${r.running ? " running" : ""}`);
       row.dataset.name = r.name;
       row.title = r.name;
+      add(row, "span", undefined, "rec-source");
       add(row, "span", r.kind ?? "?", "rec-kind");
       add(row, "span", r.started
         ? new Date(r.started / 1000).toLocaleString() : "?", "rec-time");

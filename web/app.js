@@ -24,9 +24,17 @@ const CAPS_LABELS_KEY = "pipeline-monitor.caps-labels";
 const TIME_UNIT_KEY = "pipeline-monitor.time-unit";
 const AUTO_FIT_KEY = "pipeline-monitor.auto-fit";
 
+// On the published site (no pipeline-monitor server behind the page) the
+// site's build adds <meta name="pipeline-monitor-site" content="LIST">,
+// LIST being its demo recordings; the page is then a viewer and never
+// connects anywhere.
+const siteList = document.querySelector('meta[name="pipeline-monitor-site"]')
+  ?.content ?? null;
+
 // Each tab is live (connected to the program) or a viewer of recordings,
-// chosen when it opens: "#viewer" or "#viewer=<name>".
-const viewerMode = location.hash.startsWith("#viewer");
+// chosen when it opens: "#viewer", "#viewer=<name>" or "#file=<url>".
+const viewerMode = siteList !== null || location.hash.startsWith("#viewer") ||
+  location.hash.startsWith("#file=");
 
 const elk = new ELK({ workerUrl: "vendor/elkjs/elk-worker.min.js" });
 
@@ -74,8 +82,10 @@ function padRows(p, index) {
     rows.push(["delay", formatSpan(stats.last.delay, pins.unit)]);
   for (const f of findings.byPlace().pads.get(pad.id) || [])
     rows.push([f.severity, f.text]);
-  rows.push(["pinned", pins.has(index.padPath(pad.id))
-    ? "yes, click to unpin" : "no, click to pin"]);
+  // A recording cannot pin pads.
+  if (!state.viewing)
+    rows.push(["pinned", pins.has(index.padPath(pad.id))
+      ? "yes, click to unpin" : "no, click to pin"]);
   return rows;
 }
 
@@ -156,9 +166,11 @@ const view = new GraphView($("graph"), {
 });
 
 let socket = null;
+// In a viewer, pin cards are a recording's: never stored, never sent to a
+// program (a viewer tab may be connected to one, for the list).
 const pins = new Pins($("pins"), $("pin-lines"), {
   send(command) {
-    if (socket?.readyState === WebSocket.OPEN)
+    if (!viewerMode && socket?.readyState === WebSocket.OPEN)
       socket.send(JSON.stringify(command));
   },
   portPoint: (port) => view.portPoint(port),
@@ -183,10 +195,10 @@ const pins = new Pins($("pins"), $("pin-lines"), {
     $("pick-hint").hidden = false;
   },
   extraRows: (pin) => extraRows(pin),
-});
+}, viewerMode ? null : undefined);
 const elementPins = new ElementPins($("pins"), $("pin-lines"), {
   send(command) {
-    if (socket?.readyState === WebSocket.OPEN)
+    if (!viewerMode && socket?.readyState === WebSocket.OPEN)
       socket.send(JSON.stringify(command));
   },
   portPoint: (target) => view.portPoint(target),
@@ -196,7 +208,8 @@ const elementPins = new ElementPins($("pins"), $("pin-lines"), {
     elementPins.sync(buildIndex(state.graph).elementPaths);
     update();
   },
-}, { valueText, propertyText, isTime: isTimeProperty });
+}, { valueText, propertyText, isTime: isTimeProperty },
+viewerMode ? null : undefined);
 
 pins.setUnit(TIME_UNITS.includes(loadString(TIME_UNIT_KEY))
   ? loadString(TIME_UNIT_KEY) : "auto");
@@ -248,7 +261,7 @@ const recordings = new RecordingsView({
   fileInput: $("file-input"),
 }, { send, view: pageView,
   open: (name) => viewerMode ? openStored(name) : openInViewer(name),
-  openFile, viewer: viewerMode });
+  openFile, openDemo, viewer: viewerMode, site: siteList !== null });
 
 const findings = new FindingsView({
   counter: $("problems-counter"),
@@ -416,7 +429,8 @@ function updateHeader(pipeline) {
   $("pipeline-name").textContent = pipeline ? pipeline.name : "";
   // Without a connection it is the last state known, not the current one.
   $("pipeline-state").textContent = pipeline
-    ? `${pipeline.state}${state.connected ? "" : " (last known)"}` : "";
+    ? `${pipeline.state}${state.connected || state.viewing ? ""
+      : " (last known)"}` : "";
   $("pipeline-state").className = `state ${pipeline ? pipeline.state : ""}` +
     (state.connected ? "" : " stale");
   $("element-count").textContent = pipeline
@@ -786,24 +800,35 @@ function showRecording(text, name) {
     }
   }
   const byType = { graph: [], log: [], findings: [], levels: [], latency: [],
-    properties: [] };
+    properties: [], pads: [] };
   // Only messages of the types shown, with their times.
   for (const message of messages)
     if (Object.hasOwn(byType, message?.type) &&
         Number.isFinite(message.time))
       byType[message.type].push(message);
+  // A graph that is not one makes the whole file damaged, found now
+  // rather than when the slider reaches it.
+  if (byType.graph.some((g) => !Array.isArray(g.pipelines)))
+    throw new Error("damaged graph");
   const start = header.started;
   const end = messages.reduce((latest, m) =>
     Number.isFinite(m?.time) ? Math.max(latest, m.time) : latest, start);
   stopPlaying();
   state.viewing = { name, header, properties: new Map(), byType, start, end,
-    at: end, shownGraph: undefined, speed: 1, timer: null };
+    at: start, shownGraph: undefined, speed: 1, timer: null };
   clearState();
-  const view = header.view ?? {};
-  state.collapsed = new Set(Array.isArray(view.collapsed)
-    ? view.collapsed : []);
-  state.selectedPath = typeof view.selected === "string"
-    ? view.selected : null;
+  const recorded = header.view ?? {};
+  state.collapsed = new Set(Array.isArray(recorded.collapsed)
+    ? recorded.collapsed : []);
+  // The page's pins when it recorded, as read-only cards.
+  const saved = (list) => (Array.isArray(list) ? list : [])
+    .filter((p) => typeof p?.path === "string");
+  pins.replaceAll(saved(recorded.pins));
+  elementPins.replaceAll(saved(recorded.element_pins).map((p) => ({ ...p,
+    props: Array.isArray(p.props) ? p.props.filter((n) =>
+      typeof n === "string") : [] })));
+  state.selectedPath = typeof recorded.selected === "string"
+    ? recorded.selected : null;
   state.reselect = state.selectedPath !== null;
   state.places = { tops: new Map() };
   document.body.classList.add("viewing");
@@ -814,11 +839,23 @@ function showRecording(text, name) {
   $("playback").hidden = header.kind === "snapshot";
   $("speed").textContent = "1×";
   $("viewing").hidden = false;
-  seekTo(end);
+  seekTo(start);
   $("ended").hidden = true;
   $("lost").hidden = true;
   recordings.showError(null);
   return true;
+}
+
+// The message shown at t: the recorded one, or, where that has no pipeline
+// (before the program built one, after it removed it), the nearest one
+// with a pipeline: the last before t, else the first after it. For the
+// graph and the levels (the header's clock line).
+function shownAt(list, t) {
+  const message = latestAt(list, t);
+  if (message?.pipelines?.length)
+    return message;
+  const before = list.findLast((m) => m.time <= t && m.pipelines?.length);
+  return before ?? list.find((m) => m.pipelines?.length) ?? message;
 }
 
 // The last message of a list (in time order) at or before t, or null.
@@ -856,7 +893,7 @@ function seekTo(t) {
   const v = state.viewing;
   v.at = Math.max(v.start, Math.min(t, v.end));
   const at = v.at;
-  const graph = latestAt(v.byType.graph, at);
+  const graph = shownAt(v.byType.graph, at);
   if (graph !== v.shownGraph) {
     v.shownGraph = graph;
     if (graph)
@@ -868,7 +905,7 @@ function seekTo(t) {
   }
   findings.apply(latestAt(v.byType.findings, at) ?? { findings: [] });
   showProblems();
-  applyLevels(latestAt(v.byType.levels, at) ?? { queues: [], pipelines: [] });
+  applyLevels(shownAt(v.byType.levels, at) ?? { queues: [], pipelines: [] });
   applyLatency(latestAt(v.byType.latency, at) ?? NO_LATENCY);
   log.reset();
   for (const message of v.byType.log) {
@@ -882,6 +919,8 @@ function seekTo(t) {
       break;
     message.elements.filter((e) => !e.gone).forEach(keepProperties);
   }
+  pins.showStats(latestAt(v.byType.pads, at));
+  elementPins.showStats({ time: at, elements: [...v.properties.values()] });
   refreshProperties();
   const span = v.end - v.start;
   $("seek").value = span > 0 ? String(Math.round((at - v.start) / span *
@@ -934,6 +973,8 @@ function closeRecording() {
   stopPlaying();
   state.viewing = null;
   recordings.setShown(null);
+  pins.replaceAll([]);
+  elementPins.replaceAll([]);
   $("viewing").hidden = true;
   clearState();
   state.places = { tops: new Map() };
@@ -970,6 +1011,54 @@ function openTab(hash) {
 
 function openInViewer(name) {
   openTab(`#viewer=${encodeURIComponent(name)}`);
+}
+
+// A demo recording of the site, read when it is opened.
+async function openDemo(demo) {
+  try {
+    const r = await fetch(demo.url);
+    if (!r.ok)
+      throw new Error(r.statusText);
+    openRecording(await r.text(), demo.title, { url: demo.url });
+  } catch {
+    recordings.showError(`Cannot read ${demo.title}.`);
+  }
+}
+
+// A recording from a link (#file=URL): added to the list like a file from
+// this computer (marked as from the link), then shown. Only hosts that allow other sites to read
+// their files (e.g. GitHub raw files, gists) can be opened this way.
+async function openLink(url) {
+  dock.open("recordings");
+  let text;
+  try {
+    const r = await fetch(url);
+    if (!r.ok)
+      throw new Error(r.statusText);
+    text = await r.text();
+  } catch {
+    recordings.showError(`Cannot read ${url}: its site does not let other ` +
+      "pages read it. Download the file and drop it on this page.");
+    return;
+  }
+  const name = decodeURIComponent(new URL(url, location.href).pathname
+    .split("/").pop() || "recording.jsonl");
+  const file = new File([text], name);
+  await recordings.addFile(file, url);
+  if (recordings.files.some((f) => f.file === file))
+    openFile(file);
+}
+
+// The site's demo recordings: [{title, file, kind, started, last, size}].
+async function loadDemos() {
+  try {
+    const r = await fetch(siteList);
+    const list = await r.json();
+    recordings.setDemos(list.map((d) => ({ ...d,
+      url: new URL(d.file, new URL(siteList, location.href)).href })));
+  } catch {
+    recordings.showError("The demo recordings could not be read.");
+  }
 }
 
 // Added files by the viewer tab they were opened in: a tab asks for its
@@ -1030,10 +1119,10 @@ function handleMessage(message) {
         null;
       state.reselect = state.selected === null;
     }
-    // A recording's ids are not the program's: nothing is sent for them.
+    // A recording's pins find their pads by path (a viewer sends nothing).
+    pins.sync(index.padPaths);
+    elementPins.sync(index.elementPaths);
     if (!state.viewing) {
-      pins.sync(index.padPaths);
-      elementPins.sync(index.elementPaths);
       updatePaths();
       syncMeasuring();
     }
@@ -1216,11 +1305,17 @@ function startViewer() {
   if (!location.hash.startsWith("#viewer=") &&
       location.hash !== "#viewer-file")
     dock.open("recordings");
-  // Without a server only added files open.
-  connectViewer();
+  // On the site there is no server: demos and added files only.
+  if (siteList !== null)
+    loadDemos();
+  else
+    connectViewer();
   const name = location.hash.match(/^#viewer=(.+)$/)?.[1];
   if (name)
     openStored(decodeURIComponent(name));
+  const link = location.hash.match(/^#file=(.+)$/)?.[1];
+  if (link)
+    openLink(decodeURIComponent(link));
   // A file added in the live tab that opened this one: asked for.
   if (location.hash === "#viewer-file") {
     if (window.opener)
