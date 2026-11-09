@@ -14,7 +14,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [default, sanitizers]
+        # fuzz: libFuzzer (clang) with ASan and UBSan on the command
+        # handler and the recording reader, from tests/fuzz/corpus.
+        variant: [default, sanitizers, fuzz]
     steps:
       - uses: actions/checkout@v4
       # The Ubuntu mirrors are sometimes very slow: the downloaded packages
@@ -41,7 +43,7 @@ jobs:
               meson ninja-build pkg-config libglib2.0-dev-bin \
               libgstreamer1.0-dev gstreamer1.0-plugins-base \
               gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
-              libsoup-3.0-dev libjson-glib-dev python3 &&
+              libsoup-3.0-dev libjson-glib-dev python3 clang &&
               installed=yes && break
             echo "apt-get failed or hung (try $try)"
           done
@@ -59,21 +61,45 @@ jobs:
           case "${{ matrix.variant }}" in
             sanitizers)
               meson setup build -Db_sanitize=address,undefined -Db_lundef=false ;;
+            fuzz)
+              CC=clang meson setup build -Dfuzz=true \
+                -Db_sanitize=address,undefined -Db_lundef=false ;;
             *)
               meson setup build ;;
           esac
           meson compile -C build
       - name: Test
+        if: matrix.variant != 'fuzz'
         env:
           GST_REGISTRY_FORK: ${{ matrix.variant != 'default' && 'no' || '' }}
           ASAN_OPTIONS: detect_leaks=0
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
         run: meson test -C build --print-errorlogs --verbose
+      # 60 s each, from a copy of the seeds; a crash leaves its input in
+      # fuzz-crashes/ (an artifact) to reproduce and add as a seed.
+      - name: Fuzz
+        if: matrix.variant == 'fuzz'
+        env:
+          GST_REGISTRY_FORK: 'no'
+          GIO_USE_PROXY_RESOLVER: dummy
+          ASAN_OPTIONS: detect_leaks=0
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: |
+          mkdir -p fuzz-crashes
+          for target in command recording; do
+            mkdir -p fuzz-work/$target
+            cp tests/fuzz/corpus/$target/* fuzz-work/$target/
+            build/tests/fuzz_$target -max_total_time=60 -timeout=10 \
+              -max_len=65536 -artifact_prefix=fuzz-crashes/$target- \
+              fuzz-work/$target
+          done
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: testlog-ubuntu-${{ matrix.variant }}
-          path: build/meson-logs/
+          path: |
+            build/meson-logs/
+            fuzz-crashes/
 
   debian-12:
     name: Debian 12 (GStreamer 1.22)
