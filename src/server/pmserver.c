@@ -739,6 +739,10 @@ on_ws_message (SoupWebsocketConnection * conn, gint type, GBytes * message,
     send_error (conn, NULL, "Commands are at most 64 KiB.");
     return;
   }
+  /* An empty message has no data at all; the parser must not get NULL
+   * (it then reads an empty document: not a command object). */
+  if (data == NULL)
+    data = "";
 
   parser = json_parser_new ();
   if (!json_parser_load_from_data (parser, data, size, NULL)) {

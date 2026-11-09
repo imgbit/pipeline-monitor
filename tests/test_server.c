@@ -1577,6 +1577,13 @@ test_monitor_bad_commands (void)
   g_assert_cmpstr (json_object_get_string_member (error, "reason"), ==,
       "Not valid JSON.");
   json_object_unref (error);
+  /* An empty message (found by fuzzing: it reached the JSON parser as
+   * NULL, a GLib critical in the program). */
+  ws_send (&client, "%s", "");
+  error = next_error (&client);
+  g_assert_cmpstr (json_object_get_string_member (error, "reason"), ==,
+      "A command is a JSON object.");
+  json_object_unref (error);
   ws_send (&client, "{\"type\":\"watch-pad\",\"pad\":\"x\"}");
   error = next_error (&client);
   g_assert_cmpstr (json_object_get_string_member (error, "command"), ==,
