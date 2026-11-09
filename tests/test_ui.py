@@ -1434,6 +1434,9 @@ def check_viewer(browser, rows, url):
     assert browser.wait(f"{added_row(name)}.classList.contains('shown') && "
                         f"[...{rows}].filter(r => r.classList.contains("
                         "'shown')).length === 1"), "the mark did not move"
+    assert browser.eval(f"[...{rows}].some(r => !r.classList.contains("
+                        "'added'))"), "no stored recording in the list"
+    assert browser.wait(KINDS_ALIGNED), "the kind column does not line up"
     browser.click("#viewing-close")
     assert browser.wait(f"{banner}.hidden")
     not_one = os.path.join(RECORDINGS, "not-a-recording.jsonl")
@@ -1577,6 +1580,13 @@ def check_record_fails(browser, serve):
             server.terminate()
             server.wait()
         os.remove(blocker)
+
+
+# The kind column starts at the same place in every row of the list
+# (stored, added, demo rows alike).
+KINDS_ALIGNED = ("(xs => xs.length > 1 && xs.every(x => Math.abs(x - xs[0]) < 1))"
+                 "([...document.querySelectorAll('#recordings-rows .rec-row "
+                 ".rec-kind')].map(k => k.getBoundingClientRect().left))")
 
 
 # Damaged versions of a recording (fixed seed: repeatable): lines lost,
@@ -1825,6 +1835,11 @@ def check_site(browser, serve):
         open_added(browser, os.path.basename(recorded))
         assert browser.wait(f"!{banner}.hidden"), "an added file did not open"
         browser.click("#viewing-close")
+        assert browser.eval(f"{added_row(os.path.basename(recorded))}"
+                            ".querySelector('.rec-remove').title === 'Remove "
+                            "from the list (the file stays on your computer)'"), \
+            "a file from this computer: wrong Remove tooltip"
+        assert browser.wait(KINDS_ALIGNED), "the kind column does not line up"
 
         # A link to a recording: added and shown.
         browser.call("Page.navigate", url="about:blank")
