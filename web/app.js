@@ -532,6 +532,12 @@ async function layoutAndRender() {
   }
   view.setLevels(state.queues);
   showLatencyLabels();
+  // A click being made on the panel: rebuilding it now would remove the
+  // pressed button and lose the click. It is rebuilt once released.
+  if (detailsHeld) {
+    detailsDeferred = true;
+    return;
+  }
   const details = selection && log.enabled ? {
     entries: log.entriesFor(selection.element.id),
     muted: log.isMuted(selection.path),
@@ -552,6 +558,25 @@ async function layoutAndRender() {
     refreshProperties();
 }
 
+// While a pointer is pressed on the details panel, it is not rebuilt: the
+// rebuild waits for the release, and runs after the click is delivered.
+let detailsHeld = false;
+let detailsDeferred = false;
+$("details").addEventListener("pointerdown", () => {
+  detailsHeld = true;
+});
+for (const type of ["pointerup", "pointercancel"]) {
+  window.addEventListener(type, () => {
+    if (!detailsHeld)
+      return;
+    detailsHeld = false;
+    if (detailsDeferred) {
+      detailsDeferred = false;
+      setTimeout(update, 0);
+    }
+  });
+}
+
 // Properties of the selected element, read once per second while the
 // details panel is open.
 let propsTimer = null;
@@ -560,6 +585,11 @@ let propsLast = { id: null, data: null };
 
 async function refreshProperties() {
   clearTimeout(propsTimer);
+  // Not while a click is being made on the panel (its rows are rebuilt).
+  if (detailsHeld) {
+    propsTimer = setTimeout(refreshProperties, 200);
+    return;
+  }
   const id = state.selected;
   if (id !== null) {
     let data = null;

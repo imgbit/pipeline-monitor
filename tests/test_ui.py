@@ -597,6 +597,7 @@ def check(browser, url):
     assert len(counts) > 1, f"graph did not update live: {counts}"
 
     check_log(browser)
+    check_held_click(browser)
     check_caps(browser)
     check_units(browser)
     check_places(browser)
@@ -645,6 +646,30 @@ def close_panel(browser, name):
     if not browser.eval(f"document.getElementById('{PANELS[name]}-panel')"
                         ".hidden"):
         browser.click(f"#{PANELS[name]}-close")
+
+
+# A click on the details panel is not lost when the page updates while
+# the button is pressed (the example changes its graph every 2 s): the
+# panel waits for the release.
+def check_held_click(browser):
+    node = browser.eval(f"{element_selector('t')}?.dataset.id")
+    assert browser.click_until(
+        f'#graph .node[data-id="{node}"] > rect.box',
+        "document.querySelector('#details h2')?.textContent === 't'",
+        tries=5), "could not select t"
+    close = "document.querySelector('#details .close')"
+    browser.eval(f"window.heldClose = {close}")
+    x, y = browser.eval(f"(r => [r.x + r.width / 2, r.y + r.height / 2])"
+                        f"({close}.getBoundingClientRect())")
+    browser.call("Input.dispatchMouseEvent", type="mousePressed", x=x, y=y,
+                 button="left", clickCount=1)
+    time.sleep(4.5)
+    assert browser.eval(f"{close} === window.heldClose"), \
+        "the panel was rebuilt under a pressed button"
+    browser.call("Input.dispatchMouseEvent", type="mouseReleased", x=x, y=y,
+                 button="left", clickCount=1)
+    assert browser.wait("document.getElementById('details').hidden"), \
+        f"the held click was lost\n{browser.history()}"
 
 
 # The server runs "serve --warnings": the tee "t" posts a warning each time
