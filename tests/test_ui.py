@@ -334,11 +334,14 @@ class Browser:
                   y=point[1])
 
     # Chooses a file for an <input type="file">, as a person would.
+    # path: one file, or a list of files chosen together.
     def set_file(self, selector, path):
         root = self.call("DOM.getDocument")["root"]["nodeId"]
         node = self.call("DOM.querySelector", nodeId=root,
                          selector=selector)["nodeId"]
-        self.call("DOM.setFileInputFiles", files=[path], nodeId=node)
+        self.call("DOM.setFileInputFiles",
+                  files=path if isinstance(path, list) else [path],
+                  nodeId=node)
 
     def screenshot(self, path):
         data = self.call("Page.captureScreenshot")["data"]
@@ -1840,6 +1843,40 @@ def check_site(browser, serve):
                             "from the list (the file stays on your computer)'"), \
             "a file from this computer: wrong Remove tooltip"
         assert browser.wait(KINDS_ALIGNED), "the kind column does not line up"
+
+        # Several files at once: the recordings added in the chosen order
+        # (the first on top), the others named in one message.
+        with open(recorded, encoding="utf-8") as f:
+            text = f.read()
+        several = []
+        for name, content in (("several-a.jsonl", text),
+                              ("several-b.jsonl", text),
+                              ("several-c.txt", "not a recording\n")):
+            several.append(os.path.join(site, name))
+            with open(several[-1], "w", encoding="utf-8") as f:
+                f.write(content)
+        browser.eval(f"{error}.hidden = true")
+        browser.set_file("#file-input", several)
+        assert browser.wait(f"!!{added_row('several-a.jsonl')} && "
+                            f"!!{added_row('several-b.jsonl')}"), \
+            "not every recording chosen together was added"
+        assert browser.eval(
+            "(r => r.indexOf('several-a.jsonl') < r.indexOf('several-b.jsonl'))"
+            "([...document.querySelectorAll('#recordings-rows .rec-row.added')]"
+            ".map(x => x.dataset.file))"), "not in the chosen order"
+        assert browser.wait(f"!{error}.hidden && {error}.textContent === "
+                            "'Not recordings this page can open: "
+                            "several-c.txt.'"), \
+            "the file that is not a recording was not named"
+        # Dropped together: both added.
+        browser.eval("(() => { const d = new DataTransfer(); "
+                     f"for (const n of ['drop-a.jsonl', 'drop-b.jsonl']) "
+                     f"d.items.add(new File([{json.dumps(text)}], n)); "
+                     "window.dispatchEvent(new DragEvent('drop', "
+                     "{dataTransfer: d, cancelable: true})); })()")
+        assert browser.wait(f"!!{added_row('drop-a.jsonl')} && "
+                            f"!!{added_row('drop-b.jsonl')}"), \
+            "not every dropped file was added"
 
         # A link to a recording: added and shown.
         browser.call("Page.navigate", url="about:blank")

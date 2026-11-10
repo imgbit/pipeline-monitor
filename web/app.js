@@ -1081,12 +1081,12 @@ $("viewing-close").addEventListener("click", closeRecording);
 // A recording file dropped on the page.
 window.addEventListener("dragover", (e) => e.preventDefault());
 window.addEventListener("drop", (e) => {
-  const file = e.dataTransfer?.files?.[0];
-  if (!file)
+  const files = [...(e.dataTransfer?.files ?? [])];
+  if (!files.length)
     return;
   e.preventDefault();
   dock.open("recordings");
-  recordings.addFile(file);
+  recordings.addFiles(files);
 });
 window.addEventListener("message", (e) => {
   if (e.origin !== location.origin)

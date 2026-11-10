@@ -86,9 +86,7 @@ export class RecordingsView {
     });
     nodes.addFile.addEventListener("click", () => nodes.fileInput.click());
     nodes.fileInput.addEventListener("change", () => {
-      const file = nodes.fileInput.files[0];
-      if (file)
-        this.addFile(file);
+      this.addFiles([...nodes.fileInput.files]);
       nodes.fileInput.value = "";
     });
     nodes.snapshot.addEventListener("click", () => {
@@ -98,22 +96,49 @@ export class RecordingsView {
   }
 
   // Adds a file to the top of the list (once): from this computer, or
-  // from a link (its URL).
+  // from a link (its URL). False if it is not a recording.
   async addFile(file, link = null) {
+    this.showError(null);
+    if (!this.filesUsable()) {
+      this.showError("Files can be added when the program runs.");
+      return false;
+    }
+    if (!(await this.add(file, link))) {
+      this.showError(`${file.name} is not a recording this page can open.`);
+      return false;
+    }
+    this.render();
+    return true;
+  }
+
+  // Several files (chosen or dropped together): the first on top; the
+  // ones that are not recordings named in one message.
+  async addFiles(files) {
+    if (files.length === 1)
+      return this.addFile(files[0]);
     this.showError(null);
     if (!this.filesUsable()) {
       this.showError("Files can be added when the program runs.");
       return;
     }
+    const refused = [];
+    for (const file of [...files].reverse())
+      if (!(await this.add(file, null)))
+        refused.unshift(file.name);
+    this.render();
+    if (refused.length)
+      this.showError("Not recordings this page can open: " +
+        `${refused.join(", ")}.`);
+  }
+
+  async add(file, link) {
     const summary = await readSummary(file).catch(() => null);
-    if (!summary) {
-      this.showError(`${file.name} is not a recording this page can open.`);
-      return;
-    }
+    if (!summary)
+      return false;
     this.files = this.files.filter((f) => f.file.name !== file.name ||
       f.file.size !== file.size || f.file.lastModified !== file.lastModified);
     this.files.unshift({ file, link, ...summary });
-    this.render();
+    return true;
   }
 
   setDemos(demos) {
