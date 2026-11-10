@@ -714,6 +714,11 @@ body.viewing .pin-card .pin-close, body.viewing .pin-card .pin-prop-close {
   display: none;
 }
 
+/* On the published site: the guide, next to the header buttons. */
+.guide-link { color: var(--muted); text-decoration: none; margin: 0 6px; }
+.guide-link:hover { color: var(--accent); }
+.empty a { color: var(--accent); }
+
 /* Header buttons: a name and, when there is something, a count. */
 .recordings-counter, .problems-counter, .log-counter {
   display: inline-flex; align-items: center; gap: 6px;

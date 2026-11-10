@@ -43,7 +43,7 @@ jobs:
               meson ninja-build pkg-config libglib2.0-dev-bin \
               libgstreamer1.0-dev gstreamer1.0-plugins-base \
               gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
-              libsoup-3.0-dev libjson-glib-dev python3 clang &&
+              libsoup-3.0-dev libjson-glib-dev python3 python3-markdown clang &&
               installed=yes && break
             echo "apt-get failed or hung (try $try)"
           done

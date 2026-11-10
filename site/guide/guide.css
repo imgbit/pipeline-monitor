@@ -1,0 +1,99 @@
+/* SPDX-FileCopyrightText: 2026 Łukasz Huńczak */
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
+
+/* The guide's pages, in the viewer's colours. */
+:root {
+  --bg: #f6f7f9;
+  --fg: #1d2330;
+  --muted: #6b7385;
+  --panel: #ffffff;
+  --border: #d5d9e1;
+  --accent: #2f6fde;
+  --code: #eef1f6;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #15181e;
+    --fg: #e3e6ec;
+    --muted: #8d95a6;
+    --panel: #1d2128;
+    --border: #2f3540;
+    --accent: #5b93f5;
+    --code: #232833;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font: 15px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: var(--fg);
+  background: var(--bg);
+}
+
+header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  align-items: center;
+  padding: 10px 24px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+
+header .brand {
+  font-weight: 600;
+  color: var(--fg);
+  text-decoration: none;
+  margin-right: 12px;
+}
+
+header a { color: var(--muted); text-decoration: none; }
+header a:hover, header a[aria-current="page"] { color: var(--accent); }
+header .viewer { margin-left: auto; }
+
+main {
+  max-width: 820px;
+  margin: 0 auto;
+  padding: 16px 24px 48px;
+}
+
+h1 { font-size: 26px; margin: 18px 0 8px; }
+h2 { font-size: 19px; margin: 28px 0 6px; }
+h3 { font-size: 16px; margin: 22px 0 4px; }
+a { color: var(--accent); }
+
+code, pre {
+  font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: var(--code);
+  border-radius: 4px;
+}
+
+code { padding: 1px 4px; }
+pre { padding: 10px 12px; overflow-x: auto; }
+pre code { padding: 0; background: none; }
+
+table { border-collapse: collapse; width: 100%; margin: 10px 0; }
+th, td {
+  text-align: left;
+  vertical-align: top;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+img {
+  max-width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin: 8px 0;
+}
+
+footer {
+  max-width: 820px;
+  margin: 0 auto;
+  padding: 0 24px 32px;
+  color: var(--muted);
+  font-size: 13px;
+}

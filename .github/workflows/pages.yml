@@ -34,7 +34,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build
-        run: python3 packaging/build-site.py _site
+        run: |
+          sudo apt-get install -y --no-install-recommends python3-markdown
+          python3 packaging/build-site.py _site --require-guide
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site

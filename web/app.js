@@ -1301,6 +1301,14 @@ function startViewer() {
   $("connection").className = "connection viewing";
   $("empty").textContent = "Open a recording from the list; add one with " +
     "Add file…, or drop a file on the page.";
+  // The published site has the guide next to the viewer.
+  if (siteList !== null) {
+    $("guide-link").hidden = false;
+    const guide = document.createElement("a");
+    guide.href = "guide/";
+    guide.textContent = "start with the guide";
+    $("empty").append(" New here? ", guide, ".");
+  }
   // With nothing open yet, the list to open one from.
   if (!location.hash.startsWith("#viewer=") &&
       location.hash !== "#viewer-file")

@@ -1652,6 +1652,28 @@ def damaged_recordings(text, count, seed=11):
         yield "\n".join(out) + "\n"
 
 
+def check_guide(browser, site):
+    browser.call("Page.navigate", url="about:blank")
+    browser.call("Page.navigate", url=site)
+    link = "document.getElementById('guide-link')"
+    assert browser.wait(f"!!{link}?.offsetParent"), "no Guide link on the site"
+    assert browser.eval("[...document.querySelectorAll('#empty a')].some(a => "
+                        "a.getAttribute('href') === 'guide/')")
+    for page, heading in (("", "Get started"), ("tour.html", "Tour"),
+                          ("options.html", "Options"),
+                          ("troubleshooting.html", "Troubleshooting")):
+        browser.call("Page.navigate", url=f"{site}guide/{page}")
+        assert browser.wait("document.querySelector('main h1')?.textContent"
+                            f" === {json.dumps(heading)}"), f"guide {page}"
+        assert browser.wait("[...document.images].every(i => i.complete && "
+                            "i.naturalWidth > 0)"), f"a picture missing: {page}"
+        assert browser.eval("document.querySelectorAll('header a').length "
+                            ">= 6"), f"no page links: {page}"
+    browser.click("header a.viewer")
+    assert browser.wait("!!document.querySelector('#recordings-rows "
+                        ".rec-row.demo')"), "Open the viewer did not lead back"
+
+
 # A recording made from a live page with a pinned pad and a pinned
 # property, as a user makes one; returns its file.
 def record_with_pins(browser, serve):
@@ -1729,6 +1751,7 @@ def check_site(browser, serve):
         os.path.join(site, "pipeline-monitor"), "--demos", demos],
         capture_output=True, text=True)
     assert built.returncode == 0, f"build-site.py failed: {built.stderr}"
+    guide = os.path.isdir(os.path.join(site, "pipeline-monitor", "guide"))
     shutil.copy(recorded, os.path.join(site, "shared.jsonl"))
 
     handler = functools.partial(http.server.SimpleHTTPRequestHandler,
@@ -1938,6 +1961,12 @@ def check_site(browser, serve):
                             f"!!{element_selector('q-r')}"), \
             "the page did not recover from damaged recordings"
         browser.click("#viewing-close")
+
+        # The guide (built where the markdown package is installed): linked
+        # from the site's viewer, its pages and pictures there, and a way
+        # back.
+        if guide:
+            check_guide(browser, f"{base}/pipeline-monitor/")
 
         # The site never tries to connect to a server.
         assert browser.eval("(window.socketLog || []).length === 0"), \
