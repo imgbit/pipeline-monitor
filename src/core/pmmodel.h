@@ -125,10 +125,12 @@ GPtrArray *pm_model_failed_links (PmModel * model);
 void pm_link_failure_free (PmLinkFailure * f);
 
 /* A push in progress on a pad: start in ms since the tracer started, plus
- * one (0 = none). Written by the pad's streaming thread only. */
+ * one (0 = none). Written by the pad's streaming thread only. moved: data
+ * has been pushed or pulled through the pad. */
 typedef struct
 {
   gint start_ms;
+  gint moved;
 } PmPushTiming;
 
 typedef struct

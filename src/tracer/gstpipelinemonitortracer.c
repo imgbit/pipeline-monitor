@@ -565,8 +565,11 @@ static void
 do_pad_push_pre (GstTracer * tracer, GstClockTime ts, GstPad * pad,
     gpointer data)
 {
-  g_atomic_int_set (&pm_push_timing (pad)->start_ms,
-      (gint) (ts / GST_MSECOND) + 1);
+  PmPushTiming *t = pm_push_timing (pad);
+
+  g_atomic_int_set (&t->start_ms, (gint) (ts / GST_MSECOND) + 1);
+  if (G_UNLIKELY (!g_atomic_int_get (&t->moved)))
+    g_atomic_int_set (&t->moved, 1);
 }
 
 static void
@@ -584,6 +587,21 @@ do_pad_pull_range_post (GstTracer * tracer, GstClockTime ts, GstPad * pad,
   /* Reading past the end of what upstream has is how pulling ends. */
   if (res == GST_FLOW_EOS)
     return;
+  /* Pulled pads get no caps: remember on the pad pulled from that data
+   * came out of it. */
+  if (res == GST_FLOW_OK) {
+    PmPushTiming *t = pm_push_timing (pad);
+
+    if (G_UNLIKELY (!g_atomic_int_get (&t->moved))) {
+      GstPad *peer = gst_pad_get_peer (pad);
+
+      if (peer != NULL) {
+        g_atomic_int_set (&pm_push_timing (peer)->moved, 1);
+        gst_object_unref (peer);
+      }
+      g_atomic_int_set (&t->moved, 1);
+    }
+  }
   record_flow (tracer, pad, res);
 }
 

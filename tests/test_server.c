@@ -3418,6 +3418,63 @@ test_check_silent_source (void)
   g_free (id);
 }
 
+/* filesrc never gets caps on its pad (its template is ANY), pulled from or
+ * pushing: still not silent while it is being read. */
+static void
+test_read_source_not_silent (void)
+{
+  /* 8 s of 8 kHz mono 16-bit audio. */
+  const guint32 rate = 8000, bytes = 8 * rate * 2;
+  guint8 header[44] = "RIFF....WAVEfmt ";
+  guint8 *data = g_malloc0 (sizeof header + bytes);
+  gchar *dir = g_dir_make_tmp ("pm-pull-XXXXXX", NULL);
+  gchar *file = g_build_filename (dir, "tone.wav", NULL);
+  const gchar *modes[] = { "", "queue ! " };
+  guint i;
+
+  if (!gst_registry_check_feature_version (gst_registry_get (), "wavparse",
+          1, 0, 0)) {
+    g_test_skip ("no wavparse");
+    goto out;
+  }
+  GST_WRITE_UINT32_LE (header + 4, 36 + bytes);
+  GST_WRITE_UINT32_LE (header + 16, 16);
+  GST_WRITE_UINT16_LE (header + 20, 1);
+  GST_WRITE_UINT16_LE (header + 22, 1);
+  GST_WRITE_UINT32_LE (header + 24, rate);
+  GST_WRITE_UINT32_LE (header + 28, rate * 2);
+  GST_WRITE_UINT16_LE (header + 32, 2);
+  GST_WRITE_UINT16_LE (header + 34, 16);
+  memcpy (header + 36, "data", 4);
+  GST_WRITE_UINT32_LE (header + 40, bytes);
+  memcpy (data, header, sizeof header);
+  g_assert_true (g_file_set_contents (file, (gchar *) data,
+          sizeof header + bytes, NULL));
+
+  /* In GStreamer descriptions a backslash escapes: Windows paths use "/". */
+  g_strdelimit (file, "\\", '/');
+  /* wavparse pulls from filesrc; after a queue, filesrc pushes. */
+  for (i = 0; i < G_N_ELEMENTS (modes); i++) {
+    gchar *description = g_strdup_printf ("filesrc name=pl-src "
+        "location=\"%s\" ! %swavparse ! fakesink sync=true", file, modes[i]);
+    GstElement *pipeline = run_pipeline (description);
+    gchar *id = element_finding ("silent", "pl-src");
+    JsonNode *node = wait_finding (id, 7);
+
+    if (node != NULL)
+      g_error ("%s: a source being read reported as silent", description);
+    stop_pipeline (pipeline);
+    g_free (id);
+    g_free (description);
+  }
+out:
+  g_remove (file);
+  g_rmdir (dir);
+  g_free (file);
+  g_free (dir);
+  g_free (data);
+}
+
 /* Polls /api/findings until it contains every one of texts, up to
  * timeout_s. */
 static gboolean
@@ -3575,6 +3632,8 @@ main (int argc, char **argv)
   g_test_add_func ("/server/check-full-queue", test_check_full_queue);
   g_test_add_func ("/server/check-late-sink", test_check_late_sink);
   g_test_add_func ("/server/check-silent-source", test_check_silent_source);
+  g_test_add_func ("/server/read-source-not-silent",
+      test_read_source_not_silent);
   g_test_add_func ("/server/origin-check", test_origin_check);
   g_test_add_func ("/server/port-fallback", test_port_fallback);
   g_test_add_func ("/server/no-free-port", test_no_free_port);

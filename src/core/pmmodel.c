@@ -1358,8 +1358,25 @@ pm_model_starved_sinks (PmModel * model, guint64 pipeline)
   return found;
 }
 
-/* Sources in PLAYING for at least min_us whose src pads have no caps yet:
- * they have not produced anything. */
+static GQuark timing_quark (void);
+
+static gboolean
+pad_moved (PmPad * pad)
+{
+  GstPad *object = g_weak_ref_get (&pad->ref);
+  PmPushTiming *t;
+  gboolean moved;
+
+  if (object == NULL)
+    return FALSE;
+  t = g_object_get_qdata (G_OBJECT (object), timing_quark ());
+  moved = t != NULL && g_atomic_int_get (&t->moved);
+  gst_object_unref (object);
+  return moved;
+}
+
+/* Sources in PLAYING for at least min_us whose src pads have no caps and
+ * no data has gone through: they have not produced anything. */
 GPtrArray *
 pm_model_silent_sources (PmModel * model, gint64 min_us)
 {
@@ -1372,7 +1389,7 @@ pm_model_silent_sources (PmModel * model, gint64 min_us)
   g_hash_table_iter_init (&iter, model->elements);
   while (g_hash_table_iter_next (&iter, NULL, &value)) {
     PmElement *element = value;
-    guint i, srcs = 0, with_caps = 0;
+    guint i, srcs = 0, producing = 0;
 
     if (element->is_bin || element->state != GST_STATE_PLAYING ||
         now - element->state_since < min_us ||
@@ -1385,10 +1402,10 @@ pm_model_silent_sources (PmModel * model, gint64 min_us)
       if (pad == NULL || pad->direction != GST_PAD_SRC)
         continue;
       srcs++;
-      if (pad->caps != NULL)
-        with_caps++;
+      if (pad->caps != NULL || pad_moved (pad))
+        producing++;
     }
-    if (srcs > 0 && with_caps == 0)
+    if (srcs > 0 && producing == 0)
       g_ptr_array_add (found, spot_new (element, NULL, NULL));
   }
   g_mutex_unlock (&model->lock);
