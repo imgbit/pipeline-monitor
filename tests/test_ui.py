@@ -790,6 +790,8 @@ def check_caps(browser):
         "no pad tooltip with caps"
     assert browser.eval(f"{tip}.textContent.includes('click to pin')"), \
         "the live pad tooltip does not offer pinning"
+    assert browser.eval(f"{tip}.textContent.includes('modepush')"), \
+        "no mode in the pad tooltip"
     browser.hover("[...document.querySelectorAll('#graph .edge-hit')]"
                   ".find(p => p.dataset.edge)")
     assert browser.wait(f"!{tip}.hidden && {tip}.textContent.includes('→')"), \
@@ -1233,6 +1235,40 @@ def check_two_pipelines(browser, serve):
 # Negotiation fails when the source starts: the finding compares what each
 # side handles, and a press on its place selects the element.
 FORMAT_PIPELINE = "videotestsrc ! capsfilter name=cf ! fakesink"
+
+
+PULL_PIPELINE = ("fakesrc can-activate-pull=true ! "
+                 "fakesink can-activate-pull=true can-activate-push=false")
+
+
+def check_pull_mode(browser, serve):
+    server, url = start_server(serve, PULL_PIPELINE)
+    try:
+        browser.call("Page.navigate", url=url)
+        sink = element_selector("fakesink0")
+        assert browser.wait(f"!!{sink}", timeout=15), "no graph"
+        tip = "document.querySelector('.tooltip')"
+        browser.hover(f"{sink}?.querySelector('.pad[data-port]')")
+        assert browser.wait(f"!{tip}.hidden && {tip}.textContent"
+                            ".includes('modepull')"), "no pull mode in the tooltip"
+        assert browser.eval(f"{tip}.textContent.includes("
+                            "'no caps (data is pulled)')"), \
+            "a pulled pad's tooltip waits for caps"
+        browser.call("Input.dispatchMouseEvent", type="mouseMoved", x=2, y=2)
+        sink_id = browser.eval(f"{sink}?.dataset.id")
+        assert browser.click_until(
+            f'#graph .node[data-id="{sink_id}"] > rect.box',
+            "document.querySelector('#details h2')?.textContent"
+            " === 'fakesink0'"), "could not select the sink"
+        cells = ("[...document.querySelectorAll('#details tr')].find(r => "
+                 "r.cells[0]?.textContent === 'sink')")
+        assert browser.wait(f"{cells}?.cells[2].textContent === 'pull'"), \
+            "no mode in the details panel"
+        assert browser.eval(f"{cells}.cells[5].title.includes('pulled')")
+        close_details(browser)
+    finally:
+        server.terminate()
+        server.wait()
 
 
 def check_format_finding(browser, serve):
@@ -2389,6 +2425,7 @@ def main():
             check_site(browser, serve)
             check_two_pipelines(browser, serve)
             check_format_finding(browser, serve)
+            check_pull_mode(browser, serve)
     finally:
         if browser:
             browser.close()

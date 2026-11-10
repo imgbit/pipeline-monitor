@@ -331,12 +331,13 @@ export function updateProperties(aside, id, data, pinning) {
 function showPads(aside, element, index) {
   const table = add(aside, "table");
   const head = add(table, "tr");
-  for (const h of ["pad", "dir", "presence", "linked to", "caps"])
+  for (const h of ["pad", "dir", "mode", "presence", "linked to", "caps"])
     add(head, "th", h);
   for (const pad of element.pads) {
     const tr = add(table, "tr");
     add(tr, "td", pad.ghost ? `${pad.name} (ghost)` : pad.name);
     add(tr, "td", pad.direction);
+    add(tr, "td", pad.mode || "—");
     add(tr, "td", pad.presence || "—");
     const peers = index.peers.get(pad.id) || [];
     const linked = add(tr, "td", peers.length ? undefined : "—");
@@ -350,6 +351,8 @@ function showPads(aside, element, index) {
     const cell = add(tr, "td", undefined, "caps");
     if (!pad.caps) {
       cell.textContent = "—";
+      if (pad.mode === "pull")
+        cell.title = "No caps: data is pulled";
       continue;
     }
     const toggle = add(cell, "button", summarizeCaps(pad.caps), "caps-toggle");
@@ -357,7 +360,7 @@ function showPads(aside, element, index) {
     const full = document.createElement("tr");
     full.className = "caps-full";
     const td = add(full, "td");
-    td.colSpan = 5;
+    td.colSpan = 6;
     td.appendChild(capsList(pad.caps));
     const set = (open) => {
       toggle.setAttribute("aria-expanded", String(open));

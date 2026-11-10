@@ -147,7 +147,9 @@ ELEMENT:
 | `children` | [ELEMENT] |
 
 PAD: `id`, `name`, `path`, `direction` (`src`, `sink`), `presence`
-(`always`, `sometimes`, `request`), `caps` (once negotiated), `ghost`, and
+(`always`, `sometimes`, `request`), `mode` (`push`, `pull`, `none` when not
+active; since 0.11), `caps` (once negotiated; a pulled pad usually has
+none), `ghost`, and
 `flow` when the last push or pull did not return ok:
 `{"result":"not-linked","count":12,"first":…,"last":…}`.
 

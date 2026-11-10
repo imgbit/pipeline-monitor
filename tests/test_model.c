@@ -100,8 +100,9 @@ describe_json_element (JsonObject * element, const gchar * parent_path,
     g_assert_cmpstr (json_object_get_string_member (pad, "path"), ==,
         pad_path + 1);
 
-    g_hash_table_add (set, g_strdup_printf ("P %s %s%s caps=%s", pad_path,
+    g_hash_table_add (set, g_strdup_printf ("P %s %s %s%s caps=%s", pad_path,
             json_object_get_string_member (pad, "direction"),
+            json_object_get_string_member_with_default (pad, "mode", "-"),
             json_object_get_boolean_member (pad, "ghost") ? " ghost" : "",
             json_object_get_string_member_with_default (pad, "caps", "-")));
     g_hash_table_insert (pad_paths,
@@ -204,8 +205,10 @@ describe_pad (GstPad * pad, GHashTable * set)
   GstCaps *caps = gst_pad_get_current_caps (pad);
   gchar *caps_text = caps ? gst_caps_to_string (caps) : g_strdup ("-");
 
-  g_hash_table_add (set, g_strdup_printf ("P %s %s%s caps=%s", path,
+  g_hash_table_add (set, g_strdup_printf ("P %s %s %s%s caps=%s", path,
           GST_PAD_IS_SRC (pad) ? "src" : "sink",
+          GST_PAD_MODE (pad) == GST_PAD_MODE_PUSH ? "push" :
+          GST_PAD_MODE (pad) == GST_PAD_MODE_PULL ? "pull" : "none",
           GST_IS_GHOST_PAD (pad) ? " ghost" : "", caps_text));
   g_free (caps_text);
   if (caps != NULL)
@@ -567,6 +570,27 @@ test_caps (void)
   assert_graph_empty ();
 }
 
+/* A sink that pulls: both pads report pull mode, and no caps. */
+static void
+test_pad_modes (void)
+{
+  GError *error = NULL;
+  GstElement *pipeline;
+
+  assert_graph_empty ();
+  pipeline = gst_parse_launch ("fakesrc can-activate-pull=true ! "
+      "fakesink can-activate-pull=true can-activate-push=false", &error);
+  g_assert_no_error (error);
+
+  set_state_and_wait (pipeline, GST_STATE_PLAYING);
+  assert_graph_matches (pipeline);
+  g_assert_true (wait_graph_has ("\"mode\":\"pull\"", TRUE));
+
+  set_state_and_wait (pipeline, GST_STATE_NULL);
+  gst_object_unref (pipeline);
+  assert_graph_empty ();
+}
+
 /* Log checks */
 
 static JsonParser *
@@ -887,6 +911,7 @@ main (int argc, char **argv)
   g_test_add_func ("/model/dynamic-changes", test_dynamic_changes);
   g_test_add_func ("/model/two-pipelines", test_two_pipelines);
   g_test_add_func ("/model/caps", test_caps);
+  g_test_add_func ("/model/pad-modes", test_pad_modes);
   g_test_add_func ("/log/messages", test_log_messages);
   g_test_add_func ("/log/repeats", test_log_repeats);
   g_test_add_func ("/log/state-change", test_log_state_change);

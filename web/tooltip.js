@@ -16,12 +16,14 @@ function add(parent, tag, content, cls) {
   return node;
 }
 
-// Caps as a list: media type and features, then one field per line.
-export function capsList(caps) {
+// Caps as a list: media type and features, then one field per line. A
+// pulled pad gets none: data is read from it without caps.
+export function capsList(caps, pulled = false) {
   const box = document.createElement("div");
   box.className = "caps-list";
   if (!caps) {
-    add(box, "div", "no caps yet", "muted");
+    add(box, "div", pulled ? "no caps (data is pulled)" : "no caps yet",
+      "muted");
     return box;
   }
   const { media, features, fields } = parseCaps(caps);
@@ -42,7 +44,7 @@ export class Tooltip {
   }
 
   // rows: [[label, text], ...]; caps: a caps string, or undefined for none.
-  show(x, y, heading, rows, caps) {
+  show(x, y, heading, rows, caps, pulled = false) {
     const n = this.node;
     n.replaceChildren();
     add(n, "div", heading, "tooltip-heading");
@@ -54,7 +56,7 @@ export class Tooltip {
       }
     }
     if (caps !== undefined)
-      n.appendChild(capsList(caps));
+      n.appendChild(capsList(caps, pulled));
     n.hidden = false;
     this.move(x, y);
   }

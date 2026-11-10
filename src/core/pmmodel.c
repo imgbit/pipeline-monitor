@@ -546,6 +546,7 @@ static void
 append_pad (GString * json, PmPad * pad, const gchar * element_path)
 {
   gchar *path = g_strdup_printf ("%s:%s", element_path, pad->name);
+  GstPad *object = g_weak_ref_get (&pad->ref);
 
   g_string_append_printf (json, "{\"id\":%" G_GUINT64_FORMAT ",\"name\":",
       pad->id);
@@ -558,6 +559,14 @@ append_pad (GString * json, PmPad * pad, const gchar * element_path)
       pad->direction == GST_PAD_SINK ? "sink" : "unknown");
   if (pad->presence != NULL)
     g_string_append_printf (json, ",\"presence\":\"%s\"", pad->presence);
+  if (object != NULL) {
+    GstPadMode mode = GST_PAD_MODE (object);
+
+    g_string_append_printf (json, ",\"mode\":\"%s\"",
+        mode == GST_PAD_MODE_PUSH ? "push" :
+        mode == GST_PAD_MODE_PULL ? "pull" : "none");
+    gst_object_unref (object);
+  }
   if (pad->caps != NULL) {
     g_string_append (json, ",\"caps\":");
     append_string (json, pad->caps);

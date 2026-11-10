@@ -68,6 +68,8 @@ let shown = { info: null, index: null };
 function padRows(p, index) {
   const pad = p.pad;
   const rows = [["direction", pad.direction]];
+  if (pad.mode)
+    rows.push(["mode", pad.mode]);
   if (pad.presence)
     rows.push(["presence", pad.presence]);
   if (pad.ghost)
@@ -107,7 +109,7 @@ function showTooltip(target, x, y) {
     if (!p)
       return tooltip.hide();
     tooltip.show(x, y, `${p.element.name}:${p.pad.name}`, padRows(p, index),
-      p.pad.caps || "");
+      p.pad.caps || "", p.pad.mode === "pull");
   } else {
     const src = info.ports.get(target.src);
     const sink = info.ports.get(target.sink);
@@ -118,7 +120,7 @@ function showTooltip(target, x, y) {
       []).map((f) => [f.severity, f.text]);
     tooltip.show(x, y, `${src.element.name}:${src.pad.name} → ` +
       `${sink.element.name}:${sink.pad.name}`, rows,
-    linkCaps(info, target.src, target.sink));
+    linkCaps(info, target.src, target.sink), src.pad.mode === "pull");
   }
 }
 
