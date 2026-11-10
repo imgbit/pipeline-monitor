@@ -532,6 +532,30 @@ read_header (const gchar * path)
   return header;
 }
 
+/* A header's member if it is a string (else NULL), or a whole number
+ * (else 0): files may hold anything there. */
+static const gchar *
+header_string (JsonObject * header, const gchar * name)
+{
+  JsonNode *node = header ? json_object_get_member (header, name) : NULL;
+
+  if (node == NULL || !JSON_NODE_HOLDS_VALUE (node) ||
+      json_node_get_value_type (node) != G_TYPE_STRING)
+    return NULL;
+  return json_node_get_string (node);
+}
+
+static gint64
+header_int (JsonObject * header, const gchar * name)
+{
+  JsonNode *node = header ? json_object_get_member (header, name) : NULL;
+
+  if (node == NULL || !JSON_NODE_HOLDS_VALUE (node) ||
+      json_node_get_value_type (node) != G_TYPE_INT64)
+    return 0;
+  return json_node_get_int (node);
+}
+
 typedef struct
 {
   gchar *name, *kind;
@@ -597,11 +621,8 @@ pm_recorder_list_json (PmRecorder * self)
         h = g_new0 (PmHeader, 1);
         h->size = f->size;
         h->modified = f->modified;
-        h->kind = header ? g_strdup
-            (json_object_get_string_member_with_default (header, "kind",
-                NULL)) : NULL;
-        h->started = header ? json_object_get_int_member_with_default
-            (header, "started", 0) : 0;
+        h->kind = g_strdup (header_string (header, "kind"));
+        h->started = header_int (header, "started");
         g_hash_table_insert (self->headers, g_strdup (f->name), h);
         if (header != NULL)
           json_object_unref (header);
