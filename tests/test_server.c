@@ -7,6 +7,11 @@
 #include <libsoup/soup.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef G_OS_WIN32
+#include <sys/utime.h>
+#else
+#include <utime.h>
+#endif
 #ifdef G_OS_UNIX
 #include <signal.h>
 #include <sys/resource.h>
@@ -1020,11 +1025,34 @@ test_recorder_many_files (void)
     g_free (pm_recorder_list_json (recorder));
     again = MIN (again, g_get_monotonic_time () - start);
   }
+  /* For information: how much faster depends on the system (listing the
+   * folder itself costs more on Windows). */
   g_test_message ("listing 400 recordings: %" G_GINT64_FORMAT " us first, "
       "%" G_GINT64_FORMAT " us after", first, again);
-  /* About 1,000 times faster here; 3.5 times when every list read every
-   * header again. */
-  g_assert_cmpint (again * 20, <, first);
+
+  /* Not read again while it looks the same: another header of the same
+   * size, with the file's time put back, still lists the first one. */
+  {
+    GStatBuf st;
+    struct utimbuf times;
+    gchar *before, *after;
+
+    path = g_strdup_printf ("%s/pipeline-monitor-many-003.jsonl", dir);
+    g_assert_cmpint (g_stat (path, &st), ==, 0);
+    g_assert_true (g_file_get_contents (path, &before, NULL, NULL));
+    after = g_strdup (before);
+    memcpy (strstr (after, "snapshot"), "SNAPSHOT", 8);
+    g_assert_true (g_file_set_contents (path, after, -1, NULL));
+    times.actime = st.st_atime;
+    times.modtime = st.st_mtime;
+    g_assert_cmpint (g_utime (path, &times), ==, 0);
+    list = pm_recorder_list_json (recorder);
+    g_assert_null (strstr (list, "SNAPSHOT"));
+    g_free (list);
+    g_free (before);
+    g_free (after);
+    g_free (path);
+  }
 
   /* Rewritten (another size): read again. */
   path = g_strdup_printf ("%s/pipeline-monitor-many-007.jsonl", dir);
