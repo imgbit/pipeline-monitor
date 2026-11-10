@@ -25,14 +25,17 @@ export function queueFill(queue) {
   return best;
 }
 
+// The colour and the label use the same rounded percentage: a queue a few
+// ns over or under its limit is shown as 100 % and full.
 export function fillClass(ratio) {
-  if (ratio >= 1)
+  const p = Math.round(ratio * 100);
+  if (p >= 100)
     return "full";
-  return ratio >= 0.75 ? "high" : "ok";
+  return p >= 75 ? "high" : "ok";
 }
 
 export function percent(ratio) {
-  return ratio > 1 ? "> 100 %" : `${Math.round(ratio * 100)} %`;
+  return `${Math.round(ratio * 100)} %`;
 }
 
 function amount(key, value, unit) {

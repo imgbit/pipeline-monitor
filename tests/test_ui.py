@@ -600,6 +600,7 @@ def check(browser, url):
     check_held_click(browser)
     check_caps(browser)
     check_units(browser)
+    check_levels_label(browser)
     check_places(browser)
     check_levels(browser)
     check_properties(browser)
@@ -825,6 +826,23 @@ UNITS = [
     ("formatSpan", 33333333, "s", "0.033333 s"),
     ("formatBytes", 115200, None, "112.5 KiB"),
 ]
+
+
+LEVELS = [
+    (233333334 / 233333332, "100 %", "full"),
+    (0.996, "100 %", "full"),
+    (1.3, "130 %", "full"),
+    (0.8, "80 %", "high"),
+    (0.746, "75 %", "high"),
+    (0.5, "50 %", "ok"),
+]
+
+
+def check_levels_label(browser):
+    got = browser.eval("import('./levels.js').then(m => " +
+                       json.dumps([r for r, _, _ in LEVELS]) +
+                       ".map((r) => [m.percent(r), m.fillClass(r)]))")
+    assert got == [[p, c] for _, p, c in LEVELS], f"level labels: {got}"
 
 
 def check_units(browser):
