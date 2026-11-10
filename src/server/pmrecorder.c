@@ -35,7 +35,25 @@ struct _PmRecorder
   guint64 size;
   /* Why the last recording ended early, until the next one starts. */
   gchar *failure;
+  /* What the list needs from each file's header (name -> PmHeader): read
+   * once, again only when the file's size or time changes. */
+  GHashTable *headers;
 };
+
+typedef struct
+{
+  guint64 size;
+  gint64 modified;
+  gchar *kind;
+  gint64 started;
+} PmHeader;
+
+static void
+header_free (PmHeader * h)
+{
+  g_free (h->kind);
+  g_free (h);
+}
 
 PmRecorder *
 pm_recorder_new (const gchar * dir, guint64 file_max, guint64 total_max)
@@ -47,6 +65,8 @@ pm_recorder_new (const gchar * dir, guint64 file_max, guint64 total_max)
   self->file_max = file_max;
   /* A finished recording must fit, or keep_total would delete it. */
   self->total_max = MAX (total_max, file_max);
+  self->headers = g_hash_table_new_full (g_str_hash, g_str_equal, g_free,
+      (GDestroyNotify) header_free);
   return self;
 }
 
@@ -56,6 +76,7 @@ pm_recorder_free (PmRecorder * self)
   pm_recorder_stop (self, "program-ended");
   g_free (self->dir);
   g_free (self->failure);
+  g_hash_table_unref (self->headers);
   g_mutex_clear (&self->lock);
   g_free (self);
 }
@@ -482,14 +503,25 @@ read_header (const gchar * path)
   GString *line = g_string_new (NULL);
   JsonNode *root;
   JsonObject *header = NULL;
-  gint c;
+  gchar block[16384];
+  gsize got;
 
   if (file == NULL) {
     g_string_free (line, TRUE);
     return NULL;
   }
-  while ((c = fgetc (file)) != EOF && c != '\n' && line->len < MAX_HEADER)
-    g_string_append_c (line, (gchar) c);
+  /* The first line, read in blocks (byte by byte was slow on big
+   * headers), at most MAX_HEADER bytes. */
+  while (line->len < MAX_HEADER &&
+      (got = fread (block, 1, sizeof (block), file)) > 0) {
+    const gchar *end = memchr (block, '\n', got);
+    gsize take = MIN (end ? (gsize) (end - block) : got,
+        MAX_HEADER - line->len);
+
+    g_string_append_len (line, block, take);
+    if (end != NULL)
+      break;
+  }
   fclose (file);
   root = json_from_string (line->str, NULL);
   if (root != NULL && JSON_NODE_HOLDS_OBJECT (root))
@@ -556,19 +588,45 @@ pm_recorder_list_json (PmRecorder * self)
       l->started = self->started;
       l->last = g_get_real_time ();
     } else {
-      gchar *path = g_build_filename (self->dir, f->name, NULL);
-      JsonObject *header = read_header (path);
+      PmHeader *h = g_hash_table_lookup (self->headers, f->name);
 
-      l->kind = header ? g_strdup (json_object_get_string_member_with_default
-          (header, "kind", NULL)) : NULL;
-      l->started = header ? json_object_get_int_member_with_default (header,
-          "started", 0) : 0;
+      if (h == NULL || h->size != f->size || h->modified != f->modified) {
+        gchar *path = g_build_filename (self->dir, f->name, NULL);
+        JsonObject *header = read_header (path);
+
+        h = g_new0 (PmHeader, 1);
+        h->size = f->size;
+        h->modified = f->modified;
+        h->kind = header ? g_strdup
+            (json_object_get_string_member_with_default (header, "kind",
+                NULL)) : NULL;
+        h->started = header ? json_object_get_int_member_with_default
+            (header, "started", 0) : 0;
+        g_hash_table_insert (self->headers, g_strdup (f->name), h);
+        if (header != NULL)
+          json_object_unref (header);
+        g_free (path);
+      }
+      l->kind = g_strdup (h->kind);
+      l->started = h->started;
       l->last = f->modified;
-      if (header != NULL)
-        json_object_unref (header);
-      g_free (path);
     }
     g_ptr_array_add (listed, l);
+  }
+  /* Files gone from the folder are forgotten. */
+  {
+    GHashTableIter iter;
+    gpointer name;
+    GHashTable *present = g_hash_table_new (g_str_hash, g_str_equal);
+
+    for (i = 0; i < files->len; i++)
+      g_hash_table_add (present, ((PmFile *) g_ptr_array_index (files,
+                  i))->name);
+    g_hash_table_iter_init (&iter, self->headers);
+    while (g_hash_table_iter_next (&iter, &name, NULL))
+      if (!g_hash_table_contains (present, name))
+        g_hash_table_iter_remove (&iter);
+    g_hash_table_unref (present);
   }
   g_ptr_array_unref (files);
   g_mutex_unlock (&self->lock);

@@ -984,6 +984,70 @@ test_recorder_no_folder (void)
   g_free (dir);
 }
 
+static void remove_folder (const gchar * dir);
+
+/* Many recordings: their headers are read once, not on every list (found
+ * with 1,000 recordings: every list read every header again); a changed
+ * file is read again, a deleted one forgotten. */
+static void
+test_recorder_many_files (void)
+{
+  gchar *dir = g_dir_make_tmp ("pm-rec-XXXXXX", NULL);
+  PmRecorder *recorder = pm_recorder_new (dir, 1 << 30, (guint64) 1 << 40);
+  gchar *view = g_strnfill (60000, 'v');
+  gchar *text, *path, *list;
+  gint64 start, first, again = G_MAXINT64;
+  gint i;
+
+  for (i = 0; i < 400; i++) {
+    path = g_strdup_printf ("%s/pipeline-monitor-many-%03d.jsonl", dir, i);
+    text = g_strdup_printf ("{\"format\":\"pipeline-monitor-recording\","
+        "\"version\":1,\"kind\":\"snapshot\",\"started\":%d,"
+        "\"view\":{\"x\":\"%s\"}}\n{\"type\":\"end\"}\n", i + 1, view);
+    g_assert_true (g_file_set_contents (path, text, -1, NULL));
+    g_free (text);
+    g_free (path);
+  }
+
+  start = g_get_monotonic_time ();
+  list = pm_recorder_list_json (recorder);
+  first = g_get_monotonic_time () - start;
+  g_assert_nonnull (strstr (list, "pipeline-monitor-many-399.jsonl"));
+  g_assert_null (strstr (list, "\"kind\":null"));
+  g_free (list);
+  for (i = 0; i < 3; i++) {
+    start = g_get_monotonic_time ();
+    g_free (pm_recorder_list_json (recorder));
+    again = MIN (again, g_get_monotonic_time () - start);
+  }
+  g_test_message ("listing 400 recordings: %" G_GINT64_FORMAT " us first, "
+      "%" G_GINT64_FORMAT " us after", first, again);
+  /* About 1,000 times faster here; 3.5 times when every list read every
+   * header again. */
+  g_assert_cmpint (again * 20, <, first);
+
+  /* Rewritten (another size): read again. */
+  path = g_strdup_printf ("%s/pipeline-monitor-many-007.jsonl", dir);
+  g_assert_true (g_file_set_contents (path, "{\"format\":"
+          "\"pipeline-monitor-recording\",\"version\":1,\"kind\":"
+          "\"recording\",\"started\":5}\n", -1, NULL));
+  list = pm_recorder_list_json (recorder);
+  g_assert_nonnull (strstr (list, "\"name\":\"pipeline-monitor-many-007.jsonl"
+          "\",\"kind\":\"recording\""));
+  g_free (list);
+  /* Deleted: gone from the list. */
+  g_assert_cmpint (g_unlink (path), ==, 0);
+  g_free (path);
+  list = pm_recorder_list_json (recorder);
+  g_assert_null (strstr (list, "pipeline-monitor-many-007.jsonl"));
+  g_free (list);
+
+  pm_recorder_free (recorder);
+  remove_folder (dir);
+  g_free (dir);
+  g_free (view);
+}
+
 /* A file ends at its limit; the oldest files go when the folder is full. */
 static void
 test_recorder_limits (void)
@@ -3437,6 +3501,7 @@ main (int argc, char **argv)
   g_test_add_func ("/recorder/limits", test_recorder_limits);
   g_test_add_func ("/recorder/no-folder", test_recorder_no_folder);
   g_test_add_func ("/recorder/broken-files", test_recorder_broken_files);
+  g_test_add_func ("/recorder/many-files", test_recorder_many_files);
 #ifdef G_OS_UNIX
   g_test_add_func ("/recorder/private", test_recorder_private);
   g_test_add_func ("/recorder/read-only", test_recorder_read_only);
