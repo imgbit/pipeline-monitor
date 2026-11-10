@@ -674,7 +674,10 @@ def check_log(browser):
                         " === 't'"), "clicking a row did not select the tee"
 
     browser.click("#details .mute-toggle")
-    assert browser.wait(f"{rows} === 0"), "muted rows still shown"
+    # If the click is lost (the panel redrawn under it?), show what
+    # happened: the clicks, and when the details changed.
+    assert browser.wait(f"{rows} === 0"), \
+        f"muted rows still shown\n{browser.history()}"
     assert browser.wait(f"{badge}?.classList.contains('muted')"), \
         "badge not shown as muted"
     browser.call("Page.reload")
