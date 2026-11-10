@@ -187,6 +187,14 @@ pm_recorder_hide_secrets (const gchar * message)
   hide_in (root);
   text = json_to_string (root, FALSE);
   json_node_unref (root);
+  /* Some json-glib versions turn escapes like \777 into bytes that are not
+   * UTF-8, and then refuse their own output. */
+  if (!g_utf8_validate (text, -1, NULL)) {
+    gchar *valid = g_utf8_make_valid (text, -1);
+
+    g_free (text);
+    text = valid;
+  }
   return text;
 }
 
