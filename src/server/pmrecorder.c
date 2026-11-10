@@ -4,6 +4,7 @@
 #include "pmjson.h"
 
 #include <errno.h>
+#include <math.h>
 #include <fcntl.h>
 #include <glib/gstdio.h>
 #include <json-glib/json-glib.h>
@@ -143,6 +144,12 @@ hide_in (JsonNode * node)
     if (hidden != NULL && strcmp (hidden, text) != 0)
       json_node_set_string (node, hidden);
     g_free (hidden);
+  } else if (JSON_NODE_HOLDS_VALUE (node) &&
+      json_node_get_value_type (node) == G_TYPE_DOUBLE &&
+      !isfinite (json_node_get_double (node))) {
+    /* A number too large to read (1e999) would be written back as "inf",
+     * which is not JSON: the whole file could not be read. */
+    json_node_init_null (node);
   }
 }
 

@@ -900,6 +900,12 @@ test_recorder_secrets (void)
   g_assert_nonnull (strstr (out, "\"key-int-max\",\"value\":30"));
   g_assert_nonnull (strstr (out, "file:///tmp/a.mp4"));
   g_free (out);
+
+  /* A number too large to read stays JSON (found by fuzzing: it was
+   * written back as "inf", and the file could not be read). */
+  out = pm_recorder_hide_secrets ("{\"view\":{\"x\":1e999,\"y\":2}}");
+  g_assert_cmpstr (out, ==, "{\"view\":{\"x\":null,\"y\":2}}");
+  g_free (out);
 }
 
 /* A recording: header, messages, end line; listed, downloadable by name,
