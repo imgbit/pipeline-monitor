@@ -3418,6 +3418,31 @@ test_check_silent_source (void)
   g_free (id);
 }
 
+/* A source with no caps that pushes buffer lists is not silent. */
+static void
+test_list_source_not_silent (void)
+{
+  GstElement *pipeline = run_pipeline ("appsrc name=ls-src is-live=true ! "
+      "fakesink async=false");
+  GstElement *src = gst_bin_get_by_name (GST_BIN (pipeline), "ls-src");
+  GstBufferList *list = gst_buffer_list_new ();
+  gchar *id = element_finding ("silent", "ls-src");
+  GstFlowReturn ret;
+  JsonNode *node;
+
+  gst_buffer_list_add (list, gst_buffer_new_allocate (NULL, 16, NULL));
+  gst_buffer_list_add (list, gst_buffer_new_allocate (NULL, 16, NULL));
+  g_signal_emit_by_name (src, "push-buffer-list", list, &ret);
+  g_assert_cmpint (ret, ==, GST_FLOW_OK);
+  gst_buffer_list_unref (list);
+  node = wait_finding (id, 7);
+  if (node != NULL)
+    g_error ("a source pushing buffer lists reported as silent");
+  gst_object_unref (src);
+  stop_pipeline (pipeline);
+  g_free (id);
+}
+
 /* filesrc never gets caps on its pad (its template is ANY), pulled from or
  * pushing: still not silent while it is being read. */
 static void
@@ -3632,6 +3657,8 @@ main (int argc, char **argv)
   g_test_add_func ("/server/check-full-queue", test_check_full_queue);
   g_test_add_func ("/server/check-late-sink", test_check_late_sink);
   g_test_add_func ("/server/check-silent-source", test_check_silent_source);
+  g_test_add_func ("/server/list-source-not-silent",
+      test_list_source_not_silent);
   g_test_add_func ("/server/read-source-not-silent",
       test_read_source_not_silent);
   g_test_add_func ("/server/origin-check", test_origin_check);
