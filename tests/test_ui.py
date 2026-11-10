@@ -1291,8 +1291,15 @@ def check_format_finding(browser, serve):
         assert browser.wait("!document.getElementById('findings-panel')"
                             ".hidden")
         browser.click("#findings-rows .finding.error .finding-place")
+        # If the click is lost, show what happened: the clicks, the
+        # details panel, and the finding's element in the graph.
         assert browser.wait("!!document.querySelector('#details h2')"), \
-            "pressing the place did not select the element"
+            "pressing the place did not select the element\n" + \
+            browser.history() + "\nplace: " + browser.eval(
+                "JSON.stringify([...document.querySelectorAll("
+                "'#findings-rows .finding-place')].map(p => [p.textContent, "
+                "p.disabled])) + ', graph nodes: ' + "
+                "document.querySelectorAll('#graph .node').length")
         close_panel(browser, "problems")
     finally:
         if server.poll() is None:
@@ -2247,7 +2254,10 @@ def check_pins(browser):
     assert browser.wait(f"/^[1-9][0-9.]* ≈ fps$/.test({pin_row('buffers/s')})"), \
         "no live rate"
     assert browser.wait(f"{watched()}.then(n => n === 1)"), "no probe"
-    assert browser.wait(f"/^0:00:/.test({pin_row('PTS')})")
+    # The pipeline is live: its PTS is how long the test has run.
+    assert browser.wait(
+        f"/^[0-9]+:[0-9][0-9]:[0-9][0-9]\\.[0-9]{{9}}$/.test({pin_row('PTS')})"), \
+        f"PTS: {browser.eval(pin_row('PTS'))}"
     tip = "document.querySelector('.tooltip')"
     browser.hover(f"document.querySelector('{pad}')")
     assert browser.wait(f"!{tip}.hidden && "
