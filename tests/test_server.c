@@ -2725,6 +2725,35 @@ wait_finding (const gchar * id, gint timeout_s)
   return NULL;
 }
 
+/* Whether the finding with this id is gone within timeout_s. */
+static gboolean
+finding_gone (const gchar * id, gint timeout_s)
+{
+  gint64 end = g_get_monotonic_time () + timeout_s * G_USEC_PER_SEC;
+
+  while (g_get_monotonic_time () < end) {
+    gchar *text;
+    JsonNode *root;
+    JsonArray *list;
+    gboolean present = FALSE;
+    guint i;
+
+    get_status ("api/findings", "GET", NULL, &text, NULL);
+    root = parse (text);
+    g_free (text);
+    list = json_object_get_array_member (json_node_get_object (root),
+        "findings");
+    for (i = 0; i < json_array_get_length (list); i++)
+      present |= g_strcmp0 (json_object_get_string_member
+          (json_array_get_object_element (list, i), "id"), id) == 0;
+    json_node_unref (root);
+    if (!present)
+      return TRUE;
+    g_usleep (100 * G_TIME_SPAN_MILLISECOND);
+  }
+  return FALSE;
+}
+
 /* A tee without outputs: the queue's pushes fail with not-linked. */
 static void
 test_findings_flow (void)
@@ -2782,6 +2811,24 @@ test_findings_stuck (void)
   g_assert_nonnull (strstr (json_object_get_string_member
           (json_node_get_object (node), "hint"), "No pad before it"));
   json_node_unref (node);
+
+  /* Data comes: the pipeline reaches PLAYING and both findings go. */
+  {
+    GstElement *src = gst_bin_get_by_name (GST_BIN (pipeline), "stuck-src");
+    GstBuffer *buffer = gst_buffer_new_allocate (NULL, 16, NULL);
+    GstFlowReturn ret;
+    gchar *stuck = element_finding ("stuck", GST_OBJECT_NAME (pipeline));
+
+    g_signal_emit_by_name (src, "push-buffer", buffer, &ret);
+    g_assert_cmpint (ret, ==, GST_FLOW_OK);
+    g_assert_cmpint (gst_element_get_state (pipeline, NULL, NULL,
+            5 * GST_SECOND), ==, GST_STATE_CHANGE_SUCCESS);
+    g_assert_true (finding_gone (stuck, 5));
+    g_assert_true (finding_gone (id, 5));
+    gst_buffer_unref (buffer);
+    gst_object_unref (src);
+    g_free (stuck);
+  }
   gst_element_set_state (pipeline, GST_STATE_NULL);
   gst_object_unref (pipeline);
   g_free (id);
