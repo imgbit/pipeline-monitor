@@ -1,0 +1,58 @@
+name: Pages
+
+# Builds the published site (the viewer and its demo recordings) on every
+# push to main that changes it, as an artifact to check. Publishes it to
+# GitHub Pages only for a published release, or when started by hand with
+# "deploy" ticked, once Pages is on for the repository.
+on:
+  push:
+    branches: [main]
+    paths: ['web/**', 'site/**', 'packaging/build-site.py',
+            '.github/workflows/pages.yml']
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: Publish the site (GitHub Pages must be on)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# One publish at a time; a running one finishes.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build the site
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: python3 packaging/build-site.py _site
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    name: Publish
+    if: >-
+      github.event_name == 'release' ||
+      (github.event_name == 'workflow_dispatch' && inputs.deploy)
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

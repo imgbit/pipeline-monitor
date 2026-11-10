@@ -1707,31 +1707,26 @@ def check_site(browser, serve):
                     if n.endswith(".jsonl")), key=os.path.getmtime)
     pinned = record_with_pins(browser, serve)
 
+    # Built as the published site is (packaging/build-site.py), served
+    # under /pipeline-monitor/ as it will be. The first demo is a real
+    # recording made with 0.10.0 (format version 1): every later version
+    # must still show it.
+    here = os.path.dirname(os.path.abspath(__file__))
     site = tempfile.mkdtemp(prefix="pm-site-")
-    web = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "web")
-    shutil.copytree(web, os.path.join(site, "pipeline-monitor"))
-    root = os.path.join(site, "pipeline-monitor")
-    index = os.path.join(root, "index.html")
-    with open(index, encoding="utf-8") as f:
-        page = f.read()
-    with open(index, "w", encoding="utf-8") as f:
-        f.write(page.replace('<meta charset="utf-8">', '<meta charset="utf-8">'
-                             '\n<meta name="pipeline-monitor-site" '
-                             'content="demos/demos.json">', 1))
-    os.makedirs(os.path.join(root, "demos"))
-    # The demo is a real recording made with 0.10.0 (format version 1):
-    # every later version must still show it.
-    shutil.copy(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                             "data", "recording-0.10.0.jsonl"),
-                os.path.join(root, "demos", "example.jsonl"))
+    demos = os.path.join(site, "demo-sources")
+    os.makedirs(demos)
+    shutil.copy(os.path.join(here, "data", "recording-0.10.0.jsonl"),
+                os.path.join(demos, "example.jsonl"))
+    shutil.copy(pinned, os.path.join(demos, "pins.jsonl"))
+    with open(os.path.join(demos, "demos.json"), "w", encoding="utf-8") as f:
+        json.dump([{"title": "Example pipeline", "file": "example.jsonl"},
+                   {"title": "Pinned", "file": "pins.jsonl"}], f)
+    built = subprocess.run([sys.executable, os.path.join(
+        here, "..", "packaging", "build-site.py"),
+        os.path.join(site, "pipeline-monitor"), "--demos", demos],
+        capture_output=True, text=True)
+    assert built.returncode == 0, f"build-site.py failed: {built.stderr}"
     shutil.copy(recorded, os.path.join(site, "shared.jsonl"))
-    shutil.copy(pinned, os.path.join(root, "demos", "pins.jsonl"))
-    with open(os.path.join(root, "demos", "demos.json"), "w") as f:
-        json.dump([{"title": "Example pipeline", "file": "example.jsonl",
-                    "kind": "recording", "started": 1794251433282725,
-                    "last": 1794251437392505, "size": 22013},
-                   {"title": "Pinned", "file": "pins.jsonl",
-                    "kind": "recording"}], f)
 
     handler = functools.partial(http.server.SimpleHTTPRequestHandler,
                                 directory=site)
