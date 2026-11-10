@@ -715,9 +715,11 @@ def check_log(browser):
         "unmuting did not bring rows back"
 
     browser.click("#log-clear")
-    assert browser.wait(f"{rows} === 0"), "clear did not empty the panel"
-    assert browser.eval(f"!{counter}.querySelector('.count')"), \
-        "count shown after clear"
+    # A new warning may arrive at any time: check both at once.
+    assert browser.wait(f"{rows} === 0"
+                        f" && !{counter}.querySelector('.count')"), \
+        "clear did not empty the panel and the count: " + browser.eval(
+            f"`rows ${{{rows}}}, count '${{{counter}.textContent}}'`")
     assert browser.wait(f"{rows} > 0", timeout=6), \
         "new warnings did not appear after clear"
     assert browser.eval("document.querySelector('#log-rows .log-count')"
