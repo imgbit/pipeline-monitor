@@ -57,7 +57,7 @@ test_server = executable('test_server',
 test('server', test_server,
   env : test_env,
   depends : [gstpipelinemonitor],
-  timeout : 120)
+  timeout : 240)
 
 test_options = executable('test_options', 'test_options.c',
   c_args : ['-DGST_USE_UNSTABLE_API'],

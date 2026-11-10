@@ -3418,35 +3418,11 @@ test_check_silent_source (void)
   g_free (id);
 }
 
-/* A source with no caps that pushes buffer lists is not silent. */
+/* Sources whose pads get no caps are not silent while data goes through:
+ * filesrc (its template is ANY) pulled from or pushing, and an appsrc with
+ * no caps pushing buffer lists. All at once, to wait only once. */
 static void
-test_list_source_not_silent (void)
-{
-  GstElement *pipeline = run_pipeline ("appsrc name=ls-src is-live=true ! "
-      "fakesink async=false");
-  GstElement *src = gst_bin_get_by_name (GST_BIN (pipeline), "ls-src");
-  GstBufferList *list = gst_buffer_list_new ();
-  gchar *id = element_finding ("silent", "ls-src");
-  GstFlowReturn ret;
-  JsonNode *node;
-
-  gst_buffer_list_add (list, gst_buffer_new_allocate (NULL, 16, NULL));
-  gst_buffer_list_add (list, gst_buffer_new_allocate (NULL, 16, NULL));
-  g_signal_emit_by_name (src, "push-buffer-list", list, &ret);
-  g_assert_cmpint (ret, ==, GST_FLOW_OK);
-  gst_buffer_list_unref (list);
-  node = wait_finding (id, 7);
-  if (node != NULL)
-    g_error ("a source pushing buffer lists reported as silent");
-  gst_object_unref (src);
-  stop_pipeline (pipeline);
-  g_free (id);
-}
-
-/* filesrc never gets caps on its pad (its template is ANY), pulled from or
- * pushing: still not silent while it is being read. */
-static void
-test_read_source_not_silent (void)
+test_sources_not_silent (void)
 {
   /* 8 s of 8 kHz mono 16-bit audio. */
   const guint32 rate = 8000, bytes = 8 * rate * 2;
@@ -3454,45 +3430,71 @@ test_read_source_not_silent (void)
   guint8 *data = g_malloc0 (sizeof header + bytes);
   gchar *dir = g_dir_make_tmp ("pm-pull-XXXXXX", NULL);
   gchar *file = g_build_filename (dir, "tone.wav", NULL);
-  const gchar *modes[] = { "", "queue ! " };
+  const gchar *names[] = { "ls-src", "pl-src", "ps-src" };
+  GstElement *pipelines[G_N_ELEMENTS (names)] = { NULL };
+  gboolean wav = gst_registry_check_feature_version (gst_registry_get (),
+      "wavparse", 1, 0, 0);
+  GstBufferList *list = gst_buffer_list_new ();
+  GstElement *src;
+  GstFlowReturn ret;
   guint i;
 
-  if (!gst_registry_check_feature_version (gst_registry_get (), "wavparse",
-          1, 0, 0)) {
-    g_test_skip ("no wavparse");
-    goto out;
+  pipelines[0] = run_pipeline ("appsrc name=ls-src is-live=true ! "
+      "fakesink async=false");
+  src = gst_bin_get_by_name (GST_BIN (pipelines[0]), "ls-src");
+  gst_buffer_list_add (list, gst_buffer_new_allocate (NULL, 16, NULL));
+  gst_buffer_list_add (list, gst_buffer_new_allocate (NULL, 16, NULL));
+  g_signal_emit_by_name (src, "push-buffer-list", list, &ret);
+  g_assert_cmpint (ret, ==, GST_FLOW_OK);
+  gst_buffer_list_unref (list);
+  gst_object_unref (src);
+
+  if (wav) {
+    GST_WRITE_UINT32_LE (header + 4, 36 + bytes);
+    GST_WRITE_UINT32_LE (header + 16, 16);
+    GST_WRITE_UINT16_LE (header + 20, 1);
+    GST_WRITE_UINT16_LE (header + 22, 1);
+    GST_WRITE_UINT32_LE (header + 24, rate);
+    GST_WRITE_UINT32_LE (header + 28, rate * 2);
+    GST_WRITE_UINT16_LE (header + 32, 2);
+    GST_WRITE_UINT16_LE (header + 34, 16);
+    memcpy (header + 36, "data", 4);
+    GST_WRITE_UINT32_LE (header + 40, bytes);
+    memcpy (data, header, sizeof header);
+    g_assert_true (g_file_set_contents (file, (gchar *) data,
+            sizeof header + bytes, NULL));
+    /* In GStreamer descriptions a backslash escapes: Windows paths use
+     * "/". wavparse pulls from filesrc; after a queue, filesrc pushes. */
+    g_strdelimit (file, "\\", '/');
+    for (i = 1; i < G_N_ELEMENTS (names); i++) {
+      gchar *description = g_strdup_printf ("filesrc name=%s "
+          "location=\"%s\" ! %swavparse ! fakesink sync=true", names[i],
+          file, i == 2 ? "queue ! " : "");
+
+      pipelines[i] = run_pipeline (description);
+      g_free (description);
+    }
   }
-  GST_WRITE_UINT32_LE (header + 4, 36 + bytes);
-  GST_WRITE_UINT32_LE (header + 16, 16);
-  GST_WRITE_UINT16_LE (header + 20, 1);
-  GST_WRITE_UINT16_LE (header + 22, 1);
-  GST_WRITE_UINT32_LE (header + 24, rate);
-  GST_WRITE_UINT32_LE (header + 28, rate * 2);
-  GST_WRITE_UINT16_LE (header + 32, 2);
-  GST_WRITE_UINT16_LE (header + 34, 16);
-  memcpy (header + 36, "data", 4);
-  GST_WRITE_UINT32_LE (header + 40, bytes);
-  memcpy (data, header, sizeof header);
-  g_assert_true (g_file_set_contents (file, (gchar *) data,
-          sizeof header + bytes, NULL));
 
-  /* In GStreamer descriptions a backslash escapes: Windows paths use "/". */
-  g_strdelimit (file, "\\", '/');
-  /* wavparse pulls from filesrc; after a queue, filesrc pushes. */
-  for (i = 0; i < G_N_ELEMENTS (modes); i++) {
-    gchar *description = g_strdup_printf ("filesrc name=pl-src "
-        "location=\"%s\" ! %swavparse ! fakesink sync=true", file, modes[i]);
-    GstElement *pipeline = run_pipeline (description);
-    gchar *id = element_finding ("silent", "pl-src");
-    JsonNode *node = wait_finding (id, 7);
+  /* Silent is reported after 5 s in PLAYING, checked once a second. */
+  g_usleep (6 * G_USEC_PER_SEC);
+  for (i = 0; i < G_N_ELEMENTS (names); i++) {
+    gchar *id;
+    JsonNode *node;
 
+    if (pipelines[i] == NULL)
+      continue;
+    id = element_finding ("silent", names[i]);
+    node = wait_finding (id, 1);
     if (node != NULL)
-      g_error ("%s: a source being read reported as silent", description);
-    stop_pipeline (pipeline);
+      g_error ("%s: reported as silent while data goes through", names[i]);
     g_free (id);
-    g_free (description);
   }
-out:
+  for (i = 0; i < G_N_ELEMENTS (names); i++)
+    if (pipelines[i] != NULL)
+      stop_pipeline (pipelines[i]);
+  if (!wav)
+    g_test_message ("no wavparse: filesrc not checked");
   g_remove (file);
   g_rmdir (dir);
   g_free (file);
@@ -3657,10 +3659,7 @@ main (int argc, char **argv)
   g_test_add_func ("/server/check-full-queue", test_check_full_queue);
   g_test_add_func ("/server/check-late-sink", test_check_late_sink);
   g_test_add_func ("/server/check-silent-source", test_check_silent_source);
-  g_test_add_func ("/server/list-source-not-silent",
-      test_list_source_not_silent);
-  g_test_add_func ("/server/read-source-not-silent",
-      test_read_source_not_silent);
+  g_test_add_func ("/server/sources-not-silent", test_sources_not_silent);
   g_test_add_func ("/server/origin-check", test_origin_check);
   g_test_add_func ("/server/port-fallback", test_port_fallback);
   g_test_add_func ("/server/no-free-port", test_no_free_port);
