@@ -31,7 +31,10 @@
   bug report. **Add file…** opens one from your computer.
 ![A recording in the viewer: the banner with play, speed and the slider; the list of recordings](images/viewer.png)
 
-- **Viewer:** a recording opens read-only, with ▶, the speed and a
-  slider to any moment; its pins show the recorded values.
+- **Viewer:** a recording opens read-only at its start, with ▶, the speed
+  and a slider to any moment. ◂ and ▸ (or the arrow keys) step from one
+  recorded moment to the next; click the time or the step to type where to
+  go. Where the recording has no pipeline, the page says when it appears and
+  takes you there. Its pins show the recorded values.
 - **When the program ends or is killed:** the page keeps the last state
   and connects again by itself when the program runs again.

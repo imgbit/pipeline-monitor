@@ -747,5 +747,42 @@ body.viewing .pin-card .pin-close, body.viewing .pin-card .pin-prop-close {
 .rec-offline { padding: 6px 16px; color: var(--muted); border-bottom: 1px solid var(--border); }
 .playback { display: inline-flex; align-items: center; gap: 6px; margin-left: 8px; }
 .playback[hidden] { display: none; }
-.playback input[type="range"] { width: 220px; }
+.playback input[type="range"] { width: 180px; }
 .play-time { font-variant-numeric: tabular-nums; color: var(--muted); }
+
+/* Time and step: text until clicked, then a field to type in. */
+.play-label {
+  border: none;
+  background: none;
+  padding: 2px 4px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  cursor: text;
+}
+.play-label:hover { color: var(--fg); text-decoration: underline dotted; }
+.play-label[hidden], .play-input[hidden] { display: none; }
+.play-input { width: 9em; font: inherit; font-variant-numeric: tabular-nums; }
+.play-hint { color: var(--error); font-size: 12px; }
+.play-hint[hidden] { display: none; }
+.playback .step { padding: 0 6px; font-size: 18px; line-height: 1; }
+.playback button { margin-left: 0; }
+.shake { animation: shake 0.3s; }
+@keyframes shake {
+  25% { transform: translateX(-4px); }
+  75% { transform: translateX(4px); }
+}
+
+/* Play, just after a recording opens. */
+#play.glow { animation: glow 1.4s ease-in-out infinite; }
+@keyframes glow {
+  50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 45%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) {
+  #play.glow { animation: none; box-shadow: 0 0 0 2px var(--accent); }
+  .shake { animation: none; }
+}
+
+/* A moment of a recording with no pipeline: what happened, and a way on. */
+.empty-moment { flex-direction: column; gap: 4px; text-align: center; padding: 0 16px; }
+.empty-moment p { margin: 0; max-width: 34em; }
+.empty-moment button { pointer-events: auto; margin: 4px; }

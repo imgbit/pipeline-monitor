@@ -843,14 +843,15 @@ function showRecording(text, name) {
   // rather than when the slider reaches it.
   if (byType.graph.some((g) => !Array.isArray(g.pipelines)))
     throw new Error("damaged graph");
-  // From its first message: the header's time is a moment before it.
-  const times = messages.map((m) => m?.time).filter(Number.isFinite);
+  // From its first message shown: the header's time is a moment before it.
+  const times = Object.values(byType).flat().map((m) => m.time);
   const start = times.length
     ? times.reduce((first, t) => Math.min(first, t)) : header.started;
   const end = times.reduce((latest, t) => Math.max(latest, t), start);
   stopPlaying();
   state.viewing = { name, header, properties: new Map(), byType, start, end,
-    at: start, shownGraph: undefined, speed: 1, timer: null };
+    at: start, shownGraph: undefined, speed: 1, timer: null,
+    steps: recordedSteps(byType), emptyKey: null };
   clearState();
   const recorded = header.view ?? {};
   state.collapsed = new Set(Array.isArray(recorded.collapsed)
@@ -874,9 +875,10 @@ function showRecording(text, name) {
   $("playback").hidden = header.kind === "snapshot";
   $("speed").textContent = "1×";
   $("viewing").hidden = false;
-  // At the first moment with a pipeline: a recording started before the
-  // program built one would open on an empty page.
-  seekTo(byType.graph.find((m) => m.pipelines?.length)?.time ?? start);
+  closeEdit();
+  seekTo(start);
+  if (header.kind !== "snapshot")
+    glowPlay();
   $("ended").hidden = true;
   $("lost").hidden = true;
   recordings.showError(null);
@@ -900,9 +902,75 @@ function latestAt(list, t) {
 const NO_LATENCY = { elements: [], paths: [],
   all: { on: false, buffers_per_s: 0, stopped_rate: null } };
 
+// m:ss.mmm, or h:mm:ss.mmm from an hour on.
 function clock(us) {
-  const s = Math.max(0, Math.floor(us / 1e6));
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  const ms = Math.max(0, Math.floor(us / 1000));
+  const s = Math.floor(ms / 1000);
+  const tail = `${String(s % 60).padStart(2, "0")}.` +
+    String(ms % 1000).padStart(3, "0");
+  const m = Math.floor(s / 60);
+  return m >= 60
+    ? `${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}:${tail}`
+    : `${m}:${tail}`;
+}
+
+// A time typed as 7.25, 0:07.250 or 1:02:03: µs from the start, or null.
+function parseClock(text) {
+  const parts = text.trim().split(":");
+  if (parts.length > 3 || parts.some((p) => !/^\d+(\.\d*)?$/.test(p)) ||
+      parts.slice(0, -1).some((p) => p.includes(".")))
+    return null;
+  const seconds = parts.reduce((total, p) => total * 60 + Number(p), 0);
+  return Number.isFinite(seconds) ? Math.round(seconds * 1e6) : null;
+}
+
+// The moments when something new was recorded: messages less than 10 ms
+// apart are one step. Each step: [first time, last time].
+function recordedSteps(byType) {
+  const times = Object.values(byType).flat().map((m) => m.time)
+    .sort((a, b) => a - b);
+  const steps = [];
+  for (const t of times) {
+    const last = steps.at(-1);
+    if (last && t - last[1] < 10000)
+      last[1] = t;
+    else
+      steps.push([t, t]);
+  }
+  return steps;
+}
+
+// The step shown at t, from 1; 0 before the first.
+function stepAt(steps, t) {
+  let lo = 0;
+  let hi = steps.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (steps[mid][0] <= t)
+      lo = mid + 1;
+    else
+      hi = mid;
+  }
+  return lo;
+}
+
+// The step whose moment is nearest to t, from 1; halfway goes to the later.
+function nearestStep(steps, t) {
+  const after = steps.findIndex((s) => s[1] >= t);
+  if (after < 0)
+    return steps.length;
+  if (after === 0)
+    return 1;
+  return t - steps[after - 1][1] < steps[after][1] - t ? after : after + 1;
+}
+
+// A step's moment: its last message, so all of it is shown.
+function goToStep(n) {
+  const v = state.viewing;
+  if (!v || !v.steps.length)
+    return;
+  stopPlaying();
+  seek(v.steps[Math.max(1, Math.min(n, v.steps.length)) - 1][1]);
 }
 
 // Shows the recording as it was at t (µs since 1970).
@@ -953,6 +1021,64 @@ function seekTo(t) {
   $("seek").value = span > 0 ? String(Math.round((at - v.start) / span *
     1000)) : "1000";
   $("play-time").textContent = `${clock(at - v.start)} / ${clock(span)}`;
+  $("play-step").textContent =
+    `step ${stepAt(v.steps, at)} / ${v.steps.length}`;
+  $("step-back").disabled = stepAt(v.steps, at) <= 1;
+  $("step-next").disabled = stepAt(v.steps, at) >= v.steps.length;
+  showEmptyMoment();
+}
+
+// Where the recording has no pipeline: when it appears or went, and a way
+// there.
+function showEmptyMoment() {
+  const v = state.viewing;
+  const box = $("empty-moment");
+  if (!v || state.graph.pipelines.length) {
+    box.hidden = true;
+    if (v)
+      v.emptyKey = null;
+    return;
+  }
+  const full = v.byType.graph.filter((g) => g.pipelines?.length);
+  const before = full.findLast((g) => g.time <= v.at);
+  const after = full.find((g) => g.time > v.at);
+  // When the pipeline seen last was gone: the first graph after it.
+  const gone = before && v.byType.graph.find((g) => g.time > before.time);
+  const key = `${before?.time}/${after?.time}`;
+  box.hidden = false;
+  if (v.emptyKey === key)
+    return;
+  v.emptyKey = key;
+  const at = (t) => clock(t - v.start);
+  const button = (text, t) => {
+    const b = document.createElement("button");
+    b.textContent = text;
+    b.addEventListener("click", () => {
+      stopPlaying();
+      seek(t);
+    });
+    return b;
+  };
+  const text = document.createElement("p");
+  const buttons = document.createElement("p");
+  if (!before && !after) {
+    text.textContent = "This recording has no pipeline: the program did not " +
+      "build one while it was recorded.";
+  } else if (!before) {
+    text.textContent = `No pipeline yet. The program builds it at ` +
+      `${at(after.time)}. Press ▶ to play, or:`;
+    buttons.append(button("Go to the first pipeline", after.time));
+  } else if (!after) {
+    text.textContent = `No pipeline here: the program removed it at ` +
+      `${at(gone.time)}.`;
+    buttons.append(button("Back to the last pipeline", gone.time - 1));
+  } else {
+    text.textContent = `No pipeline here: the program removed it at ` +
+      `${at(gone.time)} and builds the next one at ${at(after.time)}.`;
+    buttons.append(button("Back to the last pipeline", gone.time - 1),
+      button("Go to the next pipeline", after.time));
+  }
+  box.replaceChildren(text, buttons);
 }
 
 function stopPlaying() {
@@ -993,11 +1119,121 @@ $("speed").addEventListener("click", () => {
   $("speed").textContent = `${v.speed}×`;
 });
 
+$("step-back").addEventListener("click", () => {
+  const v = state.viewing;
+  if (v)
+    goToStep(stepAt(v.steps, v.at) - 1);
+});
+$("step-next").addEventListener("click", () => {
+  const v = state.viewing;
+  if (v)
+    goToStep(stepAt(v.steps, v.at) + 1);
+});
+document.addEventListener("keydown", (e) => {
+  const v = state.viewing;
+  if (!v || $("playback").hidden || e.altKey || e.ctrlKey || e.metaKey ||
+      e.target.closest?.("input, textarea, select"))
+    return;
+  if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+    e.preventDefault();
+    goToStep(stepAt(v.steps, v.at) + (e.key === "ArrowLeft" ? -1 : 1));
+  }
+});
+
+// The time and the step: click to type where to go; Enter goes, Esc or a
+// click elsewhere cancels.
+const EDITS = {
+  "play-time": {
+    input: "time-input",
+    value: (v) => clock(v.at - v.start),
+    go(v, text) {
+      const t = parseClock(text);
+      if (t === null || t > v.end - v.start)
+        return `Type a time from ${clock(0)} to ${clock(v.end - v.start)}, ` +
+          "for example 7.25 or 0:07.250.";
+      goToStep(nearestStep(v.steps, v.start + t));
+      return null;
+    },
+  },
+  "play-step": {
+    input: "step-input",
+    value: (v) => String(stepAt(v.steps, v.at)),
+    go(v, text) {
+      const n = Number(text.trim());
+      if (!/^\d+$/.test(text.trim()) || n < 1 || n > v.steps.length)
+        return `Type a step from 1 to ${v.steps.length}.`;
+      goToStep(n);
+      return null;
+    },
+  },
+};
+
+function closeEdit() {
+  for (const [label, edit] of Object.entries(EDITS)) {
+    $(label).hidden = false;
+    $(edit.input).hidden = true;
+  }
+  $("play-hint").hidden = true;
+}
+
+for (const [label, edit] of Object.entries(EDITS)) {
+  const input = $(edit.input);
+  $(label).addEventListener("click", () => {
+    const v = state.viewing;
+    if (!v)
+      return;
+    closeEdit();
+    input.value = edit.value(v);
+    $(label).hidden = true;
+    input.hidden = false;
+    input.focus();
+    input.select();
+  });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      closeEdit();
+      $(label).focus();
+    } else if (e.key === "Enter") {
+      const problem = edit.go(state.viewing, input.value);
+      if (problem === null) {
+        closeEdit();
+        $(label).focus();
+        return;
+      }
+      $("play-hint").textContent = problem;
+      $("play-hint").hidden = false;
+      input.classList.remove("shake");
+      void input.offsetWidth;
+      input.classList.add("shake");
+    }
+  });
+  input.addEventListener("blur", () => {
+    if (!input.hidden)
+      closeEdit();
+  });
+}
+
+// After a recording opens, Play glows until the first click or key.
+function glowPlay() {
+  const play = $("play");
+  play.classList.add("glow");
+  const stop = () => {
+    play.classList.remove("glow");
+    document.removeEventListener("pointerdown", stop, true);
+    document.removeEventListener("keydown", stop, true);
+  };
+  document.addEventListener("pointerdown", stop, true);
+  document.addEventListener("keydown", stop, true);
+  setTimeout(stop, 8000);
+}
+
 // Back to the viewer with nothing open.
 function closeRecording() {
   if (!state.viewing)
     return;
   stopPlaying();
+  closeEdit();
+  $("play").classList.remove("glow");
   state.viewing = null;
   recordings.setShown(null);
   pins.replaceAll([]);

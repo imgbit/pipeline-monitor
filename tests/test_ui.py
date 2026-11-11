@@ -1467,24 +1467,24 @@ def check_viewer(browser, rows, url):
     browser.click_point(f"{stored}.querySelector('.rec-open')")
     assert browser.wait(f"!{banner}.hidden && {stored}.classList.contains("
                         "'shown')"), "Reload did not show it again"
-    # Playback: opens at its first pipeline (here at once); the slider goes
-    # anywhere; Play moves on.
+    # Playback: opens at its start; the slider goes anywhere; Play moves on.
     time_label = "document.getElementById('play-time').textContent"
     assert browser.wait(f"!document.getElementById('playback').hidden && "
-                        f"/^0:00 \\/ 0:0[0-9]$/.test({time_label}) && "
-                        "Number(document.getElementById('seek').value) < 50"), \
-        "the recording did not open near its start: " + browser.eval(
-            "document.getElementById('seek').value")
+                        "/^0:00\\.000 \\/ 0:0[0-9]\\.[0-9]{3}$/.test("
+                        f"{time_label}) && "
+                        "document.getElementById('seek').value === '0'"), \
+        "the recording did not open at its start: " + browser.eval(
+            f"{time_label} + ' ' + document.getElementById('seek').value")
     browser.eval("(s => { s.value = 1000; s.dispatchEvent(new Event('input'));"
                  " })(document.getElementById('seek'))")
     assert browser.wait(f"(t => t[0] === t[1])({time_label}.split(' / '))"), \
         "the slider did not go to the end"
     browser.eval("(s => { s.value = 0; s.dispatchEvent(new Event('input')); })"
                  "(document.getElementById('seek'))")
-    assert browser.wait(f"{time_label}.startsWith('0:00 /')"), \
+    assert browser.wait(f"{time_label}.startsWith('0:00.000 /')"), \
         "the slider did not go to the start"
     browser.click("#play")
-    assert browser.wait(f"!{time_label}.startsWith('0:00 /')", timeout=4), \
+    assert browser.wait(f"!{time_label}.startsWith('0:00.000 /')", timeout=4), \
         "playing did not move on"
     browser.click("#play")
     # At 16× it plays to the end and stops; Play again starts over.
@@ -1623,10 +1623,28 @@ def move_slider(browser, value):
                  "new Event('input')); })(document.getElementById('seek'))")
 
 
-# Each moment of a recording shows what was recorded then: no levels on a
-# graph from before them, an empty page where there is no pipeline. Made
-# from a good recording: an empty start, the graph at 0.1 s, the queues'
-# levels at 0.2 s, the pipeline gone at 3 s.
+def open_messages(browser, header, messages, name):
+    path = os.path.join(RECORDINGS, name)
+    with open(path, "w") as f:
+        f.write("\n".join(json.dumps(m) for m in [header, *messages]) + "\n")
+    browser.set_file("#file-input", path)
+    open_added(browser, name)
+    return path
+
+
+def type_in(browser, label, text):
+    """Clicks the time or step label and types text, then Enter."""
+    browser.eval(f"document.getElementById('{label}').click()")
+    field = "time-input" if label == "play-time" else "step-input"
+    browser.eval(f"(i => {{ i.value = {json.dumps(text)}; i.dispatchEvent("
+                 "new KeyboardEvent('keydown', {key: 'Enter', bubbles: true}));"
+                 f" }})(document.getElementById('{field}'))")
+
+
+# Each moment of a recording shows what was recorded then, and the bar says
+# where: the time, the step, ◂ ▸, typing either. Made from a good
+# recording: steps at 0, 0.1 s (the graph), 0.2 s (its levels), 0.4 s (the
+# graph again), 3 s (the pipeline gone).
 def check_moments(browser, good):
     with open(good) as f:
         lines = [json.loads(line) for line in f.read().splitlines()]
@@ -1636,38 +1654,134 @@ def check_moments(browser, good):
     levels = next(m for m in lines if m.get("type") == "levels"
                   and m["queues"])
     empty = {"type": "graph", "protocol": 1, "pipelines": [], "links": []}
-    messages = [
+    end = {"type": "end", "protocol": 1, "reason": "stopped"}
+    path = open_messages(browser, header, [
         {**empty, "time": started},
         {"type": "levels", "protocol": 1, "time": started, "queues": [],
          "pipelines": []},
         {**graph, "time": started + 100000},
         {**levels, "time": started + 200000},
+        {**graph, "time": started + 400000},
         {**empty, "time": started + 3000000},
-        {"type": "end", "protocol": 1, "time": started + 3000000,
-         "reason": "stopped"},
-    ]
-    path = os.path.join(RECORDINGS, "moments.jsonl")
-    with open(path, "w") as f:
-        f.write("\n".join(json.dumps(m) for m in [header, *messages]) + "\n")
-    browser.set_file("#file-input", path)
-    open_added(browser, "moments.jsonl")
+        {**end, "time": started + 3000000},
+    ], "moments.jsonl")
 
     labels = "document.querySelectorAll('#graph .level-text').length"
-    moment = "!document.getElementById('empty-moment').hidden"
+    moment = "document.getElementById('empty-moment')"
+    shown = "document.getElementById('play-time').textContent"
+    step = "document.getElementById('play-step').textContent"
+    hint = "document.getElementById('play-hint')"
+    button = ("[...document.querySelectorAll('#empty-moment button')]"
+              ".find(b => b.textContent === {})")
+
+    def at(time, n):
+        assert browser.wait(f"{shown} === '{time} / 0:03.000' && "
+                            f"{step} === 'step {n} / 5'"), \
+            f"not at {time}, step {n}: {browser.eval(shown)}, " \
+            f"{browser.eval(step)}"
+
+    # Opens at its start: nothing yet, and the way to the pipeline.
+    at("0:00.000", 1)
+    assert browser.eval(f"!{moment}.hidden && {moment}.textContent.includes("
+                        "'No pipeline yet. The program builds it at "
+                        "0:00.100.')"), "no empty moment at the start"
+    assert browser.eval("document.getElementById('step-back').disabled")
+    assert browser.eval("document.getElementById('play').classList"
+                        ".contains('glow')"), "Play does not glow"
+    browser.eval("document.dispatchEvent(new KeyboardEvent('keydown', "
+                 "{key: 'Shift'}))")
+    assert browser.wait("!document.getElementById('play').classList"
+                        ".contains('glow')"), "Play still glows after a key"
+    browser.eval(f"{button.format(json.dumps('Go to the first pipeline'))}"
+                 ".click()")
+    at("0:00.100", 2)
+    # The graph of 0.1 s, without the levels of 0.2 s.
     assert browser.wait(f"!!{element_selector('q-r')} && {labels} === 0 && "
-                        "document.getElementById('seek').value !== '0'"), \
-        "the recording did not open at its first pipeline, without levels"
-    move_slider(browser, 100)
-    assert browser.wait(f"!!{element_selector('q-r')} && {labels} > 0"), \
-        "no levels once they were recorded"
-    for value in (0, 1000):
-        move_slider(browser, value)
-        assert browser.wait(f"!{element_selector('q-r')} && {moment} && "
-                            "document.getElementById('empty').hidden"), \
-            f"slider at {value}: not an empty moment"
+                        f"{moment}.hidden"), "levels shown before recorded"
+
+    # ◂ ▸ and the arrow keys.
+    browser.click("#step-next")
+    at("0:00.200", 3)
+    assert browser.wait(f"{labels} > 0"), "no levels once they were recorded"
+    browser.eval("document.body.dispatchEvent(new KeyboardEvent('keydown', "
+                 "{key: 'ArrowLeft', bubbles: true}))")
+    at("0:00.100", 2)
+    browser.eval("document.body.dispatchEvent(new KeyboardEvent('keydown', "
+                 "{key: 'ArrowRight', bubbles: true}))")
+    at("0:00.200", 3)
+
+    # A typed time goes to the nearest step; halfway to the later one.
+    for typed, time, n in (("0.25", "0:00.200", 3), ("0.3", "0:00.400", 4),
+                           ("0:00.35", "0:00.400", 4), ("0.15", "0:00.200", 3),
+                           ("2.9", "0:03.000", 5), ("0", "0:00.000", 1)):
+        type_in(browser, "play-time", typed)
+        at(time, n)
+    for wrong in ("abc", "9:59"):
+        type_in(browser, "play-time", wrong)
+        assert browser.wait(f"!{hint}.hidden && {hint}.textContent === "
+                            "'Type a time from 0:00.000 to 0:03.000, for "
+                            "example 7.25 or 0:07.250.'"), \
+            f"no hint for the time {wrong}"
+        at("0:00.000", 1)
+    assert browser.eval("!document.getElementById('time-input').hidden"), \
+        "the field closed after a wrong time"
+    browser.eval("document.getElementById('time-input').dispatchEvent("
+                 "new KeyboardEvent('keydown', {key: 'Escape', "
+                 "bubbles: true}))")
+    assert browser.wait(f"{hint}.hidden && document.getElementById("
+                        "'time-input').hidden"), "Esc did not cancel"
+
+    # A typed step; the end, and back to the pipeline.
+    type_in(browser, "play-step", "9")
+    assert browser.wait(f"{hint}.textContent === 'Type a step from 1 to 5.'"), \
+        "no hint for a wrong step"
+    type_in(browser, "play-step", "5")
+    at("0:03.000", 5)
+    assert browser.wait(f"!{moment}.hidden && {moment}.textContent.includes("
+                        "'No pipeline here: the program removed it at "
+                        "0:03.000.')"), "no empty moment at the end"
+    assert browser.eval("document.getElementById('step-next').disabled")
+    browser.eval(f"{button.format(json.dumps('Back to the last pipeline'))}"
+                 ".click()")
+    assert browser.wait(f"!!{element_selector('q-r')} && {shown} === "
+                        "'0:02.999 / 0:03.000'"), "Back did not show it"
     browser.click("#viewing-close")
     assert browser.wait("document.getElementById('viewing').hidden")
-    assert browser.wait(f"!{moment}"), "the empty moment kept after Close"
+    assert browser.wait(f"{moment}.hidden"), "the empty moment kept after Close"
+    os.remove(path)
+
+    # A gap: removed at 1 s, built again at 2 s.
+    path = open_messages(browser, header, [
+        {**graph, "time": started},
+        {**empty, "time": started + 1000000},
+        {**graph, "time": started + 2000000},
+        {**end, "time": started + 3000000},
+    ], "gap.jsonl")
+    assert browser.wait(f"{shown}.endsWith('/ 0:02.000')"), "gap not opened"
+    move_slider(browser, 500)
+    assert browser.wait(f"{moment}.textContent.includes('No pipeline here: "
+                        "the program removed it at 0:01.000 and builds the "
+                        "next one at 0:02.000.')"), \
+        "no message in a gap: " + browser.eval(
+            f"{moment}.textContent + ' | ' + {shown}")
+    browser.eval(f"{button.format(json.dumps('Go to the next pipeline'))}"
+                 ".click()")
+    assert browser.wait(f"!!{element_selector('q-r')} && {shown}"
+                        ".startsWith('0:02.000')"), "Next did not show it"
+    browser.click("#viewing-close")
+    os.remove(path)
+
+    # Never a pipeline.
+    path = open_messages(browser, header, [
+        {**empty, "time": started}, {**end, "time": started + 1000000}],
+        "none.jsonl")
+    assert browser.wait(f"{moment}.textContent === 'This recording has no "
+                        "pipeline: the program did not build one while it "
+                        f"was recorded.' && !{moment}.querySelector('button')"), \
+        "no message for a recording without a pipeline: " + browser.eval(
+            f"{moment}.textContent + ' | ' + {shown} + ' | ' + "
+            "document.getElementById('viewing').hidden")
+    browser.click("#viewing-close")
     os.remove(path)
 
 
@@ -1920,22 +2034,26 @@ def check_site(browser, serve):
                             ".textContent.includes('never uploaded')")
         # Open, with the mouse: shown here, marked, no server needed.
         browser.click_point(f"{demo}.querySelector('.rec-open')")
-        assert browser.wait(f"!{banner}.hidden && !!{element_selector('q-r')}"
-                            f" && {demo}.classList.contains('shown')"), \
-            "the 0.10.0 recording did not open"
+        # Its pipeline was built after the start: it opens there, empty,
+        # with the way to the pipeline.
+        go = ("[...document.querySelectorAll('#empty-moment button')].find("
+              "b => b.textContent === 'Go to the first pipeline')")
+        assert browser.wait(f"!{banner}.hidden && !!{go} && "
+                            f"{demo}.classList.contains('shown')"), \
+            "the 0.10.0 recording did not open at its start"
         assert browser.wait("!document.getElementById('playback').hidden && "
-                            "/^0:0[0-9] \\/ 0:0[0-9]$/.test(document"
-                            ".getElementById('play-time').textContent)"), \
+                            "/^0:00\\.000 \\/ 0:0[0-9]\\.[0-9]{3}$/.test("
+                            "document.getElementById('play-time')"
+                            ".textContent)"), \
             "no playback for the 0.10.0 recording"
+        browser.eval(f"{go}.click()")
+        assert browser.wait(f"!!{element_selector('q-r')}"), \
+            "Go to the first pipeline did not show it"
         # A recording's state is just its state, not "last known".
         state = "document.getElementById('pipeline-state').textContent"
         assert browser.wait(f"!!{state} && !{state}.includes('last known')"), \
             "a recording's state says 'last known'"
-        # Its pipeline was built after the start and removed before the
-        # end: it opens where the pipeline is, and both ends are empty.
-        assert browser.wait(f"!!{element_selector('q-r')} && "
-                            "document.getElementById('empty-moment').hidden"), \
-            "the 0.10.0 recording did not open at its pipeline"
+        # Removed before the end: both ends are empty.
         for end in (0, 1000):
             move_slider(browser, end)
             assert browser.wait(f"!{element_selector('q-r')} && "
@@ -2104,9 +2222,12 @@ def check_site(browser, serve):
         open_panel(browser, "recordings")
         browser.eval(f"{demo}.scrollIntoView({{block: 'center'}})")
         browser.click_point(f"{demo}.querySelector('.rec-open')")
-        assert browser.wait(f"!{banner}.hidden && "
-                            f"!!{element_selector('q-r')}"), \
+        assert browser.wait(f"!{banner}.hidden"), \
             "the page did not recover from damaged recordings"
+        browser.eval("document.querySelector('#empty-moment:not([hidden]) "
+                     "button')?.click()")
+        assert browser.wait(f"!!{element_selector('q-r')}"), \
+            "no pipeline after the damaged recordings"
         browser.click("#viewing-close")
 
         # The guide (built where the markdown package is installed): linked
@@ -2170,8 +2291,13 @@ def check_command(browser, serve, tool):
         assert browser.wait(f"{rows}.length >= 1"), "no recordings listed"
         path = os.path.join(RECORDINGS, browser.eval(f"{rows}[0].dataset.name"))
         browser.eval(f"{rows}[0].querySelector('.rec-open').click()")
-        assert browser.wait(f"!{banner}.hidden && !!{element_selector('q-r')}"), \
+        assert browser.wait(f"!{banner}.hidden"), \
             "recording not opened in the command's viewer"
+        # It may start before its pipeline: go there.
+        browser.eval("document.querySelector('#empty-moment:not([hidden]) "
+                     "button')?.click()")
+        assert browser.wait(f"!!{element_selector('q-r')}"), \
+            "no pipeline in the command's viewer"
 
         # Delete, with the mouse (a second click within 3 s).
         browser.click("#viewing-close")
@@ -2214,8 +2340,12 @@ def check_command(browser, serve, tool):
         assert url.endswith("#viewer=opened")
         browser.call("Page.navigate", url="about:blank")
         browser.call("Page.navigate", url=url)
-        assert browser.wait(f"!{banner}.hidden && !!{element_selector('q-r')}",
-                            timeout=10), "open FILE did not show it"
+        assert browser.wait(f"!{banner}.hidden", timeout=10), \
+            "open FILE did not show it"
+        browser.eval("document.querySelector('#empty-moment:not([hidden]) "
+                     "button')?.click()")
+        assert browser.wait(f"!!{element_selector('q-r')}"), \
+            "no pipeline in the file opened by the command"
     finally:
         tool_proc.terminate()
         tool_proc.wait()

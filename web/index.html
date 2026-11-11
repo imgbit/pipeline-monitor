@@ -49,7 +49,7 @@
   <svg id="pin-lines" aria-hidden="true"></svg>
   <div id="pins"></div>
   <div id="empty" class="empty" hidden>Waiting for a pipeline…</div>
-  <div id="empty-moment" class="empty" hidden>No pipeline at this moment of the recording.</div>
+  <div id="empty-moment" class="empty empty-moment" hidden></div>
   <div id="ended" class="ended-banner" hidden>The program has ended: this is
     its last state. A new run on this address is picked up by itself.</div>
   <div id="lost" class="ended-banner" hidden>Connection lost: showing the
@@ -58,9 +58,19 @@
     <span id="viewing-text"></span> · read-only
     <span id="playback" class="playback">
       <button id="play" title="Play">▶</button>
+      <button id="step-back" class="step" title="Previous step (Left arrow)">◂</button>
+      <button id="step-next" class="step" title="Next step (Right arrow)">▸</button>
       <input id="seek" type="range" min="0" max="1000" value="1000"
         aria-label="Time in the recording">
-      <span id="play-time" class="play-time"></span>
+      <button id="play-time" class="play-label"
+        title="Time in the recording. Click to type a time."></button>
+      <input id="time-input" class="play-input" hidden
+        aria-label="Go to a time in the recording">
+      <button id="play-step" class="play-label"
+        title="A step is a moment when something new was recorded. Click to type a step."></button>
+      <input id="step-input" class="play-input" hidden
+        aria-label="Go to a step">
+      <span id="play-hint" class="play-hint" role="alert" hidden></span>
       <button id="speed" title="Playback speed">1×</button>
     </span>
     <button id="viewing-close">Close</button></div>
