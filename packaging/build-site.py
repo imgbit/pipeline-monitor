@@ -138,6 +138,7 @@ def main():
         shutil.copy(source, os.path.join(out_demos, demo["file"]))
         kind, started, last = summary(source)
         listed.append({"title": demo["title"], "file": demo["file"],
+                       "description": demo.get("description", ""),
                        "kind": kind, "started": started, "last": last,
                        "size": os.path.getsize(source)})
     with open(os.path.join(out_demos, "demos.json"), "w",

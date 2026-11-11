@@ -1,3 +1,8 @@
 [
- {"title": "Example pipeline", "file": "example.jsonl"}
+ {"title": "What's inside uridecodebin3?", "description": "Bins inside bins, pads that appear while it plays, a queue per stream.", "file": "uridecodebin3.jsonl"},
+ {"title": "Which element is slowing the pipeline? (answer: x264enc, its input queue stays full)", "description": "video-queue is full in front of x264enc, the slowest element; audio-queue is full only because mp4mux waits for the video.", "file": "slow-encoder.jsonl"},
+ {"title": "Why does my live encode take seconds to start? (answer: x264enc holds frames back before its first output)", "description": "Frames go in, none come out for over 3 s; the pipeline waits in PAUSED.", "file": "live-encode.jsonl"},
+ {"title": "\"not-negotiated\": which link failed?", "description": "No videoconvert after the decoder: the video stops, the audio waits, and nothing says why.", "file": "not-negotiated.jsonl"},
+ {"title": "Pipeline hangs: the tee without queues", "description": "The first branch holds the tee's thread; the second never gets a buffer.", "file": "tee-without-queues.jsonl"},
+ {"title": "A snapshot of playbin3: every element, every property", "description": "One moment of a whole player: bins inside bins, and each element's settings to look up.", "file": "playbin3-snapshot.jsonl"}
 ]
