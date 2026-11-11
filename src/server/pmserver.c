@@ -1165,6 +1165,8 @@ send_findings (PmServer * self)
   self->last_findings = findings;
 }
 
+static gboolean send_update (gpointer user_data);
+
 static gboolean
 send_all_stats (gpointer user_data)
 {
@@ -1181,6 +1183,11 @@ send_all_stats (gpointer user_data)
   g_free (self->last_levels);
   self->last_levels = pm_levels_to_json (self->model);
   levels = pm_json_message ("levels", self->last_levels);
+  /* Temporary, until one timer sends everything (see the roadmap): a graph
+   * change waiting for its timer goes out first, read after the levels, so
+   * no levels are newer than the graph before them. */
+  if (g_atomic_int_get (&self->update_scheduled))
+    send_update (self);
   if (to_recording) {
     gchar *stats = pm_monitor_stats_json (self->monitor, NULL);
 

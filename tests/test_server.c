@@ -1334,6 +1334,97 @@ next_recording (WsClient * client, gchar ** name, gchar ** kind,
   return any;
 }
 
+/* Queues added while recording: no levels message may name a queue that
+ * the graph recorded before it does not have yet. */
+static void
+test_recording_graph_first (void)
+{
+  SoupSession *session = soup_session_new ();
+  gchar *url = server_url ("ws");
+  GstElement *pipeline = start_pipeline ("videotestsrc is-live=true ! "
+      "fakesink name=gf-sink");
+  GHashTable *known = g_hash_table_new (NULL, NULL);
+  gchar *name = NULL, *path, *body, **lines;
+  gboolean running = FALSE;
+  guint i, checked = 0;
+  WsClient client;
+
+  ws_connect (&client, session, url, NULL);
+  g_assert_cmpuint (count_messages (&client, "recordings", 300), >=, 1);
+  ws_send (&client, "{\"type\":\"record-start\"}");
+  do {
+    g_clear_pointer (&name, g_free);
+    g_assert_true (next_recording (&client, &name, NULL, &running));
+  } while (!running);
+  /* A new queue every 30 ms: a graph update is nearly always pending when
+   * levels are recorded. */
+  for (i = 0; i < 120; i++) {
+    gchar *queue_name = g_strdup_printf ("gf-q%u", i);
+    GstElement *queue = gst_element_factory_make ("queue", queue_name);
+
+    gst_bin_add (GST_BIN (pipeline), queue);
+    gst_element_sync_state_with_parent (queue);
+    g_free (queue_name);
+    g_usleep (30 * G_TIME_SPAN_MILLISECOND);
+  }
+  ws_send (&client, "{\"type\":\"record-stop\"}");
+  do {
+    g_clear_pointer (&name, g_free);
+    g_assert_true (next_recording (&client, &name, NULL, &running));
+  } while (running);
+
+  path = g_strconcat ("api/recordings/", name, NULL);
+  g_assert_cmpuint (get_status (path, "GET", NULL, &body, NULL), ==,
+      SOUP_STATUS_OK);
+  lines = g_strsplit (body, "\n", -1);
+  for (i = 1; lines[i] != NULL && *lines[i] != '\0'; i++) {
+    JsonNode *root = parse (lines[i]);
+    JsonObject *m = json_node_get_object (root);
+    const gchar *type = json_object_get_string_member (m, "type");
+
+    if (g_strcmp0 (type, "graph") == 0) {
+      JsonArray *pipelines = json_object_get_array_member (m, "pipelines");
+      guint j, k;
+
+      g_hash_table_remove_all (known);
+      for (j = 0; j < json_array_get_length (pipelines); j++) {
+        JsonArray *children = json_object_get_array_member
+            (json_array_get_object_element (pipelines, j), "children");
+
+        for (k = 0; k < json_array_get_length (children); k++)
+          g_hash_table_add (known, GSIZE_TO_POINTER (json_object_get_int_member
+                  (json_array_get_object_element (children, k), "id")));
+      }
+    } else if (g_strcmp0 (type, "levels") == 0) {
+      JsonArray *queues = json_object_get_array_member (m, "queues");
+      guint j;
+
+      for (j = 0; j < json_array_get_length (queues); j++) {
+        JsonObject *q = json_array_get_object_element (queues, j);
+
+        if (!g_hash_table_contains (known, GSIZE_TO_POINTER
+                (json_object_get_int_member (q, "element"))))
+          g_error ("levels of %s before the graph has it",
+              json_object_get_string_member (q, "path"));
+      }
+      checked++;
+    }
+    json_node_unref (root);
+  }
+  g_assert_cmpuint (checked, >=, 2);
+
+  ws_send (&client, "{\"type\":\"record-delete\",\"name\":\"%s\"}", name);
+  g_strfreev (lines);
+  g_free (body);
+  g_free (path);
+  g_free (name);
+  g_hash_table_unref (known);
+  ws_disconnect (&client);
+  stop_pipeline (pipeline);
+  g_free (url);
+  g_object_unref (session);
+}
+
 /* Record, stop, snapshot, download and delete, as the page does. */
 static void
 test_recordings (void)
@@ -3621,6 +3712,8 @@ main (int argc, char **argv)
 #endif
   g_test_add_func ("/server/hello", test_hello);
   g_test_add_func ("/server/recordings", test_recordings);
+  g_test_add_func ("/server/recording-graph-first",
+      test_recording_graph_first);
   g_test_add_func ("/server/protocol", test_protocol);
   g_test_add_func ("/server/monitor-bad-commands", test_monitor_bad_commands);
   g_test_add_func ("/server/invalid-utf8", test_invalid_utf8);
