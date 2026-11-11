@@ -1304,23 +1304,35 @@ static gboolean
 send_update (gpointer user_data)
 {
   PmServer *self = user_data;
-  gchar *graph, *log, *text;
+  gchar *graph, *log, *text, *levels = NULL;
   guint64 seq;
 
   /* Cleared first so changes made while serialising schedule another send. */
   g_atomic_int_set (&self->update_scheduled, 0);
 
+  /* Temporary, until one timer sends everything (see the roadmap): a
+   * recorded graph is followed by the levels of its moment, read before it,
+   * so the levels recorded last are never older than the graph (a stopped
+   * pipeline's queues are empty, removed pads are gone). */
+  if (self->tapping)
+    levels = pm_levels_to_json (self->model);
   graph = pm_model_to_json (self->model);
   if (g_strcmp0 (graph, self->last_graph) != 0) {
     text = pm_json_message ("graph", graph);
     send_to_all (self, text);
     record (self, text);
     g_free (text);
+    if (levels != NULL) {
+      text = pm_json_message ("levels", levels);
+      record (self, text);
+      g_free (text);
+    }
     g_free (self->last_graph);
     self->last_graph = graph;
   } else {
     g_free (graph);
   }
+  g_free (levels);
 
   /* Only entries added or repeated since the last send. */
   log = pm_model_log_to_json (self->model, self->log_sent, &seq);

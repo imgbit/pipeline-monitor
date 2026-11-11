@@ -1425,6 +1425,95 @@ test_recording_graph_first (void)
   g_object_unref (session);
 }
 
+/* A pipeline stopped while recording: its queue had data, and the levels
+ * recorded with the stopped graph show it empty, not the levels of up to a
+ * second before. */
+static void
+test_recording_stop_levels (void)
+{
+  SoupSession *session = soup_session_new ();
+  gchar *url = server_url ("ws");
+  /* The sink plays each buffer a second late: the queue fills. */
+  GstElement *pipeline = start_pipeline ("videotestsrc is-live=true ! "
+      "queue name=sv-queue ! fakesink sync=true ts-offset=1000000000");
+  gchar *name = NULL, *path, *body, **lines, *queue_path;
+  gboolean running = FALSE, stopped = FALSE, checked = FALSE;
+  gint64 stopped_at = 0;
+  guint i;
+  WsClient client;
+
+  ws_connect (&client, session, url, NULL);
+  g_assert_cmpuint (count_messages (&client, "recordings", 300), >=, 1);
+  ws_send (&client, "{\"type\":\"record-start\"}");
+  do {
+    g_clear_pointer (&name, g_free);
+    g_assert_true (next_recording (&client, &name, NULL, &running));
+  } while (!running);
+  g_usleep (1500 * G_TIME_SPAN_MILLISECOND);
+  gst_element_set_state (pipeline, GST_STATE_NULL);
+  /* The stopped graph goes out 100 ms after the change. */
+  g_usleep (300 * G_TIME_SPAN_MILLISECOND);
+  ws_send (&client, "{\"type\":\"record-stop\"}");
+  do {
+    g_clear_pointer (&name, g_free);
+    g_assert_true (next_recording (&client, &name, NULL, &running));
+  } while (running);
+
+  path = g_strconcat ("api/recordings/", name, NULL);
+  g_assert_cmpuint (get_status (path, "GET", NULL, &body, NULL), ==,
+      SOUP_STATUS_OK);
+  queue_path = graph_path ("sv-queue", NULL);
+  lines = g_strsplit (body, "\n", -1);
+  for (i = 1; lines[i] != NULL && *lines[i] != '\0' && !checked; i++) {
+    JsonNode *root = parse (lines[i]);
+    JsonObject *m = json_node_get_object (root);
+    const gchar *type = json_object_get_string_member (m, "type");
+
+    if (g_strcmp0 (type, "graph") == 0 && !stopped) {
+      JsonArray *pipelines = json_object_get_array_member (m, "pipelines");
+
+      if (json_array_get_length (pipelines) > 0 &&
+          g_strcmp0 (json_object_get_string_member
+              (json_array_get_object_element (pipelines, 0), "state"),
+              "NULL") == 0) {
+        stopped = TRUE;
+        stopped_at = json_object_get_int_member (m, "time");
+      }
+    } else if (g_strcmp0 (type, "levels") == 0 && stopped) {
+      JsonArray *queues = json_object_get_array_member (m, "queues");
+      guint j;
+
+      /* The levels of the stopped graph's own moment. */
+      g_assert_cmpint (json_object_get_int_member (m, "time") - stopped_at,
+          <, 50000);
+      for (j = 0; j < json_array_get_length (queues); j++) {
+        JsonObject *q = json_array_get_object_element (queues, j);
+        JsonArray *levels = json_object_get_array_member (q, "levels");
+
+        if (g_strcmp0 (json_object_get_string_member (q, "path"),
+                queue_path) == 0 && json_array_get_length (levels) > 0)
+          g_assert_cmpint (json_object_get_int_member
+              (json_array_get_object_element (levels, 0), "buffers"), ==, 0);
+      }
+      checked = TRUE;
+    }
+    json_node_unref (root);
+  }
+  if (!checked)
+    g_error ("no levels recorded with the stopped graph");
+
+  ws_send (&client, "{\"type\":\"record-delete\",\"name\":\"%s\"}", name);
+  g_strfreev (lines);
+  g_free (queue_path);
+  g_free (body);
+  g_free (path);
+  g_free (name);
+  ws_disconnect (&client);
+  stop_pipeline (pipeline);
+  g_free (url);
+  g_object_unref (session);
+}
+
 /* Record, stop, snapshot, download and delete, as the page does. */
 static void
 test_recordings (void)
@@ -3714,6 +3803,8 @@ main (int argc, char **argv)
   g_test_add_func ("/server/recordings", test_recordings);
   g_test_add_func ("/server/recording-graph-first",
       test_recording_graph_first);
+  g_test_add_func ("/server/recording-stop-levels",
+      test_recording_stop_levels);
   g_test_add_func ("/server/protocol", test_protocol);
   g_test_add_func ("/server/monitor-bad-commands", test_monitor_bad_commands);
   g_test_add_func ("/server/invalid-utf8", test_invalid_utf8);
