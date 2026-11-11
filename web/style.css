@@ -789,3 +789,47 @@ body.viewing .pin-card .pin-close, body.viewing .pin-card .pin-prop-close {
 .empty-moment { flex-direction: column; gap: 4px; text-align: center; padding: 0 16px; }
 .empty-moment p { margin: 0; max-width: 34em; }
 .empty-moment button { pointer-events: auto; margin: 4px; }
+
+/* The published site, nothing open: what this is, the demos, the ways on. */
+.welcome {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  padding: 32px 16px 96px;
+  text-align: center;
+}
+.welcome[hidden] { display: none; }
+.welcome h1 { margin: 0 0 6px; font-size: 24px; }
+.welcome > p { margin: 4px auto; max-width: 40em; }
+.welcome-demos {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+  max-width: 900px;
+  margin: 24px auto;
+  text-align: left;
+}
+.welcome-demo {
+  display: flex;
+  flex-direction: column;
+  padding: 12px 14px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.welcome-demo h2 { margin: 0 0 4px; font-size: 15px; }
+.welcome-demo p { margin: 0 0 10px; color: var(--muted); flex: 1; }
+.welcome-demo button { align-self: flex-end; }
+.welcome-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin: 8px 0 12px; }
+a.button {
+  display: inline-block;
+  padding: 2px 8px;
+  color: inherit;
+  text-decoration: none;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+a.button:hover { border-color: var(--accent); }
+/* Nothing to zoom while the welcome is shown. */
+body.welcoming .toolbar { display: none; }

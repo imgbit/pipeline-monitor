@@ -50,6 +50,23 @@
   <div id="pins"></div>
   <div id="empty" class="empty" hidden>Waiting for a pipeline…</div>
   <div id="empty-moment" class="empty empty-moment" hidden></div>
+  <section id="welcome" class="welcome" hidden>
+    <h1>pipeline-monitor</h1>
+    <p>See a running GStreamer pipeline live in your browser.</p>
+    <p>This page plays back recordings made with it: try one, nothing to
+      install.</p>
+    <div id="welcome-demos" class="welcome-demos"></div>
+    <div class="welcome-actions">
+      <button id="welcome-open">Open your own recording…</button>
+      <a class="button" href="guide/">Read the guide</a>
+      <a class="button" href="https://github.com/imgbit/pipeline-monitor/releases/latest"
+        target="_blank" rel="noopener">Get pipeline-monitor</a>
+    </div>
+    <p class="muted">Files you open are read in this browser and never
+      uploaded.</p>
+    <input id="welcome-file" type="file" accept=".jsonl,application/jsonl"
+      hidden>
+  </section>
   <div id="ended" class="ended-banner" hidden>The program has ended: this is
     its last state. A new run on this address is picked up by itself.</div>
   <div id="lost" class="ended-banner" hidden>Connection lost: showing the

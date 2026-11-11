@@ -499,6 +499,8 @@ def check(browser, url):
                               "?.textContent")
         raise AssertionError(f"graph was not drawn: connection {status!r}, "
                              f"errors {browser.errors}")
+    assert browser.eval("document.getElementById('welcome').hidden"), \
+        "the site's welcome on the live page"
     assert browser.eval("document.getElementById('connection').textContent") \
         == "connected"
     assert browser.eval("document.getElementById('empty').hidden")
@@ -2186,13 +2188,29 @@ def check_site(browser, serve):
     try:
         browser.call("Page.navigate", url="about:blank")
         browser.call("Page.navigate", url=f"{base}/pipeline-monitor/")
-        assert browser.wait(f"!!{demo}"), "no demo recording listed"
+        # The welcome: what this is, a card per demo, the ways on; no list
+        # and no graph toolbar over it.
+        welcome = "document.getElementById('welcome')"
+        cards = "document.querySelectorAll('.welcome-demo')"
+        assert browser.wait(f"!{welcome}.hidden && {cards}.length === 2"), \
+            "no welcome with the demos"
+        assert browser.eval(f"[...{cards}].map(c => c.querySelector('h2')"
+                            ".textContent).join('|') === "
+                            "'Example pipeline|Pinned'")
+        assert browser.eval("document.getElementById('recordings-panel')"
+                            ".hidden && !document.querySelector('.toolbar')"
+                            ".offsetParent"), "the list or toolbar over it"
+        assert browser.eval(f"[...{welcome}.querySelectorAll('a.button')]"
+                            ".map(a => a.getAttribute('href')).join(' ') === "
+                            "'guide/ https://github.com/imgbit/"
+                            "pipeline-monitor/releases/latest'")
         assert browser.eval("document.getElementById('connection')"
                             ".textContent === 'viewer'")
+        assert browser.wait(f"!!{demo}"), "no demo recording listed"
         assert browser.eval("document.querySelector('.rec-offline')"
                             ".textContent.includes('never uploaded')")
         # Open, with the mouse: shown here, marked, no server needed.
-        browser.click_point(f"{demo}.querySelector('.rec-open')")
+        browser.click_point(f"{cards}[0].querySelector('button')")
         # Its pipeline was built after the start: it opens there, empty,
         # with the way to the pipeline.
         go = ("[...document.querySelectorAll('#empty-moment button')].find("
@@ -2200,6 +2218,10 @@ def check_site(browser, serve):
         assert browser.wait(f"!{banner}.hidden && !!{go} && "
                             f"{demo}.classList.contains('shown')"), \
             "the 0.10.0 recording did not open at its start"
+        # A demo's bar says what it is, not the program and the date.
+        assert browser.eval("document.getElementById('viewing-text')"
+                            ".textContent === 'Example pipeline'"), \
+            "the demo's title is not in the bar"
         assert browser.wait("!document.getElementById('playback').hidden && "
                             "/^0:00\\.000 \\/ 0:0[0-9]\\.[0-9]{3}$/.test("
                             "document.getElementById('play-time')"
@@ -2246,7 +2268,8 @@ def check_site(browser, serve):
         assert browser.eval(f"!{tip}.textContent.includes('pin')"), \
             "a recording's pad tooltip offers pinning"
         browser.click("#viewing-close")
-        assert browser.wait(f"{banner}.hidden")
+        assert browser.wait(f"{banner}.hidden && !{welcome}.hidden"), \
+            "the welcome not back after Close"
         # The page's pins when it recorded: read-only cards, their values
         # following the slider (blank before the first recorded values).
         cards = "document.querySelectorAll('.pin-card')"

@@ -438,7 +438,11 @@ function updateHeader(pipeline) {
   $("element-count").textContent = pipeline
     ? `${countElements(pipeline)} elements` : "";
   showTimes(pipeline);
-  $("empty").hidden = Boolean(pipeline) || Boolean(state.viewing);
+  // On the site, with nothing open: the welcome instead of the empty text.
+  $("welcome").hidden = siteList === null || Boolean(state.viewing);
+  document.body.classList.toggle("welcoming", !$("welcome").hidden);
+  $("empty").hidden = Boolean(pipeline) || Boolean(state.viewing) ||
+    siteList !== null;
   $("empty-moment").hidden = Boolean(pipeline) || !state.viewing;
 }
 
@@ -801,17 +805,18 @@ function damaged(name) {
   recordings.showError(`${name} cannot be shown: its content is damaged.`);
 }
 
-// source: the list's row, {name} or {file}, marked as shown.
-function openRecording(text, name, source) {
+// source: the list's row, {name} or {file}, marked as shown; title: what
+// the bar says instead of the program and the date (a demo's title).
+function openRecording(text, name, source, title = null) {
   try {
-    if (showRecording(text, name))
+    if (showRecording(text, name, title))
       recordings.setShown(source);
   } catch {
     damaged(name);
   }
 }
 
-function showRecording(text, name) {
+function showRecording(text, name, title = null) {
   const lines = text.split("\n").filter((line) => line.trim());
   let header = null;
   try {
@@ -870,8 +875,8 @@ function showRecording(text, name) {
   document.body.classList.add("viewing");
   const program = header.hello?.program ?? "a program";
   const when = new Date(header.started / 1000).toLocaleString();
-  $("viewing-text").textContent = header.kind === "snapshot"
-    ? `Snapshot of ${program}, ${when}` : `Recording of ${program}, ${when}`;
+  $("viewing-text").textContent = title ?? (header.kind === "snapshot"
+    ? `Snapshot of ${program}, ${when}` : `Recording of ${program}, ${when}`);
   $("playback").hidden = header.kind === "snapshot";
   $("speed").textContent = "1×";
   $("viewing").hidden = false;
@@ -1243,7 +1248,9 @@ function closeRecording() {
   state.places = { tops: new Map() };
   history.replaceState(null, "", "#viewer");
   update();
-  dock.open("recordings");
+  // On the site the welcome is back; elsewhere the list.
+  if (siteList === null)
+    dock.open("recordings");
 }
 
 // A recording in the program's folder (or "opened": the file the command
@@ -1282,7 +1289,7 @@ async function openDemo(demo) {
     const r = await fetch(demo.url);
     if (!r.ok)
       throw new Error(r.statusText);
-    openRecording(await r.text(), demo.title, { url: demo.url });
+    openRecording(await r.text(), demo.title, { url: demo.url }, demo.title);
   } catch {
     recordings.showError(`Cannot read ${demo.title}.`);
   }
@@ -1317,12 +1324,43 @@ async function loadDemos() {
   try {
     const r = await fetch(siteList);
     const list = await r.json();
-    recordings.setDemos(list.map((d) => ({ ...d,
-      url: new URL(d.file, new URL(siteList, location.href)).href })));
+    const demos = list.map((d) => ({ ...d,
+      url: new URL(d.file, new URL(siteList, location.href)).href }));
+    recordings.setDemos(demos);
+    showWelcomeDemos(demos);
   } catch {
     recordings.showError("The demo recordings could not be read.");
   }
 }
+
+// The site's welcome: a card per demo, its title, what it shows, Open.
+function showWelcomeDemos(demos) {
+  $("welcome-demos").replaceChildren(...demos.map((d) => {
+    const card = document.createElement("div");
+    card.className = "welcome-demo";
+    const title = document.createElement("h2");
+    title.textContent = d.title;
+    const text = document.createElement("p");
+    text.textContent = d.description ?? "";
+    const open = document.createElement("button");
+    open.textContent = "Open";
+    open.addEventListener("click", () => openDemo(d));
+    card.append(title, text, open);
+    return card;
+  }));
+}
+
+$("welcome-open").addEventListener("click", () => $("welcome-file").click());
+$("welcome-file").addEventListener("change", async () => {
+  const file = $("welcome-file").files[0];
+  $("welcome-file").value = "";
+  if (!file)
+    return;
+  if (await recordings.addFile(file))
+    openFile(file);
+  else
+    dock.open("recordings");
+});
 
 // Added files by the viewer tab they were opened in: a tab asks for its
 // file once it has loaded (also after a reload).
@@ -1567,14 +1605,17 @@ function startViewer() {
   // The published site has the guide next to the viewer.
   if (siteList !== null) {
     $("guide-link").hidden = false;
+    $("welcome").hidden = Boolean(state.viewing);
+    document.body.classList.toggle("welcoming", !state.viewing);
     const guide = document.createElement("a");
     guide.href = "guide/";
     guide.textContent = "start with the guide";
     $("empty").append(" New here? ", guide, ".");
   }
-  // With nothing open yet, the list to open one from.
+  // With nothing open yet, the list to open one from (on the site, the
+  // welcome).
   if (!location.hash.startsWith("#viewer=") &&
-      location.hash !== "#viewer-file")
+      location.hash !== "#viewer-file" && siteList === null)
     dock.open("recordings");
   // On the site there is no server: demos and added files only.
   if (siteList !== null)
