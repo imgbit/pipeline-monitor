@@ -1514,6 +1514,26 @@ test_recording_stop_levels (void)
   g_object_unref (session);
 }
 
+/* A queue not in a pipeline (just made, or never added) has no levels:
+ * the graph does not show it either. */
+static void
+test_levels_lone_queue (void)
+{
+  GstElement *queue = gst_element_factory_make ("queue", "lone-queue");
+  gchar *body = NULL;
+  gint tries;
+
+  /* The levels are read every 250 ms. */
+  for (tries = 0; tries < 4; tries++) {
+    g_usleep (250 * G_TIME_SPAN_MILLISECOND);
+    g_free (body);
+    get_status ("api/levels", "GET", NULL, &body, NULL);
+    g_assert_null (strstr (body, "lone-queue"));
+  }
+  g_free (body);
+  gst_object_unref (queue);
+}
+
 /* Record, stop, snapshot, download and delete, as the page does. */
 static void
 test_recordings (void)
@@ -3805,6 +3825,7 @@ main (int argc, char **argv)
       test_recording_graph_first);
   g_test_add_func ("/server/recording-stop-levels",
       test_recording_stop_levels);
+  g_test_add_func ("/server/levels-lone-queue", test_levels_lone_queue);
   g_test_add_func ("/server/protocol", test_protocol);
   g_test_add_func ("/server/monitor-bad-commands", test_monitor_bad_commands);
   g_test_add_func ("/server/invalid-utf8", test_invalid_utf8);

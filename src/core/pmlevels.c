@@ -40,7 +40,8 @@ pm_levels_is_queue (GstElement * element)
 static gboolean
 queue_filter (GstElement * element, gboolean top_level)
 {
-  return pm_levels_is_queue (element);
+  /* Only queues in a pipeline, as the graph: one just made is not yet. */
+  return !top_level && pm_levels_is_queue (element);
 }
 
 static gboolean
