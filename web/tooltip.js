@@ -22,7 +22,7 @@ export function capsList(caps, pulled = false) {
   const box = document.createElement("div");
   box.className = "caps-list";
   if (!caps) {
-    add(box, "div", pulled ? "no caps (data is pulled)" : "no caps yet",
+    add(box, "div", pulled ? "no caps (data is pulled)" : "no caps",
       "muted");
     return box;
   }

@@ -1548,6 +1548,7 @@ def check_viewer(browser, rows, url):
     check_bad_recordings(browser, os.path.join(RECORDINGS, name))
     check_moments(browser, os.path.join(RECORDINGS, name))
     check_stream_levels(browser, os.path.join(RECORDINGS, name))
+    check_snapshot(browser, os.path.join(RECORDINGS, name))
 
     # Back to the live page for the rest.
     browser.call("Page.navigate", url="about:blank")
@@ -1944,6 +1945,81 @@ def check_stream_levels(browser, good):
         "the dragged card did not come back where it was"
     browser.click("#viewing-close")
     os.remove(path)
+
+
+# A snapshot is one moment: its properties, written a few ms after its
+# graph, are shown; a pad without caps says so, without "yet" (it may be a
+# pipeline stopping).
+def check_snapshot(browser, good):
+    with open(good) as f:
+        lines = [json.loads(line) for line in f.read().splitlines()]
+    header, started = lines[0], lines[0]["started"]
+    graph = next(m for m in lines if m.get("type") == "graph"
+                 and m["pipelines"])
+    queue = element_path_id(graph, "q-r")
+    path = open_messages(browser, {**header, "kind": "snapshot"}, [
+        {**graph, "time": started},
+        {"type": "properties", "protocol": 1, "time": started + 3000,
+         "elements": [{"element": queue[1], "path": queue[0],
+                       "properties": [{"name": "max-size-buffers",
+                                       "type": "guint", "blurb": "",
+                                       "writable": True, "value": 77}]}]},
+        {"type": "end", "protocol": 1, "time": started + 7000,
+         "reason": "snapshot"}], "snapshot.jsonl")
+    assert browser.wait(f"!!{element_selector('q-r')}"), \
+        "the snapshot's graph is not shown"
+    node = browser.eval(f"{element_selector('q-r')}?.dataset.id")
+    rows = "[...document.querySelectorAll('#details table.props tr')]"
+    assert browser.click_until(
+        f'#graph .node[data-id="{node}"] > rect.box',
+        f"{rows}.some(r => r.cells[1]?.textContent === 'max-size-buffers' "
+        "&& r.cells[2]?.textContent === '77')", tries=5), \
+        "the snapshot's properties are not shown"
+    close_details(browser)
+    browser.click("#viewing-close")
+    os.remove(path)
+
+    # A pad without caps: the queue of the stream levels check.
+    tip = "document.querySelector('.tooltip')"
+    caps = graph_without_caps(graph)
+    path = open_messages(browser, header, [
+        {**caps, "time": started},
+        {"type": "end", "protocol": 1, "time": started + 1000,
+         "reason": "stopped"}], "no-caps.jsonl")
+    assert browser.wait(f"!!{element_selector('q-r')}")
+    browser.hover(f"{element_selector('q-r')}?.querySelector('.pad[data-port]')")
+    assert browser.wait(f"!{tip}.hidden && {tip}.querySelector('.caps-list')"
+                        "?.textContent === 'no caps'"), \
+        "a pad without caps: " + browser.eval(f"{tip}.textContent")
+    browser.call("Input.dispatchMouseEvent", type="mouseMoved", x=2, y=2)
+    browser.click("#viewing-close")
+    os.remove(path)
+
+
+def element_path_id(graph, name):
+    """(path, id) of the element called name in a graph message."""
+    def walk(element):
+        if element["name"] == name:
+            return element["path"], element["id"]
+        for child in element["children"]:
+            found = walk(child)
+            if found:
+                return found
+        return None
+    for pipeline in graph["pipelines"]:
+        found = walk(pipeline)
+        if found:
+            return found
+    raise AssertionError(f"no {name} in the graph")
+
+
+def graph_without_caps(graph):
+    """The graph with no caps on any pad."""
+    def strip(element):
+        return {**element, "pads": [{k: v for k, v in p.items() if k != "caps"}
+                                    for p in element["pads"]],
+                "children": [strip(c) for c in element["children"]]}
+    return {**graph, "pipelines": [strip(p) for p in graph["pipelines"]]}
 
 
 # A folder that cannot be made: Record says why, and nothing runs.

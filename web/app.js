@@ -881,7 +881,8 @@ function showRecording(text, name, title = null) {
   $("speed").textContent = "1×";
   $("viewing").hidden = false;
   closeEdit();
-  seekTo(start);
+  // A snapshot is one moment: all of it (its messages come a few ms apart).
+  seekTo(header.kind === "snapshot" ? end : start);
   if (header.kind !== "snapshot")
     glowPlay();
   $("ended").hidden = true;
