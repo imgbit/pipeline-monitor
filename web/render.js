@@ -197,6 +197,11 @@ export class GraphView {
         // The levels tooltip replaces the browser's.
         g.querySelector(":scope > title")?.remove();
       }
+      // A multiqueue has a queue per stream, each with its own level.
+      if (queue.levels.some((level) => level.pad)) {
+        this.drawStreamLevels(g, node, queue);
+        continue;
+      }
       const fill = queueFill(queue);
       const cls = `level ${fillClass(fill.ratio)}`;
       const x = node.x + 6;
@@ -210,6 +215,45 @@ export class GraphView {
       text(this.levelLayer, node.x + node.width - 8, node.y + 33,
         `${cls} level-text`, fill.ratio > 0 ? `${percent(fill.ratio)} ` +
           fill.limit : "0 %", "end");
+    }
+  }
+
+  // A bar and a percentage on each stream's row, between the sink and src
+  // pad names; a stream whose pad is gone has none.
+  drawStreamLevels(g, node, queue) {
+    // The same column on every row: after the longest sink name, before
+    // the longest src name.
+    const middle = node.x + node.width / 2;
+    const boxes = [...g.querySelectorAll(":scope > .padlabel")]
+      .map((t) => t.getBBox());
+    const left = Math.max(node.x + 6, ...boxes.filter((b) => b.x < middle)
+      .map((b) => b.x + b.width)) + 8;
+    const right = Math.min(node.x + node.width - 6, ...boxes
+      .filter((b) => b.x >= middle).map((b) => b.x)) - 8;
+    const rows = [];
+    for (const level of queue.levels) {
+      const port = node.ports?.find((p) => p.id === `p${level.pad}`);
+      if (!port)
+        continue;
+      const cy = port.y + port.height / 2;
+      const one = queueFill({ ...queue, levels: [level] });
+      const cls = `level ${fillClass(one.ratio)}`;
+      const label = text(this.levelLayer, right, cy + 3.5,
+        `${cls} level-text`, percent(one.ratio), "end");
+      rows.push({ cy, cls, ratio: one.ratio, label });
+    }
+    // The numbers in one column: every bar as long.
+    const numbers = Math.max(0, ...rows.map((r) =>
+      r.label.getComputedTextLength()));
+    const width = right - numbers - 6 - left;
+    if (width < 8)
+      return;
+    for (const { cy, cls, ratio } of rows) {
+      el("rect", { class: "level-track", x: left, y: cy - 1.5, width,
+        height: 3, rx: 1.5 }, this.levelLayer);
+      el("rect", { class: `${cls} level-fill`, x: left, y: cy - 1.5,
+        height: 3, rx: 1.5, width: Math.max(0, Math.min(1, ratio)) * width },
+      this.levelLayer);
     }
   }
 

@@ -1545,6 +1545,7 @@ def check_viewer(browser, rows, url):
     os.remove(not_one)
     check_bad_recordings(browser, os.path.join(RECORDINGS, name))
     check_moments(browser, os.path.join(RECORDINGS, name))
+    check_stream_levels(browser, os.path.join(RECORDINGS, name))
 
     # Back to the live page for the rest.
     browser.call("Page.navigate", url="about:blank")
@@ -1781,6 +1782,97 @@ def check_moments(browser, good):
         "no message for a recording without a pipeline: " + browser.eval(
             f"{moment}.textContent + ' | ' + {shown} + ' | ' + "
             "document.getElementById('viewing').hidden")
+    browser.click("#viewing-close")
+    os.remove(path)
+
+
+# A multiqueue shows a bar and a number per stream, on the stream's row
+# between its pad names, and no level for the whole element; a queue keeps
+# its one label with the limit.
+def check_stream_levels(browser, good):
+    with open(good) as f:
+        header = json.loads(f.readline())
+    started = header["started"]
+
+    def pad(pad_id, name, direction, presence):
+        return {"id": pad_id, "name": name, "path": f"p/multiqueue0:{name}",
+                "direction": direction, "presence": presence, "ghost": False}
+
+    def element(element_id, name, factory, kind, pads):
+        return {"id": element_id, "name": name, "path": f"p/{name}",
+                "factory": factory, "type": kind, "bin": False,
+                "state": "PLAYING", "pads": pads, "children": []}
+
+    graph = {"type": "graph", "protocol": 1, "time": started, "links": [],
+             "pipelines": [{
+                 "id": 1, "name": "p", "path": "p", "factory": "pipeline",
+                 "type": "GstPipeline", "bin": True, "state": "PLAYING",
+                 "pads": [], "children": [
+                     element(2, "multiqueue0", "multiqueue", "GstMultiQueue", [
+                         pad(3, "sink_0", "sink", "request"),
+                         pad(4, "src_0", "src", "sometimes"),
+                         pad(5, "sink_1", "sink", "request"),
+                         pad(6, "src_1", "src", "sometimes")]),
+                     element(7, "q", "queue", "GstQueue", [
+                         pad(8, "sink", "sink", "always"),
+                         pad(9, "src", "src", "always")])]}]}
+    levels = {"type": "levels", "protocol": 1, "time": started,
+              "pipelines": [], "queues": [
+                  {"element": 2, "path": "p/multiqueue0", "kind": "multiqueue",
+                   "limits": {"buffers": 0, "bytes": 10485760,
+                              "time": 1000000000},
+                   "levels": [{"pad": 3, "buffers": 1, "bytes": 10,
+                               "time": 0},
+                              {"pad": 5, "buffers": 30, "bytes": 100,
+                               "time": 1020000000}],
+                   "overruns": 0, "underruns": 0, "buffering": None},
+                  {"element": 7, "path": "p/q", "kind": "queue",
+                   "leaky": "no", "limits": {"buffers": 200, "bytes": 0,
+                                             "time": 0},
+                   "levels": [{"buffers": 100, "bytes": 0, "time": 0}],
+                   "overruns": 0, "underruns": 0, "buffering": None}]}
+    path = open_messages(browser, header, [
+        graph, levels, {"type": "end", "protocol": 1, "time": started + 1000,
+                        "reason": "stopped"}], "streams.jsonl")
+    assert browser.wait(f"!!{element_selector('multiqueue0')} && document.querySelectorAll("
+                        "'#graph .level-text').length === 3"), \
+        "no level texts for the streams and the queue"
+    # For each level text: its text, class, and whether it sits on a sink
+    # row of its box, between that row's pad names.
+    rows = json.loads(browser.eval("""JSON.stringify((() => {
+      const box = (name) => [...document.querySelectorAll('#graph .node')]
+        .find(n => n.querySelector(':scope > .name')?.textContent === name)
+        .getBoundingClientRect();
+      const names = [...document.querySelectorAll('#graph .padlabel')]
+        .map(t => [t.textContent, t.getBoundingClientRect()]);
+      return [...document.querySelectorAll('#graph .level-text')].map(t => {
+        const r = t.getBoundingClientRect();
+        const mid = (r.top + r.bottom) / 2;
+        const row = names.filter(([, b]) => mid > b.top && mid < b.bottom);
+        const sink = row.find(([n]) => n.startsWith('sink'));
+        const src = row.find(([n]) => n.startsWith('src'));
+        const bars = [...document.querySelectorAll('#graph .level-fill')]
+          .filter(b => { const q = b.getBoundingClientRect();
+                         return q.top < r.bottom && q.bottom > r.top; });
+        return {text: t.textContent, cls: t.getAttribute('class'),
+                sink: sink?.[0] ?? null,
+                between: !!sink && !!src && r.left > sink[1].right &&
+                  r.right < src[1].left,
+                bars: bars.length,
+                inMq: (m => r.left > m.left && r.right < m.right &&
+                  r.top > m.top && r.bottom < m.bottom)(box('multiqueue0')),
+};
+      });
+    })())"""))
+    mq = sorted((r for r in rows if r["inMq"]), key=lambda r: str(r["sink"]))
+    assert [(r["text"], r["sink"], r["between"], r["bars"]) for r in mq] == [
+        ("0 %", "sink_0", True, 1), ("102 %", "sink_1", True, 1)], \
+        f"multiqueue rows: {rows}"
+    assert "ok" in mq[0]["cls"] and "full" in mq[1]["cls"], \
+        f"multiqueue colours: {rows}"
+    queue = [r for r in rows if not r["inMq"]]
+    assert [r["text"] for r in queue] == ["50 % buf"], \
+        f"the queue's label: {rows}"
     browser.click("#viewing-close")
     os.remove(path)
 
