@@ -1795,8 +1795,11 @@ def check_stream_levels(browser, good):
     started = header["started"]
 
     def pad(pad_id, name, direction, presence):
+        caps = ("video/x-h264, stream-format=(string)avc, alignment=(string)au,"
+                " width=(int)1280, height=(int)720")
         return {"id": pad_id, "name": name, "path": f"p/multiqueue0:{name}",
-                "direction": direction, "presence": presence, "ghost": False}
+                "direction": direction, "presence": presence, "ghost": False,
+                "mode": "push", "caps": caps}
 
     def element(element_id, name, factory, kind, pads):
         return {"id": element_id, "name": name, "path": f"p/{name}",
@@ -1860,8 +1863,7 @@ def check_stream_levels(browser, good):
                   r.right < src[1].left,
                 bars: bars.length,
                 inMq: (m => r.left > m.left && r.right < m.right &&
-                  r.top > m.top && r.bottom < m.bottom)(box('multiqueue0')),
-};
+                  r.top > m.top && r.bottom < m.bottom)(box('multiqueue0'))};
       });
     })())"""))
     mq = sorted((r for r in rows if r["inMq"]), key=lambda r: str(r["sink"]))
@@ -1873,6 +1875,71 @@ def check_stream_levels(browser, good):
     queue = [r for r in rows if not r["inMq"]]
     assert [r["text"] for r in queue] == ["50 % buf"], \
         f"the queue's label: {rows}"
+
+    # The pad table: "sometimes" and the other short cells on one line,
+    # the headers apart.
+    node = browser.eval(f"{element_selector('multiqueue0')}?.dataset.id")
+    assert browser.click_until(
+        f'#graph .node[data-id="{node}"] > rect.box',
+        "document.querySelector('#details h2')?.textContent === 'multiqueue0'"), \
+        "could not select the multiqueue"
+    table = json.loads(browser.eval("""JSON.stringify((() => {
+      const lines = (cell) => { const r = document.createRange();
+        r.selectNodeContents(cell);
+        return new Set([...r.getClientRects()].map(q => Math.round(q.top))).size; };
+      const table = [...document.querySelectorAll('#details table')]
+        .find(t => t.rows[0]?.cells[3]?.textContent === 'presence');
+      const heads = [...table.rows[0].cells].map(c => { const r =
+        document.createRange(); r.selectNodeContents(c);
+        return r.getBoundingClientRect(); });
+      return {wrapped: [...table.rows].slice(1).flatMap(row =>
+          [...row.cells].slice(0, 4).filter(c => lines(c) > 1)
+            .map(c => c.textContent)),
+        touching: heads.slice(1).filter((h, i) => h.left - heads[i].right < 4)
+          .length};
+    })())"""))
+    assert table == {"wrapped": [], "touching": 0}, f"the pad table: {table}"
+    close_details(browser)
+
+    # Open and Reload as wide: the next buttons line up.
+    open_panel(browser, "recordings")
+    lefts = browser.eval("JSON.stringify([...document.querySelectorAll("
+                         "'.rec-row .rec-open')].filter(b => b.offsetParent)"
+                         ".map(b => [b.textContent, b.nextElementSibling"
+                         ".getBoundingClientRect().left]))")
+    lefts = json.loads(lefts)
+    assert {t for t, _ in lefts} == {"Open", "Reload"} and \
+        len({round(x) for _, x in lefts}) == 1, f"buttons not lined up: {lefts}"
+    close_panel(browser, "recordings")
+    browser.click("#viewing-close")
+    os.remove(path)
+
+    # A card dragged away from its pad goes with the pad: hidden before the
+    # pad exists, back where it was dragged to after.
+    empty = {"type": "graph", "protocol": 1, "time": started,
+             "pipelines": [], "links": []}
+    later = {**graph, "time": started + 100000}
+    path = open_messages(browser, {**header, "view": {
+        "pins": [{"path": "p/multiqueue0:src_0"}]}}, [
+        empty, later, {"type": "end", "protocol": 1,
+                       "time": started + 1000000, "reason": "stopped"}],
+        "dragged.jsonl")
+    card = "document.querySelector('.pin-card')"
+    assert browser.wait(f"!!{card} && {card}.hidden"), \
+        "the card shown before its pad exists"
+    browser.click("#step-next")
+    assert browser.wait(f"!{card}.hidden"), "no card once the pad exists"
+    browser.drag(".pin-card .pin-head", 200, 150)
+    assert browser.wait(f"{card}.classList.contains('detached')"), \
+        "the card was not dragged away"
+    where = browser.eval(f"{card}.style.left + ' ' + {card}.style.top")
+    browser.click("#step-back")
+    assert browser.wait(f"{card}.hidden"), \
+        "a dragged card stays before its pad exists"
+    browser.click("#step-next")
+    assert browser.wait(f"!{card}.hidden && {card}.style.left + ' ' + "
+                        f"{card}.style.top === {json.dumps(where)}"), \
+        "the dragged card did not come back where it was"
     browser.click("#viewing-close")
     os.remove(path)
 

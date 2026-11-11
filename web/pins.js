@@ -498,7 +498,9 @@ export class Pins {
       // A gone pad's card stays where the pad was; a pad that is only not
       // drawn (collapsed bin, other pipeline) hides its card.
       const at = point || (pin.gone ? pin.lastPoint : null);
-      if (!pin.detached && !at) {
+      // A detached card stays while its pad exists, drawn or not; not when
+      // there is no such pad (yet, in a recording).
+      if (pin.detached ? pin.id === null && !pin.gone : !at) {
         card.hidden = true;
         continue;
       }
