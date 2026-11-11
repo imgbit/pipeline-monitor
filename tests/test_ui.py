@@ -1467,12 +1467,14 @@ def check_viewer(browser, rows, url):
     browser.click_point(f"{stored}.querySelector('.rec-open')")
     assert browser.wait(f"!{banner}.hidden && {stored}.classList.contains("
                         "'shown')"), "Reload did not show it again"
-    # Playback: opens at the start; the slider goes anywhere; Play moves on.
+    # Playback: opens at its first pipeline (here at once); the slider goes
+    # anywhere; Play moves on.
     time_label = "document.getElementById('play-time').textContent"
     assert browser.wait(f"!document.getElementById('playback').hidden && "
                         f"/^0:00 \\/ 0:0[0-9]$/.test({time_label}) && "
-                        "document.getElementById('seek').value === '0'"), \
-        "the recording did not open at its start"
+                        "Number(document.getElementById('seek').value) < 50"), \
+        "the recording did not open near its start: " + browser.eval(
+            "document.getElementById('seek').value")
     browser.eval("(s => { s.value = 1000; s.dispatchEvent(new Event('input'));"
                  " })(document.getElementById('seek'))")
     assert browser.wait(f"(t => t[0] === t[1])({time_label}.split(' / '))"), \
@@ -1542,6 +1544,7 @@ def check_viewer(browser, rows, url):
         "a file that is not a recording was not refused"
     os.remove(not_one)
     check_bad_recordings(browser, os.path.join(RECORDINGS, name))
+    check_moments(browser, os.path.join(RECORDINGS, name))
 
     # Back to the live page for the rest.
     browser.call("Page.navigate", url="about:blank")
@@ -1613,6 +1616,59 @@ def check_bad_recordings(browser, good):
     assert not browser.errors, f"errors in the page: {browser.errors}"
     for path in made:
         os.remove(path)
+
+
+def move_slider(browser, value):
+    browser.eval(f"(s => {{ s.value = {value}; s.dispatchEvent("
+                 "new Event('input')); })(document.getElementById('seek'))")
+
+
+# Each moment of a recording shows what was recorded then: no levels on a
+# graph from before them, an empty page where there is no pipeline. Made
+# from a good recording: an empty start, the graph at 0.1 s, the queues'
+# levels at 0.2 s, the pipeline gone at 3 s.
+def check_moments(browser, good):
+    with open(good) as f:
+        lines = [json.loads(line) for line in f.read().splitlines()]
+    header, started = lines[0], lines[0]["started"]
+    graph = next(m for m in lines if m.get("type") == "graph"
+                 and m["pipelines"])
+    levels = next(m for m in lines if m.get("type") == "levels"
+                  and m["queues"])
+    empty = {"type": "graph", "protocol": 1, "pipelines": [], "links": []}
+    messages = [
+        {**empty, "time": started},
+        {"type": "levels", "protocol": 1, "time": started, "queues": [],
+         "pipelines": []},
+        {**graph, "time": started + 100000},
+        {**levels, "time": started + 200000},
+        {**empty, "time": started + 3000000},
+        {"type": "end", "protocol": 1, "time": started + 3000000,
+         "reason": "stopped"},
+    ]
+    path = os.path.join(RECORDINGS, "moments.jsonl")
+    with open(path, "w") as f:
+        f.write("\n".join(json.dumps(m) for m in [header, *messages]) + "\n")
+    browser.set_file("#file-input", path)
+    open_added(browser, "moments.jsonl")
+
+    labels = "document.querySelectorAll('#graph .level-text').length"
+    moment = "!document.getElementById('empty-moment').hidden"
+    assert browser.wait(f"!!{element_selector('q-r')} && {labels} === 0 && "
+                        "document.getElementById('seek').value !== '0'"), \
+        "the recording did not open at its first pipeline, without levels"
+    move_slider(browser, 100)
+    assert browser.wait(f"!!{element_selector('q-r')} && {labels} > 0"), \
+        "no levels once they were recorded"
+    for value in (0, 1000):
+        move_slider(browser, value)
+        assert browser.wait(f"!{element_selector('q-r')} && {moment} && "
+                            "document.getElementById('empty').hidden"), \
+            f"slider at {value}: not an empty moment"
+    browser.click("#viewing-close")
+    assert browser.wait("document.getElementById('viewing').hidden")
+    assert browser.wait(f"!{moment}"), "the empty moment kept after Close"
+    os.remove(path)
 
 
 # A folder that cannot be made: Record says why, and nothing runs.
@@ -1876,16 +1932,19 @@ def check_site(browser, serve):
         assert browser.wait(f"!!{state} && !{state}.includes('last known')"), \
             "a recording's state says 'last known'"
         # Its pipeline was built after the start and removed before the
-        # end: both ends of the slider still show it.
+        # end: it opens where the pipeline is, and both ends are empty.
+        assert browser.wait(f"!!{element_selector('q-r')} && "
+                            "document.getElementById('empty-moment').hidden"), \
+            "the 0.10.0 recording did not open at its pipeline"
         for end in (0, 1000):
-            browser.eval(f"(s => {{ s.value = {end}; s.dispatchEvent("
-                         "new Event('input')); })(document.getElementById("
-                         "'seek'))")
-            assert browser.wait(f"!!{element_selector('q-r')} && "
-                                "document.getElementById('empty').hidden && "
-                                "document.getElementById('pipeline-times')"
-                                ".textContent.includes('clock')"), \
-                f"no pipeline or clock line at slider position {end}"
+            move_slider(browser, end)
+            assert browser.wait(f"!{element_selector('q-r')} && "
+                                "!document.getElementById('empty-moment')"
+                                ".hidden"), \
+                f"slider at {end}: not an empty moment"
+        move_slider(browser, 500)
+        assert browser.wait(f"!!{element_selector('q-r')}"), \
+            "no pipeline in the middle of the 0.10.0 recording"
         # The row: one title, a Download button, marked by its colour.
         assert browser.eval(f"{demo}.querySelector('.rec-title')"
                             ".textContent === 'Example pipeline'")

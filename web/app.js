@@ -438,7 +438,8 @@ function updateHeader(pipeline) {
   $("element-count").textContent = pipeline
     ? `${countElements(pipeline)} elements` : "";
   showTimes(pipeline);
-  $("empty").hidden = Boolean(pipeline);
+  $("empty").hidden = Boolean(pipeline) || Boolean(state.viewing);
+  $("empty-moment").hidden = Boolean(pipeline) || !state.viewing;
 }
 
 function showTimes(pipeline) {
@@ -842,9 +843,11 @@ function showRecording(text, name) {
   // rather than when the slider reaches it.
   if (byType.graph.some((g) => !Array.isArray(g.pipelines)))
     throw new Error("damaged graph");
-  const start = header.started;
-  const end = messages.reduce((latest, m) =>
-    Number.isFinite(m?.time) ? Math.max(latest, m.time) : latest, start);
+  // From its first message: the header's time is a moment before it.
+  const times = messages.map((m) => m?.time).filter(Number.isFinite);
+  const start = times.length
+    ? times.reduce((first, t) => Math.min(first, t)) : header.started;
+  const end = times.reduce((latest, t) => Math.max(latest, t), start);
   stopPlaying();
   state.viewing = { name, header, properties: new Map(), byType, start, end,
     at: start, shownGraph: undefined, speed: 1, timer: null };
@@ -871,23 +874,13 @@ function showRecording(text, name) {
   $("playback").hidden = header.kind === "snapshot";
   $("speed").textContent = "1×";
   $("viewing").hidden = false;
-  seekTo(start);
+  // At the first moment with a pipeline: a recording started before the
+  // program built one would open on an empty page.
+  seekTo(byType.graph.find((m) => m.pipelines?.length)?.time ?? start);
   $("ended").hidden = true;
   $("lost").hidden = true;
   recordings.showError(null);
   return true;
-}
-
-// The message shown at t: the recorded one, or, where that has no pipeline
-// (before the program built one, after it removed it), the nearest one
-// with a pipeline: the last before t, else the first after it. For the
-// graph and the levels (the header's clock line).
-function shownAt(list, t) {
-  const message = latestAt(list, t);
-  if (message?.pipelines?.length)
-    return message;
-  const before = list.findLast((m) => m.time <= t && m.pipelines?.length);
-  return before ?? list.find((m) => m.pipelines?.length) ?? message;
 }
 
 // The last message of a list (in time order) at or before t, or null.
@@ -925,7 +918,9 @@ function seekTo(t) {
   const v = state.viewing;
   v.at = Math.max(v.start, Math.min(t, v.end));
   const at = v.at;
-  const graph = shownAt(v.byType.graph, at);
+  // Everything as recorded at t, so that the graph and the levels are of
+  // the same moment.
+  const graph = latestAt(v.byType.graph, at);
   if (graph !== v.shownGraph) {
     v.shownGraph = graph;
     if (graph)
@@ -937,7 +932,7 @@ function seekTo(t) {
   }
   findings.apply(latestAt(v.byType.findings, at) ?? { findings: [] });
   showProblems();
-  applyLevels(shownAt(v.byType.levels, at) ?? { queues: [], pipelines: [] });
+  applyLevels(latestAt(v.byType.levels, at) ?? { queues: [], pipelines: [] });
   applyLatency(latestAt(v.byType.latency, at) ?? NO_LATENCY);
   log.reset();
   for (const message of v.byType.log) {
