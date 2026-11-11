@@ -699,10 +699,10 @@ def check_log(browser):
     assert browser.wait("document.querySelector('#details h2')?.textContent"
                         " === 't'"), "clicking a row did not select the tee"
 
-    browser.click("#details .mute-toggle")
-    # If the click is lost (the panel redrawn under it?), show what
+    # The panel may still be filling in and move the button under the
+    # click: clicked again until it takes. If it never does, show what
     # happened: the clicks, and when the details changed.
-    assert browser.wait(f"{rows} === 0"), \
+    assert browser.click_until("#details .mute-toggle", f"{rows} === 0"), \
         f"muted rows still shown\n{browser.history()}"
     assert browser.wait(f"{badge}?.classList.contains('muted')"), \
         "badge not shown as muted"
