@@ -29,7 +29,7 @@
 - **Recordings:** **Record** saves everything the page shows over time,
   **Snapshot** one moment. Files you can play back here, or send with a
   bug report. **Add file…** opens one from your computer.
-![A recording in the viewer: the banner with play, speed and the slider; the list of recordings](images/viewer.png)
+![A demo in the viewer: its question and answer, play, the steps, the slider, the time and the step; the list of recordings](images/viewer.png)
 
 - **Viewer:** a recording opens read-only at its start, with ▶, the speed
   and a slider to any moment. ◂ and ▸ (or the arrow keys) step from one

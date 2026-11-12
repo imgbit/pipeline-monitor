@@ -2820,9 +2820,9 @@ def screenshot(browser, url, path):
     src = browser.eval(f"{element_selector('videotestsrc0')}?.dataset.id")
     browser.click_until(f'#graph .node[data-id="{src}"] .pad[data-port]',
                         "document.querySelectorAll('.pin-card').length === 1")
-    browser.click(".pin-card .pin-fold")
-    browser.wait("document.querySelector('.pin-card')"
-                 ".classList.contains('folded')")
+    folded = "document.querySelector('.pin-card').classList.contains('folded')"
+    assert browser.click_until(".pin-card .pin-fold", folded), \
+        f"the pin card did not fold\n{browser.history()}"
     # The audio queue's details: its level, latency and properties.
     queue = browser.eval(f"{element_selector('queue3')}?.dataset.id")
     section = "document.querySelector('#details .latency-section')"
