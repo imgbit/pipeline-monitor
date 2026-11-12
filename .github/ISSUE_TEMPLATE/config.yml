@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Questions
+    url: https://github.com/imgbit/pipeline-monitor/discussions/categories/q-a
+    about: How do I…? Ask in Discussions.
+  - name: Guide
+    url: https://imaginarybit.com/pipeline-monitor/guide/
+    about: Getting started, the tour, options and troubleshooting.

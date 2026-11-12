@@ -208,6 +208,13 @@ It is tested on macOS (Apple Silicon) with GStreamer 1.28.8, and in CI on
 Ubuntu 24.04 (GStreamer 1.24), Debian 12 (GStreamer 1.22), macOS (Homebrew)
 and Windows (official GStreamer 1.28.8, MSVC).
 
+## Feedback
+
+Questions, ideas, and pipelines it got wrong are welcome in
+[Discussions](https://github.com/imgbit/pipeline-monitor/discussions).
+Found a bug? [Open an issue](https://github.com/imgbit/pipeline-monitor/issues/new/choose);
+a recording of it helps most.
+
 ## License
 
 LGPL-2.1-or-later, see [LICENSE](LICENSE).

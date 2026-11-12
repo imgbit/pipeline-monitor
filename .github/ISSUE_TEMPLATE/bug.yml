@@ -1,0 +1,35 @@
+name: Bug report
+description: pipeline-monitor shows something wrong, misses a problem, or breaks.
+labels: [bug]
+body:
+  - type: textarea
+    attributes:
+      label: What happened
+      description: What you saw, and where (graph, details, a finding, a recording).
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: What you expected
+  - type: textarea
+    attributes:
+      label: The pipeline
+      description: A gst-launch-1.0 line, or how your program builds it.
+      render: shell
+  - type: textarea
+    attributes:
+      label: A recording
+      description: >-
+        If you can, attach a recording or snapshot: in the page, Recordings →
+        Record (or Snapshot), then Download, and drop the .jsonl file here.
+        It holds your pipeline's element names, caps and property values,
+        file paths included. Values of properties named like passwords,
+        tokens or keys, and passwords in URIs, are hidden; please look
+        before attaching.
+  - type: input
+    attributes:
+      label: Versions
+      description: pipeline-monitor (pipeline-monitor --version), GStreamer, the operating system.
+      placeholder: pipeline-monitor 0.11.0, GStreamer 1.28.8, Ubuntu 24.04
+    validations:
+      required: true

@@ -512,6 +512,10 @@ def check(browser, url):
     assert browser.wait(f"!{about}.hidden"), "About box did not open"
     assert browser.eval(f"{about}.querySelector('a[href=\"https://"
                         "imaginarybit.com\"]') !== null")
+    assert browser.eval("document.getElementById('about-feedback')"
+                        ".getAttribute('href') === 'https://github.com/"
+                        "imgbit/pipeline-monitor/discussions'"), \
+        "no Questions and feedback link in About"
     browser.call("Input.dispatchKeyEvent", type="keyDown", key="Escape")
     assert browser.wait(f"{about}.hidden"), "Esc did not close About"
     browser.click("#brand")
@@ -2279,7 +2283,8 @@ def check_site(browser, serve):
         assert browser.eval(f"[...{welcome}.querySelectorAll('a.button')]"
                             ".map(a => a.getAttribute('href')).join(' ') === "
                             "'guide/ https://github.com/imgbit/"
-                            "pipeline-monitor/releases/latest'")
+                            "pipeline-monitor/releases/latest https://github"
+                            ".com/imgbit/pipeline-monitor/discussions'")
         assert browser.eval("document.getElementById('connection')"
                             ".textContent === 'viewer'")
         assert browser.wait(f"!!{demo}"), "no demo recording listed"

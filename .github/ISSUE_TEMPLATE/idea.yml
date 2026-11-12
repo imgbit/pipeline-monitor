@@ -1,0 +1,13 @@
+name: Idea
+description: Something that would help you find out what your pipeline does.
+labels: [enhancement]
+body:
+  - type: textarea
+    attributes:
+      label: What would help you?
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: What do you do today instead?
+      description: The tools, logs or tricks you use now.
