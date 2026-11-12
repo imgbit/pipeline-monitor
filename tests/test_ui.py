@@ -353,8 +353,11 @@ class Browser:
     def take_coverage(self):
         result = self.call("Profiler.takePreciseCoverage")["result"]
         for script in result:
-            name = urllib.parse.urlparse(script["url"]).path.lstrip("/")
-            if not name.endswith(".js") or name.startswith("vendor/"):
+            path = urllib.parse.urlparse(script["url"]).path
+            # The page's files are flat in web/, also when served under
+            # /pipeline-monitor/ as on the site.
+            name = path.rsplit("/", 1)[-1]
+            if not name.endswith(".js") or "/vendor/" in path:
                 continue
             ranges = sorted((r for f in script["functions"]
                              for r in f["ranges"]),
@@ -1738,6 +1741,12 @@ def check_moments(browser, good):
                  "bubbles: true}))")
     assert browser.wait(f"{hint}.hidden && document.getElementById("
                         "'time-input').hidden"), "Esc did not cancel"
+    browser.eval("document.getElementById('play-time').click()")
+    assert browser.wait("!document.getElementById('time-input').hidden")
+    browser.eval("document.getElementById('time-input').blur()")
+    assert browser.wait("document.getElementById('time-input').hidden && "
+                        "!document.getElementById('play-time').hidden"), \
+        "clicking elsewhere did not close the field"
 
     # A typed step; the end, and back to the pipeline.
     type_in(browser, "play-step", "9")
@@ -1756,6 +1765,16 @@ def check_moments(browser, good):
     browser.click("#viewing-close")
     assert browser.wait("document.getElementById('viewing').hidden")
     assert browser.wait(f"{moment}.hidden"), "the empty moment kept after Close"
+    os.remove(path)
+
+    # From an hour on, the clock has hours.
+    path = open_messages(browser, header, [
+        {**graph, "time": started},
+        {**graph, "time": started + 3700000000},
+        {**end, "time": started + 3700000000}], "long.jsonl")
+    assert browser.wait(f"{shown} === '0:00.000 / 1:01:40.000'"), \
+        "no hours in the clock: " + browser.eval(shown)
+    browser.click("#viewing-close")
     os.remove(path)
 
     # A gap: removed at 1 s, built again at 2 s.
@@ -2351,6 +2370,23 @@ def check_site(browser, serve):
         browser.click("#viewing-close")
         assert browser.wait(f"{banner}.hidden && !{welcome}.hidden"), \
             "the welcome not back after Close"
+        # Open your own recording…: a recording opens at once; a file that
+        # is not one is refused in the list, opened to say so.
+        browser.set_file("#welcome-file", recorded)
+        assert browser.wait(f"!{banner}.hidden && {welcome}.hidden"), \
+            "the welcome's own file did not open"
+        browser.click("#viewing-close")
+        assert browser.wait(f"!{welcome}.hidden")
+        not_one = os.path.join(site, "not-one.jsonl")
+        with open(not_one, "w") as f:
+            f.write("hello\n")
+        browser.set_file("#welcome-file", not_one)
+        assert browser.wait("!document.getElementById('recordings-panel')"
+                            f".hidden && {error}.textContent.includes("
+                            "'not a recording')"), \
+            "the welcome's wrong file was not reported"
+        assert browser.eval(f"{banner}.hidden")
+        close_panel(browser, "recordings")
         # The page's pins when it recorded: read-only cards, their values
         # following the slider (blank before the first recorded values).
         cards = "document.querySelectorAll('.pin-card')"
