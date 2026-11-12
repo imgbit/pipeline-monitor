@@ -527,7 +527,8 @@ read_header (const gchar * path)
         MAX_HEADER - line->len);
 
     g_string_append_len (line, block, take);
-    if (end != NULL)
+    /* A short block is the end of the file, or an error: no more reads. */
+    if (end != NULL || got < sizeof (block))
       break;
   }
   fclose (file);
