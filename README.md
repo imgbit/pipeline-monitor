@@ -7,6 +7,10 @@ See a running GStreamer pipeline live in your browser.
 Short videos: [Fix your GStreamer pipeline](https://www.youtube.com/playlist?list=PLHYOr70akpmI)
 on YouTube, one problem per episode.
 
+Try it without installing: [imaginarybit.com/pipeline-monitor](https://imaginarybit.com/pipeline-monitor/)
+plays demo recordings in your browser, and the
+[guide](https://imaginarybit.com/pipeline-monitor/guide/) shows how to start.
+
 pipeline-monitor is a GStreamer tracer plugin. Enable it with one environment
 variable, without changing your application, and open http://127.0.0.1:8765/.
 
@@ -16,14 +20,16 @@ variable, without changing your application, and open http://127.0.0.1:8765/.
   the elements that posted them; repeats are collapsed and noisy elements
   can be muted
 - Negotiated caps on every pad and link: hover a pad or link, open the full
-  caps in the element details, or show labels on all links
+  caps in the element details, or show labels on all links; each pad's
+  mode (push or pull)
 - Live values of any pad: click a pad to pin a card with buffers/s (≈ fps for
   video), bytes/s, gaps between buffers, delay against the clock, timestamps,
   flags and segment; cards follow their pad or can be dragged off and kept
   on screen. Probes run only on pinned pads
-- Queue fill: a bar on every queue, queue2 and multiqueue shows how full it
-  is against its most blocking limit; hover for buffers, bytes and time
-  against their limits, overruns, underruns and buffering
+- Queue fill: a bar on every queue and queue2, and on each stream of a
+  multiqueue, shows how full it is against its most blocking limit; hover
+  for buffers, bytes and time against their limits, overruns, underruns
+  and buffering
 - Pipeline clock and times in the header: clock and its provider, running
   time, position and duration, latency
 - Element properties in the details panel, with values changed from the
@@ -50,7 +56,7 @@ On Ubuntu 24.04 or Debian 12 (amd64, arm64), download the `.deb` for your
 system, then:
 
 ```sh
-sudo apt install ./pipeline-monitor_0.10.0-1.ubuntu24.04_amd64.deb
+sudo apt install ./pipeline-monitor_0.11.0-1.ubuntu24.04_amd64.deb
 ```
 
 It goes where the system's GStreamer finds it. To update, install a newer
@@ -189,19 +195,24 @@ e.g. `curl -s http://127.0.0.1:8765/api/findings`; see
   Element names, caps, file paths and messages are kept: check a file
   before you share it.
 - A recording opens read-only in a viewer tab, with play and a slider to
-  go to any moment. To open one without a program, for example one you
-  were sent, run `pipeline-monitor` (lists the folder) or
+  go to any moment; ◂ and ▸ (or the arrow keys) step from one recorded
+  moment to the next, and you can type a time or a step. Recordings also
+  open on the web at
+  [imaginarybit.com/pipeline-monitor](https://imaginarybit.com/pipeline-monitor/),
+  read in your browser and not uploaded. To open one without a program,
+  for example one you were sent, run `pipeline-monitor` (lists the folder) or
   `pipeline-monitor open FILE.jsonl` (options: `--recordings DIR`,
   `--port PORT`, `--no-browser`).
 
 ## Status
 
-Version 0.10 shows the pipeline graph, errors and warnings, negotiated
+Version 0.11 shows the pipeline graph, errors and warnings, negotiated
 caps, live values of pinned pads, queue fill, the pipeline's clock and
 times, element properties, live when pinned, latency per element and
 between pads, and detects pipeline issues. It records what it shows to
 files you can play back later or share, also without the program (the
-`pipeline-monitor` command). Each open page is independent, and the
+`pipeline-monitor` command) and on the web, with demo recordings and a
+guide. Each open page is independent, and the
 interface it uses is documented for other tools
 ([docs/protocol.md](docs/protocol.md), protocol 1).
 It is tested on macOS (Apple Silicon) with GStreamer 1.28.8, and in CI on
