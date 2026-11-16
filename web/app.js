@@ -271,6 +271,8 @@ const findings = new FindingsView({
   rows: $("findings-rows"),
   close: $("findings-close"),
 }, {
+  // In a recording, how long ago is counted from the moment shown.
+  now: () => (state.viewing ? state.viewing.at : Date.now() * 1000),
   select(id) {
     if (buildIndex(state.graph).elements.has(id))
       view.handlers.select(id);

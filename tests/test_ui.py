@@ -1556,6 +1556,7 @@ def check_viewer(browser, rows, url):
     check_moments(browser, os.path.join(RECORDINGS, name))
     check_stream_levels(browser, os.path.join(RECORDINGS, name))
     check_snapshot(browser, os.path.join(RECORDINGS, name))
+    check_finding_age(browser, os.path.join(RECORDINGS, name))
 
     # Back to the live page for the rest.
     browser.call("Page.navigate", url="about:blank")
@@ -2015,6 +2016,37 @@ def check_snapshot(browser, good):
                         "?.textContent === 'no caps'"), \
         "a pad without caps: " + browser.eval(f"{tip}.textContent")
     browser.call("Input.dispatchMouseEvent", type="mouseMoved", x=2, y=2)
+    browser.click("#viewing-close")
+    os.remove(path)
+
+
+# In a recording, a problem's "ago" counts from the moment shown, not from
+# now: a recording made two days ago says "0 s ago" at its problem.
+def check_finding_age(browser, good):
+    with open(good) as f:
+        lines = [json.loads(line) for line in f.read().splitlines()]
+    header = lines[0]
+    graph = next(m for m in lines if m.get("type") == "graph"
+                 and m["pipelines"])
+    then = header["started"] - 2 * 86400 * 1000000
+    finding = {"id": "flow:x", "severity": "warning", "element": 0,
+               "path": "pipeline0", "text": "Data stopped here",
+               "count": 1, "first": then + 100000, "last": then + 100000}
+    path = open_messages(browser, {**header, "started": then}, [
+        {**graph, "time": then},
+        {"type": "findings", "protocol": 1, "time": then + 100000,
+         "findings": [finding]},
+        {"type": "end", "protocol": 1, "time": then + 200000,
+         "reason": "stopped"}], "old.jsonl")
+    count = "document.querySelector('#findings-rows .finding-count')"
+    assert browser.wait("document.getElementById('play-time').textContent"
+                        ".endsWith('/ 0:00.100')"), "old recording not opened"
+    move_slider(browser, 1000)
+    open_panel(browser, "problems")
+    assert browser.wait(f"{count}?.textContent === '1× · 0 s ago'"), \
+        "a recording's problem age: " + str(browser.eval(
+            "document.getElementById('findings-rows').innerText"))
+    close_panel(browser, "problems")
     browser.click("#viewing-close")
     os.remove(path)
 

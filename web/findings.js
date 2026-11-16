@@ -21,8 +21,9 @@ function plural(n, word) {
   return `${n} ${word}${n === 1 ? "" : "s"}`;
 }
 
-function ago(us) {
-  const s = Math.max(0, Math.round((Date.now() * 1000 - us) / 1e6));
+// now: µs since 1970 (in a recording, the moment shown).
+function ago(us, now) {
+  const s = Math.max(0, Math.round((now - us) / 1e6));
   return s < 60 ? `${s} s ago` : `${Math.round(s / 60)} min ago`;
 }
 
@@ -82,6 +83,7 @@ export class FindingsView {
   }
 
   render() {
+    const now = this.handlers.now?.() ?? Date.now() * 1000;
     const { counter, rows } = this.nodes;
     const errors = this.list.filter((f) => f.severity === "error").length;
     const warnings = this.list.filter((f) => f.severity === "warning").length;
@@ -125,7 +127,7 @@ export class FindingsView {
           add(body, "div", "The two sides have no format in common.",
             "finding-hint");
       }
-      add(row, "span", f.count ? `${f.count}× · ${ago(f.last)}` : "",
+      add(row, "span", f.count ? `${f.count}× · ${ago(f.last, now)}` : "",
         "finding-count");
     }
     rows.replaceChildren(fragment);
