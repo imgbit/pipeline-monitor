@@ -8,8 +8,9 @@ Usage: packaging/build-site.py OUT [--demos DIR] [--require-guide]
 
 OUT gets index.html and the page files; demos/ with the recordings listed
 in DIR/demos.json (default: site/demos) and a demos.json for the page with
-each one's kind, times and size read from the file; guide/ with the pages
-of site/guide/*.md as HTML (needs the Python "markdown" package: without
+each one's kind, times and size read from the file; episodes/ with
+the recordings of site/episodes (opened by a link, not listed); guide/ with
+the pages of site/guide/*.md as HTML (needs the Python "markdown" package: without
 it the guide is left out, or with --require-guide the build fails).
 """
 
@@ -144,6 +145,10 @@ def main():
     with open(os.path.join(out_demos, "demos.json"), "w",
               encoding="utf-8") as f:
         json.dump(listed, f, indent=1)
+    # Recordings shown in the videos, opened by a link (#file=), not listed.
+    episodes = os.path.join(ROOT, "site", "episodes")
+    if os.path.isdir(episodes):
+        shutil.copytree(episodes, os.path.join(args.out, "episodes"))
     guide = build_guide(args.out, args.require_guide)
     print(f"site in {args.out}: {len(listed)} demo(s)"
           + (", the guide" if guide else ""))

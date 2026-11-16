@@ -2506,6 +2506,22 @@ def check_site(browser, serve):
                             ".querySelector('.rec-remove').title === "
                             "'Remove from the list'"), \
             "a file from a link says it stays on your computer"
+        # The recordings shown in the videos: on the site by a link, not in
+        # the demo list.
+        for name in sorted(os.listdir(os.path.join(here, "..", "site",
+                                                   "episodes"))):
+            browser.call("Page.navigate", url="about:blank")
+            browser.call("Page.navigate", url=f"{base}/pipeline-monitor/"
+                         "#file=" + urllib.parse.quote(
+                             f"{base}/pipeline-monitor/episodes/{name}",
+                             safe=""))
+            assert browser.wait(f"!{banner}.hidden && "
+                                f"!!{added_row(name)}"), \
+                f"the episode recording {name} did not open from its link"
+            assert browser.eval(f"![...document.querySelectorAll('.rec-row."
+                                f"demo')].some(r => r.textContent.includes("
+                                f"{json.dumps(name)}))"), \
+                f"the episode recording {name} is in the demo list"
         # A link that cannot be read: said so.
         browser.call("Page.navigate", url="about:blank")
         browser.call("Page.navigate", url=f"{base}/pipeline-monitor/#file="
