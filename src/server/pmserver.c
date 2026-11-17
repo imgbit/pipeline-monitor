@@ -376,6 +376,62 @@ handle_recordings (SoupServer * soup, SoupServerMessage * msg,
   g_mapped_file_unref (mapped);
 }
 
+/* GET /api/dot?pipeline=<id>: GStreamer's own .dot of a pipeline (or any
+ * bin), all details, as a download named <name>_<STATE>_<local time>.dot. */
+static void
+handle_dot (SoupServer * soup, SoupServerMessage * msg,
+    const char *path, GHashTable * query, gpointer user_data)
+{
+  PmServer *self = user_data;
+  const gchar *id = query ? g_hash_table_lookup (query, "pipeline") : NULL;
+  guint64 bin_id = 0;
+  GstElement *bin = NULL;
+  gchar *dot, *name, *stamp, *disposition;
+  GDateTime *now;
+  GstState state;
+  GBytes *bytes;
+  const gchar *c;
+  GString *safe;
+
+  if (!check_request (self, msg))
+    return;
+  if (id != NULL)
+    g_ascii_string_to_unsigned (id, 10, 1, G_MAXUINT64, &bin_id, NULL);
+  if (bin_id != 0)
+    bin = pm_model_get_element (self->model, bin_id);
+  if (bin == NULL || !GST_IS_BIN (bin)) {
+    if (bin != NULL)
+      gst_object_unref (bin);
+    soup_server_message_set_status (msg, SOUP_STATUS_NOT_FOUND, NULL);
+    return;
+  }
+  dot = gst_debug_bin_to_dot_data (GST_BIN (bin), GST_DEBUG_GRAPH_SHOW_ALL);
+  bytes = g_bytes_new_take (dot, strlen (dot));
+  set_response (msg, "text/vnd.graphviz", bytes);
+  /* Element names may hold any character: the file name keeps safe ones. */
+  name = gst_element_get_name (bin);
+  safe = g_string_new (NULL);
+  for (c = name; *c != '\0'; c++)
+    g_string_append_c (safe, g_ascii_isalnum (*c) || *c == '-' ||
+        *c == '_' ? *c : '_');
+  GST_OBJECT_LOCK (bin);
+  state = GST_STATE (bin);
+  GST_OBJECT_UNLOCK (bin);
+  now = g_date_time_new_now_local ();
+  stamp = g_date_time_format (now, "%Y%m%d-%H%M%S");
+  disposition = g_strdup_printf ("attachment; filename=\"%s_%s_%s.dot\"",
+      safe->str, gst_element_state_get_name (state), stamp);
+  g_free (stamp);
+  g_date_time_unref (now);
+  soup_message_headers_replace (soup_server_message_get_response_headers
+      (msg), "Content-Disposition", disposition);
+  g_free (disposition);
+  g_string_free (safe, TRUE);
+  g_free (name);
+  g_bytes_unref (bytes);
+  gst_object_unref (bin);
+}
+
 /* GET /api/properties?element=<id>: all readable properties of an element. */
 static void
 handle_properties (SoupServer * soup, SoupServerMessage * msg,
@@ -1591,6 +1647,7 @@ server_thread (gpointer user_data)
       self, NULL);
   soup_server_add_handler (self->soup, "/api/opened", handle_opened, self,
       NULL);
+  soup_server_add_handler (self->soup, "/api/dot", handle_dot, self, NULL);
   soup_server_add_handler (self->soup, "/api/pads", handle_watched_pads, self,
       NULL);
   soup_server_add_handler (self->soup, "/ws", handle_ws_request, self, NULL);

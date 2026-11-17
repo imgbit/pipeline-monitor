@@ -1217,8 +1217,30 @@ def check_ended(browser, serve):
             server.wait()
 
 
-# Two pipelines: a selector; an element that makes new timestamps cannot be
-# measured.
+# Presses ".dot" and fetches the file the page offers: {name, text}, the
+# name from the tracer's Content-Disposition.
+def saved_dot(browser):
+    browser.eval("window.offered = null; HTMLAnchorElement.prototype.click ="
+                 " function () { window.offered = this.href; };")
+    browser.click("#save-dot")
+    assert browser.wait("!!window.offered"), "no .dot offered"
+    return browser.eval(
+        "fetch(window.offered).then(async r => ({href: window.offered, "
+        "name: (r.headers.get('Content-Disposition') || '')"
+        ".match(/filename=\"([^\"]+)\"/)?.[1], text: await r.text()}))")
+
+
+# Graphviz reads the file, where it is installed (CI).
+def check_dot_syntax(text):
+    if not shutil.which("dot"):
+        return
+    done = subprocess.run(["dot", "-Tsvg"], input=text, capture_output=True,
+                          text=True, timeout=30)
+    assert done.returncode == 0, f"Graphviz cannot read it: {done.stderr}"
+
+
+# Two pipelines: a selector; .dot saves the one shown; an element that makes
+# new timestamps cannot be measured.
 TWO_PIPELINES = ("audiotestsrc is-live=true ! identity name=retime "
                  "datarate=1000 ! fakesink sync=false")
 SECOND_PIPELINE = "videotestsrc is-live=true ! fakesink name=other-sink"
@@ -1243,6 +1265,15 @@ def check_two_pipelines(browser, serve):
                          f"new Event('change')); }})({select})")
             assert browser.wait(f"!!{element_selector(want)}"), \
                 f"selecting a pipeline did not show {want}"
+            # GStreamer's own .dot of the pipeline shown, named after it.
+            shown = browser.eval(f"{select}.selectedOptions[0].textContent")
+            dot = saved_dot(browser)
+            assert "/api/dot?pipeline=" in dot["href"], dot["href"]
+            assert re.fullmatch(re.escape(shown) + r"_PLAYING_\d{8}-\d{6}"
+                                r"\.dot", dot["name"] or ""), dot["name"]
+            assert dot["text"].startswith("digraph") and want in \
+                dot["text"], dot["text"][:300]
+            check_dot_syntax(dot["text"])
 
         node = browser.eval(f"{element_selector('retime')}?.dataset.id")
         assert browser.click_until(
@@ -2078,6 +2109,9 @@ def check_finding_age(browser, good):
     assert browser.wait("document.getElementById('play-time').textContent"
                         ".endsWith('/ 0:00.100')"), "old recording not opened"
     move_slider(browser, 1000)
+    # Live pages only: a recording has no .dot.
+    assert browser.eval("document.getElementById('save-dot')"
+                        ".offsetParent === null"), ".dot shown in a recording"
     open_panel(browser, "problems")
     assert browser.wait(f"{count}?.textContent === '1× · 0 s ago'"), \
         "a recording's problem age: " + str(browser.eval(

@@ -1548,6 +1548,17 @@ $("pipeline-select").addEventListener("change", (e) => {
   state.selectedPath = null;
   update();
 });
+// The pipeline shown, as GStreamer's own .dot (live pages only; hidden in
+// recordings). The tracer names the file: <name>_<STATE>_<time>.dot.
+$("save-dot").addEventListener("click", () => {
+  const pipeline = currentPipeline();
+  if (!pipeline || state.viewing)
+    return;
+  const link = document.createElement("a");
+  link.href = `api/dot?pipeline=${pipeline.id}`;
+  link.download = "";
+  link.click();
+});
 $("zoom-in").addEventListener("click", () => view.zoomCenter(1.25));
 $("zoom-out").addEventListener("click", () => view.zoomCenter(0.8));
 $("auto-fit").addEventListener("click", () => {

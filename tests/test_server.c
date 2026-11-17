@@ -3058,6 +3058,58 @@ finding_gone (const gchar * id, gint timeout_s)
   return FALSE;
 }
 
+/* GET /api/dot?pipeline=<id>: GStreamer's .dot of the pipeline; 404 for
+ * an unknown id or an element that is not a bin. */
+static void
+test_dot (void)
+{
+  GstElement *pipeline = start_pipeline ("videotestsrc ! "
+      "queue name=dot-queue ! fakesink name=dot-sink");
+  gchar *path = g_strdup_printf ("api/dot?pipeline=%" G_GINT64_FORMAT,
+      element_id (GST_OBJECT_NAME (pipeline)));
+  gchar *body = NULL, *type = NULL;
+
+  g_assert_cmpuint (get_status (path, "GET", NULL, &body, &type), ==, 200);
+  g_assert_cmpstr (type, ==, "text/vnd.graphviz");
+  g_assert_true (g_str_has_prefix (body, "digraph"));
+  g_assert_nonnull (strstr (body, "dot-queue"));
+  g_assert_nonnull (strstr (body, "dot-sink"));
+  g_free (body);
+  g_free (type);
+
+  /* Named <name>_<STATE>_<YYYYMMDD-HHMMSS>.dot. */
+  {
+    SoupSession *session = soup_session_new ();
+    gchar *url = server_url (path);
+    SoupMessage *msg = soup_message_new ("GET", url);
+    GBytes *bytes = soup_session_send_and_read (session, msg, NULL, NULL);
+    const gchar *disposition = soup_message_headers_get_one
+        (soup_message_get_response_headers (msg), "Content-Disposition");
+    gchar *want = g_strdup_printf ("^attachment; filename=\"%s_PLAYING_"
+        "[0-9]{8}-[0-9]{6}\\.dot\"$", GST_OBJECT_NAME (pipeline));
+
+    g_assert_nonnull (disposition);
+    g_assert_true (g_regex_match_simple (want, disposition, 0, 0));
+    g_free (want);
+    g_bytes_unref (bytes);
+    g_object_unref (msg);
+    g_free (url);
+    g_object_unref (session);
+  }
+  g_free (path);
+
+  path = g_strdup_printf ("api/dot?pipeline=%" G_GINT64_FORMAT,
+      element_id ("dot-queue"));
+  g_assert_cmpuint (get_status (path, "GET", NULL, NULL, NULL), ==, 404);
+  g_free (path);
+  g_assert_cmpuint (get_status ("api/dot?pipeline=999999", "GET", NULL, NULL,
+          NULL), ==, 404);
+  g_assert_cmpuint (get_status ("api/dot?pipeline=x", "GET", NULL, NULL,
+          NULL), ==, 404);
+  g_assert_cmpuint (get_status ("api/dot", "GET", NULL, NULL, NULL), ==, 404);
+  stop_pipeline (pipeline);
+}
+
 /* A tee without outputs: the queue's pushes fail with not-linked. */
 static void
 test_findings_flow (void)
@@ -3853,6 +3905,7 @@ main (int argc, char **argv)
   g_test_add_func ("/server/latency-all-limit", test_latency_all_limit);
   g_test_add_func ("/server/findings-flow", test_findings_flow);
   g_test_add_func ("/server/findings-stuck", test_findings_stuck);
+  g_test_add_func ("/server/dot", test_dot);
   g_test_add_func ("/server/check-not-negotiated",
       test_check_not_negotiated);
   g_test_add_func ("/server/check-failed-link", test_check_failed_link);

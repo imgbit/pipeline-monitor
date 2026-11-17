@@ -713,6 +713,7 @@ main {
 .connection.viewing::before { background: var(--accent); }
 /* A recording shows its pin cards, but nothing that would change what the
    program measures. */
+body.viewer-mode #save-dot, body.viewing #save-dot,
 body.viewing #measure-all, body.viewing #record, body.viewing #snapshot,
 body.viewing .measure-toggle, body.viewing .mute-toggle,
 body.viewing #details .pin-prop, body.viewing .pin-card .pin-from,
