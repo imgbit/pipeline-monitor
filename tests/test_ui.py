@@ -562,6 +562,30 @@ def check(browser, url):
                  deltaX=0, deltaY=-240)
     assert browser.wait(f"{TRANSFORM} !== {json.dumps(view)} && "
                         f"{AUTO_FIT} === 'false'"), "the wheel did not zoom"
+    # Dragging the graph moves it and selects no text (Safari did), and the
+    # wheel still zooms after the drag.
+    assert browser.eval(
+        "(t => { const e = new Event('selectstart', {bubbles: true, "
+        "cancelable: true}); t.dispatchEvent(e); return e.defaultPrevented; })"
+        "(document.querySelector('#graph .node text'))"), \
+        "a text selection can start on the graph"
+    view = browser.eval(TRANSFORM)
+    browser.call("Input.dispatchMouseEvent", type="mousePressed", x=400,
+                 y=300, button="left", clickCount=1)
+    for step in range(1, 6):
+        browser.call("Input.dispatchMouseEvent", type="mouseMoved",
+                     x=400 - 20 * step, y=300, button="left", buttons=1)
+    browser.call("Input.dispatchMouseEvent", type="mouseReleased", x=300,
+                 y=300, button="left", clickCount=1)
+    assert browser.wait(f"{TRANSFORM} !== {json.dumps(view)}"), \
+        "dragging did not move the graph"
+    assert browser.eval("String(getSelection()) === ''"), \
+        "dragging selected text: " + browser.eval("String(getSelection())")
+    view = browser.eval(TRANSFORM)
+    browser.call("Input.dispatchMouseEvent", type="mouseWheel", x=400, y=300,
+                 deltaX=0, deltaY=-240)
+    assert browser.wait(f"{TRANSFORM} !== {json.dumps(view)}"), \
+        "the wheel did not zoom after a drag"
 
     browser.call("Page.reload")
     assert browser.wait("!!document.querySelector('#graph .node.collapsed')"), \

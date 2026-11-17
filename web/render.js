@@ -90,6 +90,8 @@ export class GraphView {
       this.svg.classList.remove("panning");
     });
     this.svg.addEventListener("pointerleave", () => this.handlers.hover(null));
+    // Safari starts a text selection on a drag despite user-select.
+    this.svg.addEventListener("selectstart", (e) => e.preventDefault());
     this.svg.addEventListener("wheel", (e) => {
       e.preventDefault();
       const r = this.svg.getBoundingClientRect();
