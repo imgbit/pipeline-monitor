@@ -667,6 +667,9 @@ gchar *
 pm_model_to_json (PmModel * model)
 {
   GString *json = g_string_new ("{\"pipelines\":[");
+
+  /* Counted by tests/bench_overhead.py (G_MESSAGES_DEBUG=pipeline-monitor). */
+  g_log ("pipeline-monitor", G_LOG_LEVEL_DEBUG, "graph built");
   GPtrArray *roots = g_ptr_array_new ();
   GArray *links = g_array_new (FALSE, FALSE, sizeof (PmLinkIds));
   GHashTableIter iter;
