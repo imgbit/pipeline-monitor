@@ -199,32 +199,16 @@ export class GraphView {
         // The levels tooltip replaces the browser's.
         g.querySelector(":scope > title")?.remove();
       }
-      // A multiqueue has a queue per stream, each with its own level.
-      if (queue.levels.some((level) => level.pad)) {
-        this.drawStreamLevels(g, node, queue);
-        continue;
-      }
-      const fill = queueFill(queue);
-      const cls = `level ${fillClass(fill.ratio)}`;
-      const x = node.x + 6;
-      const width = node.width - 12;
-      const y = node.y + node.height - 5;
-      el("rect", { class: "level-track", x, y, width, height: 3, rx: 1.5 },
-        this.levelLayer);
-      el("rect", { class: `${cls} level-fill`, x, y, height: 3, rx: 1.5,
-        width: Math.max(0, Math.min(1, fill.ratio)) * width },
-      this.levelLayer);
-      text(this.levelLayer, node.x + node.width - 8, node.y + 33,
-        `${cls} level-text`, fill.ratio > 0 ? `${percent(fill.ratio)} ` +
-          fill.limit : "0 %", "end");
+      this.drawLevels(g, node, queue);
     }
   }
 
-  // A bar and a percentage on each stream's row, between the sink and src
-  // pad names; a stream whose pad is gone has none.
-  drawStreamLevels(g, node, queue) {
-    // The same column on every row: after the longest sink name, before
-    // the longest src name.
+  // On each stream's row (a queue has one): the number and the limit it is
+  // nearest above a bar, between the sink and src pad names. A stream whose
+  // pad is gone has none.
+  drawLevels(g, node, queue) {
+    // The same span on every row: after the longest sink name, before the
+    // longest src name.
     const middle = node.x + node.width / 2;
     const boxes = [...g.querySelectorAll(":scope > .padlabel")]
       .map((t) => t.getBBox());
@@ -232,29 +216,29 @@ export class GraphView {
       .map((b) => b.x + b.width)) + 8;
     const right = Math.min(node.x + node.width - 6, ...boxes
       .filter((b) => b.x >= middle).map((b) => b.x)) - 8;
-    const rows = [];
+    const width = right - left;
+    if (width < 8)
+      return;
     for (const level of queue.levels) {
-      const port = node.ports?.find((p) => p.id === `p${level.pad}`);
+      const port = level.pad
+        ? node.ports?.find((p) => p.id === `p${level.pad}`)
+        : node.ports?.[0];
       if (!port)
         continue;
       const cy = port.y + port.height / 2;
-      const one = queueFill({ ...queue, levels: [level] });
-      const cls = `level ${fillClass(one.ratio)}`;
-      const label = text(this.levelLayer, right, cy + 3.5,
-        `${cls} level-text`, percent(one.ratio), "end");
-      rows.push({ cy, cls, ratio: one.ratio, label });
-    }
-    // The numbers in one column: every bar as long.
-    const numbers = Math.max(0, ...rows.map((r) =>
-      r.label.getComputedTextLength()));
-    const width = right - numbers - 6 - left;
-    if (width < 8)
-      return;
-    for (const { cy, cls, ratio } of rows) {
-      el("rect", { class: "level-track", x: left, y: cy - 1.5, width,
+      const fill = queueFill({ ...queue, levels: [level] });
+      const cls = `level ${fillClass(fill.ratio)}`;
+      const label = text(this.levelLayer, (left + right) / 2, cy + 4,
+        `${cls} level-text`, percent(fill.ratio), "middle");
+      // As the number: none at 0 %.
+      if (Math.round(fill.ratio * 100) > 0 && fill.limit)
+        el("tspan", { class: "level-limit" }, label).textContent =
+          ` ${fill.limit}`;
+      el("rect", { class: "level-track", x: left, y: cy + 8, width,
         height: 3, rx: 1.5 }, this.levelLayer);
-      el("rect", { class: `${cls} level-fill`, x: left, y: cy - 1.5,
-        height: 3, rx: 1.5, width: Math.max(0, Math.min(1, ratio)) * width },
+      el("rect", { class: `${cls} level-fill`, x: left, y: cy + 8,
+        height: 3, rx: 1.5,
+        width: Math.max(0, Math.min(1, fill.ratio)) * width },
       this.levelLayer);
     }
   }

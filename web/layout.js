@@ -8,6 +8,11 @@ import { linkCaps, summarizeCaps } from "./caps.js";
 
 const HEADER = 38;
 const ROW = 18;
+// Queues: each pad row holds a level, its number above a bar between the
+// pad names (render.js drawLevels).
+const LEVEL_TYPES = new Set(["GstQueue", "GstQueue2", "GstMultiQueue"]);
+const LEVEL_ROW = 26;
+const LEVEL_BAR = 48;
 const PORT = 8;
 const BIN_HEADER = 42;
 const BADGE = 32;
@@ -44,10 +49,14 @@ function leafNode(element, info, kind, inside) {
   const title = Math.max(
     textWidth(element.name, 13, "600") + 18 + toggle + BADGE,
     textWidth(inside ? `${factory} · ${inside}` : factory, 11) + toggle);
-  const pads = maxLabel(sinks) + maxLabel(srcs) + 24;
+  const level = LEVEL_TYPES.has(element.type);
+  const row = level ? LEVEL_ROW : ROW;
+  const gap = level ? Math.max(LEVEL_BAR,
+    textWidth("100 % buffers", 10, "600")) + 16 : 0;
+  const pads = maxLabel(sinks) + maxLabel(srcs) + 24 + gap;
   const width = Math.max(90, title, pads) + 24;
   const rows = Math.max(sinks.length, srcs.length, 1);
-  const height = HEADER + rows * ROW + 4;
+  const height = HEADER + rows * row + 4;
 
   const port = (pad, i, west) => {
     info.ports.set(`p${pad.id}`, { pad, element, west, labelled: true });
@@ -56,7 +65,7 @@ function leafNode(element, info, kind, inside) {
       width: PORT,
       height: PORT,
       x: west ? -PORT / 2 : width - PORT / 2,
-      y: HEADER + i * ROW + (ROW - PORT) / 2,
+      y: HEADER + i * row + (row - PORT) / 2,
       layoutOptions: { "elk.port.side": west ? "WEST" : "EAST" },
     };
   };

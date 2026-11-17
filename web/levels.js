@@ -5,7 +5,7 @@
 
 import { formatBytes, formatSpan } from "./units.js";
 
-const LIMITS = [["buffers", "buf"], ["bytes", "bytes"], ["time", "time"]];
+const LIMITS = [["buffers", "buffers"], ["bytes", "bytes"], ["time", "time"]];
 
 // How full a queue is: the most blocking limit over all its levels (a
 // queue is full when any limit that is set is reached). Can exceed 1:

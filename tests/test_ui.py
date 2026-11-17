@@ -1891,8 +1891,9 @@ def check_stream_levels(browser, good):
     assert browser.wait(f"!!{element_selector('multiqueue0')} && document.querySelectorAll("
                         "'#graph .level-text').length === 3"), \
         "no level texts for the streams and the queue"
-    # For each level text: its text, class, and whether it sits on a sink
-    # row of its box, between that row's pad names.
+    # For each level text: its text, class, whether it sits on a sink row of
+    # its box between that row's pad names, and the bar under it. A queue
+    # and a multiqueue look alike, and the short names ("q") leave room.
     rows = json.loads(browser.eval("""JSON.stringify((() => {
       const box = (name) => [...document.querySelectorAll('#graph .node')]
         .find(n => n.querySelector(':scope > .name')?.textContent === name)
@@ -1905,27 +1906,38 @@ def check_stream_levels(browser, good):
         const row = names.filter(([, b]) => mid > b.top && mid < b.bottom);
         const sink = row.find(([n]) => n.startsWith('sink'));
         const src = row.find(([n]) => n.startsWith('src'));
-        const bars = [...document.querySelectorAll('#graph .level-fill')]
+        const under = (sel) => [...document.querySelectorAll(sel)]
           .filter(b => { const q = b.getBoundingClientRect();
-                         return q.top < r.bottom && q.bottom > r.top; });
+                         return q.top >= r.bottom - 3 && q.top < r.bottom + 6
+                           && q.left < r.right && q.right > r.left; });
+        const track = under('#graph .level-track')[0]?.getBoundingClientRect();
         return {text: t.textContent, cls: t.getAttribute('class'),
                 sink: sink?.[0] ?? null,
                 between: !!sink && !!src && r.left > sink[1].right &&
                   r.right < src[1].left,
-                bars: bars.length,
+                bars: under('#graph .level-track').length,
+                barWidth: track ? Math.round(track.width) : 0,
+                barBetween: !!track && !!sink && !!src &&
+                  track.left > sink[1].right && track.right < src[1].left,
                 inMq: (m => r.left > m.left && r.right < m.right &&
                   r.top > m.top && r.bottom < m.bottom)(box('multiqueue0'))};
       });
     })())"""))
     mq = sorted((r for r in rows if r["inMq"]), key=lambda r: str(r["sink"]))
     assert [(r["text"], r["sink"], r["between"], r["bars"]) for r in mq] == [
-        ("0 %", "sink_0", True, 1), ("102 %", "sink_1", True, 1)], \
+        ("0 %", "sink_0", True, 1), ("102 % time", "sink_1", True, 1)], \
         f"multiqueue rows: {rows}"
     assert "ok" in mq[0]["cls"] and "full" in mq[1]["cls"], \
         f"multiqueue colours: {rows}"
     queue = [r for r in rows if not r["inMq"]]
-    assert [r["text"] for r in queue] == ["50 % buf"], \
-        f"the queue's label: {rows}"
+    assert [(r["text"], r["sink"], r["between"], r["bars"]) for r in queue] \
+        == [("50 % buffers", "sink", True, 1)], f"the queue's row: {rows}"
+    # The zoom changes pixel sizes: compare with the bar's 48 px at scale.
+    scale = browser.eval("(m => m ? Number(m[1]) : 1)(document.querySelector("
+                         "'#graph > g')?.getAttribute('transform')"
+                         "?.match(/scale\\(([\\d.]+)\\)/))")
+    assert all(r["barBetween"] and r["barWidth"] >= 48 * scale - 1
+               for r in rows), f"bars too short or over the names: {rows}"
 
     # The pad table: "sometimes" and the other short cells on one line,
     # the headers apart.

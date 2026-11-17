@@ -546,6 +546,7 @@ main {
 .level-text.ok { fill: var(--muted); }
 .level-text.high { fill: var(--paused); }
 .level-text.full { fill: var(--error); font-weight: 600; }
+.level-limit { fill: var(--muted); font-weight: normal; }
 
 .times { font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 
