@@ -1335,7 +1335,8 @@ next_recording (WsClient * client, gchar ** name, gchar ** kind,
 }
 
 /* Queues added while recording: no levels message may name a queue that
- * the graph recorded before it does not have yet. */
+ * the graph recorded before it does not have yet, and every recorded graph
+ * is followed by the levels of its moment before the next graph. */
 static void
 test_recording_graph_first (void)
 {
@@ -1345,7 +1346,7 @@ test_recording_graph_first (void)
       "fakesink name=gf-sink");
   GHashTable *known = g_hash_table_new (NULL, NULL);
   gchar *name = NULL, *path, *body, **lines;
-  gboolean running = FALSE;
+  gboolean running = FALSE, graph_waiting = FALSE;
   guint i, checked = 0;
   WsClient client;
 
@@ -1386,6 +1387,9 @@ test_recording_graph_first (void)
       JsonArray *pipelines = json_object_get_array_member (m, "pipelines");
       guint j, k;
 
+      if (graph_waiting)
+        g_error ("line %u: a graph with no levels after the one before", i);
+      graph_waiting = TRUE;
       g_hash_table_remove_all (known);
       for (j = 0; j < json_array_get_length (pipelines); j++) {
         JsonArray *children = json_object_get_array_member
@@ -1407,10 +1411,12 @@ test_recording_graph_first (void)
           g_error ("levels of %s before the graph has it",
               json_object_get_string_member (q, "path"));
       }
+      graph_waiting = FALSE;
       checked++;
     }
     json_node_unref (root);
   }
+  g_assert_false (graph_waiting);
   g_assert_cmpuint (checked, >=, 2);
 
   ws_send (&client, "{\"type\":\"record-delete\",\"name\":\"%s\"}", name);

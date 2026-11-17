@@ -21,8 +21,10 @@
 #endif
 
 #define PORT_ATTEMPTS 10
-#define UPDATE_INTERVAL_MS 100
-#define STATS_INTERVAL_MS 250
+/* One timer (see tick): samples every TICK_US; a reported change goes out
+ * at most CHANGE_US after it, with the samples of its moment. */
+#define TICK_US (250 * G_TIME_SPAN_MILLISECOND)
+#define CHANGE_US (100 * G_TIME_SPAN_MILLISECOND)
 #define MAX_COMMAND_SIZE 65536
 #define UI_RESOURCE_PATH "/pipeline-monitor/ui/"
 
@@ -55,8 +57,8 @@ struct _PmServer
   GPtrArray *clients;
   gchar *last_graph;
   guint64 log_sent;
-  /* Queue levels and pipeline times, sampled every STATS_INTERVAL_MS even
-   * without clients. */
+  /* Queue levels and pipeline times, sampled every TICK_US even without
+   * clients. */
   gchar *last_levels;
   /* The findings last sent, to send them again only when they change. */
   gchar *last_findings;
@@ -82,7 +84,13 @@ struct _PmServer
   gboolean viewer;
   gchar *opened;
 
+  /* A change was reported and not sent yet; it is due at change_due. */
   gint update_scheduled;
+  /* tick_lock guards tick, next_sample and change_due. */
+  GMutex tick_lock;
+  GSource *tick;
+  gint64 next_sample;
+  gint64 change_due;
   /* Set by pm_server_hold_findings, taken by the next flush; and by
    * pm_server_release_findings, taken by the next update. */
   gint hold_findings;
@@ -1165,29 +1173,40 @@ send_findings (PmServer * self)
   self->last_findings = findings;
 }
 
-static gboolean send_update (gpointer user_data);
+static gboolean send_changes (PmServer * self);
 
-static gboolean
-send_all_stats (gpointer user_data)
+/* Sends one moment: the graph and log if a change was reported (or force),
+ * then the levels; on a regular tick (sample) also pad stats, properties,
+ * findings and latency, whose windows count regular ticks. A recorded
+ * graph is followed by the levels of its moment. */
+static void
+update (PmServer * self, gboolean sample, gboolean force)
 {
-  PmServer *self = user_data;
+  gboolean changed = force || g_atomic_int_get (&self->update_scheduled);
   /* Recordings keep levels, pads, properties and latency once a second. */
-  gboolean to_recording = self->tapping && self->ticks % 4 == 0;
+  gboolean to_recording = sample && self->tapping && self->ticks % 4 == 0;
+  gboolean graph_sent = FALSE;
   gchar *levels, *latency;
   guint i;
 
-  /* A finished state thread is joined at once. */
-  if (self->state_thread != NULL && !g_atomic_int_get (&self->state_busy))
-    g_clear_pointer (&self->state_thread, g_thread_join);
-  pm_monitor_tick (self->monitor);
+  if (!sample && !changed)
+    return;
+  if (sample) {
+    /* A finished state thread is joined at once. */
+    if (self->state_thread != NULL && !g_atomic_int_get (&self->state_busy))
+      g_clear_pointer (&self->state_thread, g_thread_join);
+    pm_monitor_tick (self->monitor);
+  }
+  /* Read before the graph, so the levels are never newer than it. */
   g_free (self->last_levels);
   self->last_levels = pm_levels_to_json (self->model);
+  if (changed)
+    graph_sent = send_changes (self);
+  if (!sample && !graph_sent)
+    return;
   levels = pm_json_message ("levels", self->last_levels);
-  /* Temporary, until one timer sends everything (see the roadmap): a graph
-   * change waiting for its timer goes out first, read after the levels, so
-   * no levels are newer than the graph before them. */
-  if (g_atomic_int_get (&self->update_scheduled))
-    send_update (self);
+  if (graph_sent && !to_recording)
+    record (self, levels);
   if (to_recording) {
     gchar *stats = pm_monitor_stats_json (self->monitor, NULL);
 
@@ -1204,14 +1223,19 @@ send_all_stats (gpointer user_data)
   }
   for (i = 0; i < self->clients->len; i++) {
     SoupWebsocketConnection *conn = g_ptr_array_index (self->clients, i);
-    gchar *stats = pm_monitor_stats_json (self->monitor, conn);
+    gchar *stats;
 
     send_text (conn, levels);
+    if (!sample)
+      continue;
+    stats = pm_monitor_stats_json (self->monitor, conn);
     if (stats != NULL)
       send_stats (conn, stats);
     g_free (stats);
   }
   g_free (levels);
+  if (!sample)
+    return;
   send_properties (self, to_recording);
 
   /* Findings once per second, sent when they change; the recordings list
@@ -1246,8 +1270,44 @@ send_all_stats (gpointer user_data)
     g_free (text);
     g_free (latency);
   }
+}
+
+/* The one timer: at the next regular tick, or sooner when a reported
+ * change is due. */
+static gboolean
+tick (gpointer user_data)
+{
+  PmServer *self = user_data;
+  gint64 now = g_get_monotonic_time (), ready;
+  gboolean sample;
+
+  g_mutex_lock (&self->tick_lock);
+  sample = now >= self->next_sample;
+  g_mutex_unlock (&self->tick_lock);
+
+  update (self, sample, FALSE);
+
+  g_mutex_lock (&self->tick_lock);
+  if (sample) {
+    self->next_sample += TICK_US;
+    if (self->next_sample <= now)
+      self->next_sample = now + TICK_US;
+  }
+  ready = self->next_sample;
+  if (g_atomic_int_get (&self->update_scheduled) && self->change_due < ready)
+    ready = self->change_due;
+  g_source_set_ready_time (self->tick, ready);
+  g_mutex_unlock (&self->tick_lock);
   return G_SOURCE_CONTINUE;
 }
+
+static gboolean
+tick_dispatch (GSource * source, GSourceFunc callback, gpointer user_data)
+{
+  return callback (user_data);
+}
+
+static GSourceFuncs tick_funcs = {.dispatch = tick_dispatch };
 
 static void
 handle_ws (SoupServer * soup, SoupServerMessage * msg, const char *path,
@@ -1300,39 +1360,29 @@ send_to_all (PmServer * self, const gchar * text)
     send_text (g_ptr_array_index (self->clients, i), text);
 }
 
+/* The graph if it changed, and new log entries. TRUE if a graph went out. */
 static gboolean
-send_update (gpointer user_data)
+send_changes (PmServer * self)
 {
-  PmServer *self = user_data;
-  gchar *graph, *log, *text, *levels = NULL;
+  gchar *graph, *log, *text;
+  gboolean graph_sent = FALSE;
   guint64 seq;
 
   /* Cleared first so changes made while serialising schedule another send. */
   g_atomic_int_set (&self->update_scheduled, 0);
 
-  /* Temporary, until one timer sends everything (see the roadmap): a
-   * recorded graph is followed by the levels of its moment, read before it,
-   * so the levels recorded last are never older than the graph (a stopped
-   * pipeline's queues are empty, removed pads are gone). */
-  if (self->tapping)
-    levels = pm_levels_to_json (self->model);
   graph = pm_model_to_json (self->model);
   if (g_strcmp0 (graph, self->last_graph) != 0) {
     text = pm_json_message ("graph", graph);
     send_to_all (self, text);
     record (self, text);
     g_free (text);
-    if (levels != NULL) {
-      text = pm_json_message ("levels", levels);
-      record (self, text);
-      g_free (text);
-    }
     g_free (self->last_graph);
     self->last_graph = graph;
+    graph_sent = TRUE;
   } else {
     g_free (graph);
   }
-  g_free (levels);
 
   /* Only entries added or repeated since the last send. */
   log = pm_model_log_to_json (self->model, self->log_sent, &seq);
@@ -1345,7 +1395,7 @@ send_update (gpointer user_data)
   }
   g_free (log);
 
-  return G_SOURCE_REMOVE;
+  return graph_sent;
 }
 
 /* Holds the calling thread until a page has connected (wait=true). */
@@ -1403,7 +1453,7 @@ flush_now (gpointer user_data)
   PmServer *self = flush->server;
   GSource *source;
 
-  send_update (self);
+  update (self, FALSE, TRUE);
   send_findings (self);
   if (g_atomic_int_compare_and_exchange (&self->hold_findings, 1, 0))
     self->findings_held_until = g_get_monotonic_time () + FINDINGS_HELD_US;
@@ -1466,15 +1516,18 @@ pm_server_flush (PmServer * self, gboolean bye)
 void
 pm_server_notify (PmServer * self)
 {
-  GSource *source;
+  gint64 due;
 
   if (!g_atomic_int_compare_and_exchange (&self->update_scheduled, 0, 1))
     return;
 
-  source = g_timeout_source_new (UPDATE_INTERVAL_MS);
-  g_source_set_callback (source, send_update, self, NULL);
-  g_source_attach (source, self->context);
-  g_source_unref (source);
+  /* Sooner than the next regular tick only if that is further away. */
+  due = g_get_monotonic_time () + CHANGE_US;
+  g_mutex_lock (&self->tick_lock);
+  self->change_due = due;
+  if (self->tick != NULL && due < self->next_sample)
+    g_source_set_ready_time (self->tick, due);
+  g_mutex_unlock (&self->tick_lock);
 }
 
 static gboolean
@@ -1518,7 +1571,8 @@ server_thread (gpointer user_data)
 {
   PmServer *self = user_data;
   GError *error = NULL;
-  GSource *stats_timer;
+  GSource *timer;
+  gint64 ready;
 
   g_main_context_push_thread_default (self->context);
 
@@ -1549,12 +1603,23 @@ server_thread (gpointer user_data)
   }
   signal_started (self, NULL);
 
-  stats_timer = g_timeout_source_new (STATS_INTERVAL_MS);
-  g_source_set_callback (stats_timer, send_all_stats, self, NULL);
-  g_source_attach (stats_timer, self->context);
+  timer = g_source_new (&tick_funcs, sizeof (GSource));
+  g_source_set_callback (timer, tick, self, NULL);
+  g_mutex_lock (&self->tick_lock);
+  self->next_sample = g_get_monotonic_time () + TICK_US;
+  ready = self->next_sample;
+  /* Changes reported before the server started. */
+  if (g_atomic_int_get (&self->update_scheduled) && self->change_due < ready)
+    ready = self->change_due;
+  g_source_set_ready_time (timer, ready);
+  self->tick = timer;
+  g_mutex_unlock (&self->tick_lock);
+  g_source_attach (timer, self->context);
   g_main_loop_run (self->loop);
-  g_source_destroy (stats_timer);
-  g_source_unref (stats_timer);
+  g_mutex_lock (&self->tick_lock);
+  g_source_destroy (self->tick);
+  g_clear_pointer (&self->tick, g_source_unref);
+  g_mutex_unlock (&self->tick_lock);
 
 done:
   while (self->clients->len > 0) {
@@ -1607,6 +1672,7 @@ pm_server_new (PmModel * model, guint port, const gchar * ui_dir,
   self->watches = g_hash_table_new_full (NULL, NULL, NULL,
       (GDestroyNotify) g_hash_table_unref);
   g_mutex_init (&self->lock);
+  g_mutex_init (&self->tick_lock);
   g_cond_init (&self->cond);
 
   self->thread = g_thread_new ("pm-server", server_thread, self);
@@ -1651,6 +1717,7 @@ pm_server_free (PmServer * self)
   g_main_loop_unref (self->loop);
   g_main_context_unref (self->context);
   g_mutex_clear (&self->lock);
+  g_mutex_clear (&self->tick_lock);
   g_cond_clear (&self->cond);
   g_free (self->last_graph);
   g_free (self->opened);
