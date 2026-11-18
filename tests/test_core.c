@@ -810,12 +810,17 @@ test_latency_segment (PathFixture * f, gconstpointer data)
   pm_latency_free (latency);
 }
 
+/* A thread that keeps a core busy until it is told to stop (slow builds,
+ * such as with ThreadSanitizer, must not outlast it), or until "until". */
 typedef struct
 {
   guint64 os_id;
   gint64 until;
   /* If set, the thread makes itself known to it, as a pushing thread. */
   PmModel *model;
+  /* Set once os_id is; set by the test to end it. */
+  gint started;
+  gint stop;
 } Spinner;
 
 static gpointer
@@ -827,9 +832,25 @@ spin (gpointer data)
   if (spinner->model)
     pm_model_current_thread (spinner->model);
   spinner->os_id = pm_thread_os_id ();
-  while (g_get_monotonic_time () < spinner->until)
+  g_atomic_int_set (&spinner->started, 1);
+  while (!g_atomic_int_get (&spinner->stop) &&
+      g_get_monotonic_time () < spinner->until)
     n++;
   return NULL;
+}
+
+static void
+wait_started (Spinner * spinner)
+{
+  while (!g_atomic_int_get (&spinner->started))
+    g_usleep (1000);
+}
+
+static void
+stop_spinner (Spinner * spinner, GThread * thread)
+{
+  g_atomic_int_set (&spinner->stop, 1);
+  g_thread_join (thread);
 }
 
 static guint64
@@ -849,13 +870,12 @@ cpu_of (GArray * all, guint64 os_id)
 static void
 test_thread_sample (void)
 {
-  Spinner spinner = { 0, g_get_monotonic_time () + 600000, NULL };
+  Spinner spinner = { .until = g_get_monotonic_time () + 60 * G_USEC_PER_SEC };
   GThread *thread = g_thread_new ("spinner", spin, &spinner);
   guint64 self = pm_thread_os_id ();
   GArray *before, *after;
 
-  while (g_atomic_pointer_get (&spinner.os_id) == 0)
-    g_usleep (1000);
+  wait_started (&spinner);
   before = pm_thread_sample_all ();
   g_assert_nonnull (before);
   g_usleep (400000);
@@ -866,7 +886,7 @@ test_thread_sample (void)
       100000000);
   g_array_unref (before);
   g_array_unref (after);
-  g_thread_join (thread);
+  stop_spinner (&spinner, thread);
 }
 
 /* The "performance" body: cores, every thread, the busy one near a whole
@@ -876,7 +896,7 @@ test_perf_sample (void)
 {
   PmModel *model = pm_model_new ();
   PmPerf *perf = pm_perf_new (model);
-  Spinner spinner = { 0, g_get_monotonic_time () + 800000, NULL };
+  Spinner spinner = { .until = g_get_monotonic_time () + 60 * G_USEC_PER_SEC };
   GThread *thread;
   gchar *first, *second, *os;
   JsonParser *parser = json_parser_new ();
@@ -884,8 +904,7 @@ test_perf_sample (void)
   JsonObject *busiest;
 
   thread = g_thread_new ("spinner", spin, &spinner);
-  while (g_atomic_pointer_get (&spinner.os_id) == 0)
-    g_usleep (1000);
+  wait_started (&spinner);
   first = pm_perf_sample (perf);
   g_assert_nonnull (strstr (first, "\"cpu\":null"));
   g_usleep (500000);
@@ -915,7 +934,7 @@ test_perf_sample (void)
   g_object_unref (parser);
   g_free (first);
   g_free (second);
-  g_thread_join (thread);
+  stop_spinner (&spinner, thread);
   pm_perf_free (perf);
   pm_model_free (model);
 }
@@ -929,8 +948,8 @@ test_perf_busy (void)
 {
   PmModel *model = pm_model_new ();
   PmPerf *perf = pm_perf_new (model);
-  Spinner spinner = { 0, g_get_monotonic_time () + 9 * G_USEC_PER_SEC,
-    model
+  Spinner spinner = { .until = g_get_monotonic_time () + 60 * G_USEC_PER_SEC,
+    .model = model
   };
   GThread *thread = g_thread_new ("spinner", spin, &spinner);
   GPtrArray *busy = NULL;
@@ -940,8 +959,7 @@ test_perf_busy (void)
   gint i;
 
   pm_model_current_thread (model);
-  while (g_atomic_pointer_get (&spinner.os_id) == 0)
-    g_usleep (1000);
+  wait_started (&spinner);
   before = pm_thread_sample_all ();
   start = g_get_monotonic_time ();
   g_free (pm_perf_sample (perf));
@@ -979,7 +997,7 @@ test_perf_busy (void)
   }
   g_array_unref (before);
   g_array_unref (after);
-  g_thread_join (thread);
+  stop_spinner (&spinner, thread);
   pm_perf_free (perf);
   pm_model_free (model);
 }
