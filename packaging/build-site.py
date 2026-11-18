@@ -11,7 +11,9 @@ in DIR/demos.json (default: site/demos) and a demos.json for the page with
 each one's kind, times and size read from the file; episodes/ with
 the recordings of site/episodes (opened by a link, not listed); guide/ with
 the pages of site/guide/*.md as HTML (needs the Python "markdown" package: without
-it the guide is left out, or with --require-guide the build fails).
+it the guide is left out, or with --require-guide the build fails); and for
+search engines and link previews: descriptions, social tags, sitemap.xml and
+llms.txt.
 """
 
 import argparse
@@ -24,6 +26,31 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 META = '<meta name="pipeline-monitor-site" content="demos/demos.json">'
+# Where the site is published: links in tags, the sitemap and llms.txt.
+SITE = "https://imaginarybit.com/pipeline-monitor/"
+SITE_TITLE = "pipeline-monitor: see a running GStreamer pipeline live"
+SITE_DESCRIPTION = (
+    "A GStreamer tracer that shows a running pipeline live in the browser: "
+    "the graph, states and caps, problems such as failed negotiation or "
+    "blocked data, queue levels, latency and CPU per thread. Try the demo "
+    "recordings, no install needed.")
+
+
+def social(title, description, url):
+    """Description, canonical address and link-preview tags for a page."""
+    t = html.escape(title, quote=True)
+    d = html.escape(description, quote=True)
+    return "\n".join([
+        f'<meta name="description" content="{d}">',
+        f'<link rel="canonical" href="{url}">',
+        '<meta property="og:type" content="website">',
+        '<meta property="og:site_name" content="pipeline-monitor">',
+        f'<meta property="og:title" content="{t}">',
+        f'<meta property="og:description" content="{d}">',
+        f'<meta property="og:url" content="{url}">',
+        f'<meta property="og:image" content="{SITE}social.png">',
+        '<meta name="twitter:card" content="summary_large_image">',
+    ])
 
 
 def summary(path):
@@ -44,8 +71,17 @@ def summary(path):
     return header.get("kind"), header["started"], last
 
 
-GUIDE = [("index", "Get started"), ("tour", "Tour"), ("options", "Options"),
-         ("troubleshooting", "Troubleshooting")]
+GUIDE = [
+    ("index", "Get started", "Install pipeline-monitor (Ubuntu, Debian, "
+     "macOS, Windows), turn it on with GST_TRACERS=pipeline-monitor and open "
+     "a running GStreamer pipeline in your browser."),
+    ("tour", "Tour", "What every part of pipeline-monitor's page shows: the "
+     "graph, problems, queue levels, pinned pads, latency and recordings."),
+    ("options", "Options", "pipeline-monitor's options: port, recordings, "
+     "recording from the start, waiting for the page, and more."),
+    ("troubleshooting", "Troubleshooting", "When pipeline-monitor shows no "
+     "address, no page or no graph: the usual causes and their fixes."),
+]
 
 PAGE = """<!doctype html>
 <html lang="en">
@@ -53,6 +89,7 @@ PAGE = """<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title} - pipeline-monitor guide</title>
+{social}
 <link rel="icon" href="../icon.svg">
 <link rel="stylesheet" href="guide.css">
 </head>
@@ -95,19 +132,66 @@ def build_guide(out, require):
     if os.path.isdir(os.path.join(source, "images")):
         shutil.copytree(os.path.join(source, "images"),
                         os.path.join(target, "images"))
-    for name, title in GUIDE:
+    for name, title, description in GUIDE:
         with open(os.path.join(source, f"{name}.md"), encoding="utf-8") as f:
             body = markdown.markdown(f.read(), extensions=["tables",
                                                            "fenced_code"])
         nav = "\n".join(
             f'<a href="{n}.html"' + (' aria-current="page"' if n == name
                                      else "") + f">{html.escape(t)}</a>"
-            for n, t in GUIDE)
+            for n, t, _ in GUIDE)
         with open(os.path.join(target, f"{name}.html"), "w",
                   encoding="utf-8") as f:
-            f.write(PAGE.format(title=html.escape(title), nav=nav, body=body,
-                                version=html.escape(version())))
+            f.write(PAGE.format(
+                title=html.escape(title), nav=nav, body=body,
+                version=html.escape(version()),
+                social=social(f"{title} - pipeline-monitor guide",
+                              description, f"{SITE}guide/{name}.html")))
     return True
+
+
+def write_sitemap(out, guide):
+    """sitemap.xml: the viewer and the guide's pages."""
+    urls = [SITE] + ([f"{SITE}guide/{n}.html" for n, _, _ in GUIDE]
+                     if guide else [])
+    with open(os.path.join(out, "sitemap.xml"), "w", encoding="utf-8") as f:
+        f.write('<?xml version="1.0" encoding="UTF-8"?>\n'
+                '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+                "\n")
+        for url in urls:
+            f.write(f"  <url><loc>{url}</loc></url>\n")
+        f.write("</urlset>\n")
+
+
+def write_llms(out):
+    """llms.txt: a short summary for AI tools (llmstxt.org)."""
+    guide = "\n".join(f"- [{t}]({SITE}guide/{n}.html): {d}"
+                      for n, t, d in GUIDE)
+    with open(os.path.join(out, "llms.txt"), "w", encoding="utf-8") as f:
+        f.write(f"""# pipeline-monitor
+
+> {SITE_DESCRIPTION}
+
+pipeline-monitor is a GStreamer tracer plugin (C, LGPL-2.1-or-later). Turn
+it on with the environment variable GST_TRACERS=pipeline-monitor: the
+program needs no changes. It serves a page on 127.0.0.1 (the address is
+printed) that shows the running pipeline live. It can record a run to a
+file that opens in the same viewer, also on this site without installing.
+
+Install: packages for Ubuntu 24.04 and Debian 12 (amd64, arm64), Homebrew
+(brew install imgbit/tap/pipeline-monitor), and the official GStreamer on
+macOS and Windows; or build from source (GStreamer 1.22 or newer).
+
+## Docs
+
+{guide}
+
+## Links
+
+- [Viewer and demo recordings]({SITE})
+- [Source and releases](https://github.com/imgbit/pipeline-monitor)
+- [Videos: Fix your GStreamer pipeline](https://www.youtube.com/playlist?list=PLHYOr70akpmI)
+""")
 
 
 def main():
@@ -125,9 +209,15 @@ def main():
         page = f.read()
     if '<meta charset="utf-8">' not in page:
         sys.exit("index.html: no charset line to put the site line after")
+    page = page.replace('<meta charset="utf-8">',
+                        f'<meta charset="utf-8">\n{META}\n'
+                        f'{social(SITE_TITLE, SITE_DESCRIPTION, SITE)}', 1)
+    page = page.replace("<title>pipeline-monitor</title>",
+                        f"<title>{html.escape(SITE_TITLE)}</title>", 1)
     with open(index, "w", encoding="utf-8") as f:
-        f.write(page.replace('<meta charset="utf-8">',
-                             f'<meta charset="utf-8">\n{META}', 1))
+        f.write(page)
+    shutil.copy(os.path.join(ROOT, ".github", "social-preview.png"),
+                os.path.join(args.out, "social.png"))
 
     with open(os.path.join(args.demos, "demos.json"), encoding="utf-8") as f:
         wanted = json.load(f)
@@ -150,6 +240,8 @@ def main():
     if os.path.isdir(episodes):
         shutil.copytree(episodes, os.path.join(args.out, "episodes"))
     guide = build_guide(args.out, args.require_guide)
+    write_sitemap(args.out, guide)
+    write_llms(args.out)
     print(f"site in {args.out}: {len(listed)} demo(s)"
           + (", the guide" if guide else ""))
 

@@ -2606,6 +2606,30 @@ def check_site(browser, serve):
     assert built.returncode == 0, f"build-site.py failed: {built.stderr}"
     guide = os.path.isdir(os.path.join(site, "pipeline-monitor", "guide"))
     shutil.copy(recorded, os.path.join(site, "shared.jsonl"))
+    # For search engines and link previews: tags on the viewer, the sitemap
+    # (the guide's pages too, when built), llms.txt and the preview image.
+    out = os.path.join(site, "pipeline-monitor")
+    with open(os.path.join(out, "index.html"), encoding="utf-8") as f:
+        head = f.read().split("</head>")[0]
+    for tag in ('<meta name="description" content="A GStreamer tracer',
+                '<link rel="canonical" href="https://imaginarybit.com/'
+                'pipeline-monitor/">',
+                '<meta property="og:image" content="https://imaginarybit.com/'
+                'pipeline-monitor/social.png">',
+                "<title>pipeline-monitor: see a running GStreamer pipeline "
+                "live</title>"):
+        assert tag in head, f"the site's viewer has no {tag}"
+    assert os.path.getsize(os.path.join(out, "social.png")) > 10000
+    with open(os.path.join(out, "sitemap.xml"), encoding="utf-8") as f:
+        sitemap = f.read()
+    assert "<loc>https://imaginarybit.com/pipeline-monitor/</loc>" in sitemap
+    assert ("guide/tour.html</loc>" in sitemap) == guide, sitemap
+    with open(os.path.join(out, "llms.txt"), encoding="utf-8") as f:
+        assert f.readline() == "# pipeline-monitor\n"
+    # The package's own page stays as it is: no site tags.
+    with open(os.path.join(here, "..", "web", "index.html"),
+              encoding="utf-8") as f:
+        assert "og:image" not in f.read(), "site tags in the package's page"
 
     handler = functools.partial(http.server.SimpleHTTPRequestHandler,
                                 directory=site)
