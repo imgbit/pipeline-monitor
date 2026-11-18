@@ -164,6 +164,24 @@ gboolean pm_model_thread_info (PmModel * model, guint64 os_id, gint * id,
  * through, and those it pushes into; oldest first, each with a new
  * reference. */
 GPtrArray *pm_model_thread_elements (PmModel * model, gint thread);
+/* An element taken out of a pipeline and not freed since. */
+typedef struct
+{
+  guint64 id;
+  gchar *name;
+  /* The path it had, and the pipeline it left. */
+  gchar *left_path;
+  guint64 pipeline;
+  gchar *pipeline_path;
+  /* When it was taken out (monotonic µs), and the references held now. */
+  gint64 removed_at;
+  gint refs;
+} PmLeftover;
+
+/* Elements out of their pipeline since before older_than (monotonic µs)
+ * and still alive, oldest first. */
+GPtrArray *pm_model_leftovers (PmModel * model, gint64 older_than);
+void pm_leftover_free (PmLeftover * left);
 /* t's pad is now served by thread (from pm_model_current_thread). */
 void pm_model_set_pad_thread (PmModel * model, PmPushTiming * t,
     gint thread);

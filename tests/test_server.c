@@ -3295,6 +3295,43 @@ test_busy_thread (void)
   stop_pipeline (pipeline);
 }
 
+/* Elements taken out of the pipeline while something still holds them
+ * are reported at the pipeline after the grace time (2 s here); once let
+ * go and freed, the finding goes. Taken out and freed at once: nothing. */
+static void
+test_leftovers (void)
+{
+  GstElement *pipeline = start_pipeline ("videotestsrc is-live=true ! "
+      "fakesink name=lo-sink");
+  GstElement *kept = gst_element_factory_make ("queue", "lo-kept");
+  GstElement *freed = gst_element_factory_make ("queue", "lo-freed");
+  gchar *id = g_strdup_printf ("leftovers:%s", GST_OBJECT_NAME (pipeline));
+  JsonNode *found;
+  JsonObject *f;
+
+  gst_bin_add_many (GST_BIN (pipeline), kept, freed, NULL);
+  gst_object_ref (kept);
+  gst_bin_remove_many (GST_BIN (pipeline), kept, freed, NULL);
+  found = wait_finding (id, 10);
+  g_assert_nonnull (found);
+  f = json_node_get_object (found);
+  g_assert_cmpstr (json_object_get_string_member (f, "severity"), ==, "info");
+  g_assert_true (g_str_has_prefix (json_object_get_string_member (f, "text"),
+          "1 element taken out of "));
+  g_assert_nonnull (strstr (json_object_get_string_member (f, "text"),
+          "is still alive: lo-kept (removed "));
+  g_assert_null (strstr (json_object_get_string_member (f, "text"),
+          "lo-freed"));
+  g_assert_nonnull (strstr (json_object_get_string_member (f, "hint"),
+          "lo-kept still has 1)"));
+  json_node_unref (found);
+
+  gst_object_unref (kept);
+  g_assert_true (finding_gone (id, 5));
+  g_free (id);
+  stop_pipeline (pipeline);
+}
+
 /* GET /api/dot?pipeline=<id>: GStreamer's .dot of the pipeline; 404 for
  * an unknown id or an element that is not a bin. */
 static void
@@ -4092,6 +4129,7 @@ main (int argc, char **argv)
   g_test_init (&argc, &argv, NULL);
   /* Read when the tracer starts its server, in gst_init. */
   g_setenv ("PM_MEASURE_ALL_LIMIT", "50", TRUE);
+  g_setenv ("PM_LEFTOVER_GRACE_MS", "2000", TRUE);
   gst_init (&argc, &argv);
 
   g_test_add_func ("/server/url", test_url);
@@ -4146,6 +4184,7 @@ main (int argc, char **argv)
   g_test_add_func ("/server/threads", test_threads);
   g_test_add_func ("/server/performance", test_performance);
   g_test_add_func ("/server/busy-thread", test_busy_thread);
+  g_test_add_func ("/server/leftovers", test_leftovers);
   g_test_add_func ("/server/check-not-negotiated",
       test_check_not_negotiated);
   g_test_add_func ("/server/check-failed-link", test_check_failed_link);

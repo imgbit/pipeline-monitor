@@ -35,6 +35,11 @@ struct _PmElement
   PmElement *parent;
   GPtrArray *children;
   GPtrArray *pads;
+  /* Taken out of a bin (monotonic µs), 0 if in one or never was; the path
+   * it had there and the id of the pipeline it left. */
+  gint64 removed_at;
+  gchar *left_path;
+  guint64 left_pipeline;
 };
 
 typedef struct _PmPad PmPad;
@@ -164,6 +169,7 @@ pm_element_free (PmElement * element)
   g_free (element->name);
   g_free (element->factory);
   g_free (element->type);
+  g_free (element->left_path);
   g_ptr_array_unref (element->children);
   g_ptr_array_unref (element->pads);
   if (element->missing != NULL)
@@ -390,6 +396,9 @@ pm_model_update_element (PmModel * model, gpointer object, const gchar * name,
   g_mutex_unlock (&model->lock);
 }
 
+static gchar *element_path (PmElement * element);
+static PmElement *top_level (PmElement * element);
+
 void
 pm_model_set_parent (PmModel * model, gpointer object, gpointer parent)
 {
@@ -398,8 +407,20 @@ pm_model_set_parent (PmModel * model, gpointer object, gpointer parent)
   g_mutex_lock (&model->lock);
   element = g_hash_table_lookup (model->elements, object);
   if (element != NULL) {
-    set_parent (model, object, element,
-        parent ? g_hash_table_lookup (model->elements, parent) : NULL);
+    PmElement *to = parent ? g_hash_table_lookup (model->elements, parent)
+        : NULL;
+
+    /* Leaving a pipeline: noted, to see whether it is freed. */
+    if (to == NULL && element->parent != NULL &&
+        top_level (element)->is_pipeline) {
+      g_free (element->left_path);
+      element->left_path = element_path (element);
+      element->left_pipeline = top_level (element)->id;
+      element->removed_at = g_get_monotonic_time ();
+    } else if (to != NULL) {
+      element->removed_at = 0;
+    }
+    set_parent (model, object, element, to);
   }
   g_mutex_unlock (&model->lock);
 }
@@ -2045,5 +2066,67 @@ pm_model_thread_elements (PmModel * model, gint thread)
   g_ptr_array_sort (found, compare_refs);
   order_by_flow (found, feeds);
   g_array_unref (feeds);
+  return found;
+}
+
+void
+pm_leftover_free (PmLeftover * left)
+{
+  g_free (left->name);
+  g_free (left->left_path);
+  g_free (left->pipeline_path);
+  g_free (left);
+}
+
+static gint
+compare_leftovers (gconstpointer a, gconstpointer b)
+{
+  const PmLeftover *la = *(PmLeftover **) a, *lb = *(PmLeftover **) b;
+
+  if (la->removed_at != lb->removed_at)
+    return (la->removed_at > lb->removed_at) -
+        (la->removed_at < lb->removed_at);
+  return (la->id > lb->id) - (la->id < lb->id);
+}
+
+GPtrArray *
+pm_model_leftovers (PmModel * model, gint64 older_than)
+{
+  GPtrArray *found = g_ptr_array_new_with_free_func ((GDestroyNotify)
+      pm_leftover_free);
+  GHashTableIter iter;
+  gpointer value;
+
+  g_mutex_lock (&model->lock);
+  g_hash_table_iter_init (&iter, model->elements);
+  while (g_hash_table_iter_next (&iter, NULL, &value)) {
+    PmElement *element = value;
+    GstElement *object;
+    PmLeftover *left;
+    const gchar *slash;
+
+    /* Only the one taken out, not what is inside it. */
+    if (element->removed_at == 0 || element->removed_at > older_than ||
+        element->parent != NULL)
+      continue;
+    object = g_weak_ref_get (&element->ref);
+    if (object == NULL)
+      continue;
+    left = g_new0 (PmLeftover, 1);
+    left->id = element->id;
+    left->name = g_strdup (element->name);
+    left->left_path = g_strdup (element->left_path);
+    left->pipeline = element->left_pipeline;
+    slash = strchr (element->left_path, '/');
+    left->pipeline_path = slash ? g_strndup (element->left_path,
+        slash - element->left_path) : g_strdup (element->left_path);
+    left->removed_at = element->removed_at;
+    /* Without the one taken just now. */
+    left->refs = GST_OBJECT_REFCOUNT_VALUE (object) - 1;
+    gst_object_unref (object);
+    g_ptr_array_add (found, left);
+  }
+  g_mutex_unlock (&model->lock);
+  g_ptr_array_sort (found, compare_leftovers);
   return found;
 }

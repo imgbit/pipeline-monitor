@@ -984,6 +984,73 @@ test_perf_busy (void)
   pm_model_free (model);
 }
 
+/* Adds element to the model's pipeline, as the tracer would, and takes it
+ * out again; the caller keeps a reference. */
+static GstElement *
+leftover (Fixture * f, const gchar * name)
+{
+  GstElement *e = gst_object_ref_sink (gst_element_factory_make ("identity",
+          name));
+
+  pm_model_update_element (f->model, e, name, "identity", "GstIdentity",
+      FALSE, FALSE);
+  pm_model_set_parent (f->model, e, f->element);
+  pm_model_set_parent (f->model, e, NULL);
+  return e;
+}
+
+/* Elements out of their pipeline: nothing within the grace time, then an
+ * info at the pipeline; a warning once their count grew over two windows
+ * in a row; gone when they are freed. */
+static void
+test_findings_leftovers (Fixture * f, gconstpointer data)
+{
+  PmFindings *findings = pm_findings_new (f->model);
+  GPtrArray *kept = g_ptr_array_new_with_free_func (gst_object_unref);
+  gchar *json;
+  gint i;
+
+  /* 100 ms grace, 500 ms windows: a count every 100 ms. */
+  pm_findings_set_leftover_times (findings, 100000, 500000);
+  g_ptr_array_add (kept, leftover (f, "lo-a"));
+  json = pm_findings_tick (findings, PM_STUCK_AFTER_US);
+  g_assert_null (strstr (json, "leftovers:"));
+  g_free (json);
+  g_usleep (150000);
+  json = pm_findings_tick (findings, PM_STUCK_AFTER_US);
+  g_assert_nonnull (strstr (json, "\"id\":\"leftovers:core-pipeline\""));
+  g_assert_nonnull (strstr (json, "\"severity\":\"info\""));
+  g_assert_nonnull (strstr (json, "1 element taken out of core-pipeline is "
+          "still alive: lo-a (removed 0 s ago)"));
+  g_free (json);
+
+  /* One more every 100 ms: after two windows of growth, a warning. */
+  for (i = 0; i < 14; i++) {
+    gchar *name = g_strdup_printf ("lo-%d", i);
+
+    g_ptr_array_add (kept, leftover (f, name));
+    g_free (name);
+    g_usleep (110000);
+    json = pm_findings_tick (findings, PM_STUCK_AFTER_US);
+    if (strstr (json, "keep piling up"))
+      break;
+    g_free (json);
+    json = NULL;
+  }
+  g_assert_nonnull (json);
+  g_assert_nonnull (strstr (json, "\"severity\":\"warning\""));
+  g_assert_nonnull (strstr (json, " and "));
+  g_free (json);
+
+  /* Freed: the finding goes. */
+  g_ptr_array_set_size (kept, 0);
+  json = pm_findings_tick (findings, PM_STUCK_AFTER_US);
+  g_assert_null (strstr (json, "leftovers:"));
+  g_free (json);
+  g_ptr_array_unref (kept);
+  pm_findings_free (findings);
+}
+
 /* Strings are escaped, and text that is not valid UTF-8 is repaired. */
 static void
 test_json_string (void)
@@ -1091,6 +1158,8 @@ main (int argc, char **argv)
       test_latency_segment, path_teardown);
   g_test_add ("/core/findings-flow", Fixture, NULL, fixture_setup,
       test_findings_flow, fixture_teardown);
+  g_test_add ("/core/findings-leftovers", Fixture, NULL, fixture_setup,
+      test_findings_leftovers, fixture_teardown);
   g_test_add ("/core/monitor-overhead", Fixture, NULL, fixture_setup,
       test_monitor_overhead, fixture_teardown);
 

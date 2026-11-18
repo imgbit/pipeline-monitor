@@ -1720,6 +1720,11 @@ pm_server_new (PmModel * model, guint port, const gchar * ui_dir,
   self->perf = pm_perf_new (model);
   self->findings = pm_findings_new (model);
   pm_findings_set_perf (self->findings, self->perf);
+  /* Lets tests see leftover elements without waiting 30 s. */
+  if (g_getenv ("PM_LEFTOVER_GRACE_MS") != NULL)
+    pm_findings_set_leftover_times (self->findings,
+        g_ascii_strtoll (g_getenv ("PM_LEFTOVER_GRACE_MS"), NULL, 10) * 1000,
+        PM_LEFTOVER_WINDOW_US);
   /* Lets tests reach the "measure all" limit with a small pipeline. */
   if (g_getenv ("PM_MEASURE_ALL_LIMIT") != NULL)
     pm_latency_set_all_limit (self->latency,

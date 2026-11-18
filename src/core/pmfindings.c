@@ -142,7 +142,20 @@ struct _PmFindings
   GHashTable *sinks;
   guint64 tick;
   PmPerf *perf;
+  gint64 leftover_grace, leftover_window;
+  /* Pipeline id -> PmLeftoverHistory. */
+  GHashTable *leftovers;
 };
+
+/* The count of leftovers of one pipeline, noted every window / 5. */
+#define LEFTOVER_SNAPSHOTS 11
+
+typedef struct
+{
+  gint64 next;
+  guint counts[LEFTOVER_SNAPSHOTS];
+  guint n;
+} PmLeftoverHistory;
 
 static void
 counter_unref (PmCounter * c)
@@ -214,6 +227,10 @@ pm_findings_new (PmModel * model)
       (GDestroyNotify) queue_state_free);
   f->sinks = g_hash_table_new_full (g_int64_hash, g_int64_equal, g_free,
       g_free);
+  f->leftovers = g_hash_table_new_full (g_int64_hash, g_int64_equal, g_free,
+      g_free);
+  f->leftover_grace = PM_LEFTOVER_GRACE_US;
+  f->leftover_window = PM_LEFTOVER_WINDOW_US;
   return f;
 }
 
@@ -224,10 +241,19 @@ pm_findings_set_perf (PmFindings * f, PmPerf * perf)
 }
 
 void
+pm_findings_set_leftover_times (PmFindings * f, gint64 grace_us,
+    gint64 window_us)
+{
+  f->leftover_grace = grace_us;
+  f->leftover_window = window_us;
+}
+
+void
 pm_findings_free (PmFindings * f)
 {
   g_hash_table_unref (f->queues);
   g_hash_table_unref (f->sinks);
+  g_hash_table_unref (f->leftovers);
   g_free (f);
 }
 
@@ -727,6 +753,115 @@ add_busy (PmFindings * self, GPtrArray * findings)
   g_ptr_array_unref (busy);
 }
 
+static gchar *
+ago (gint64 us)
+{
+  gint64 s = us / G_USEC_PER_SEC;
+
+  return s < 60 ? g_strdup_printf ("%" G_GINT64_FORMAT " s", s) :
+      g_strdup_printf ("%" G_GINT64_FORMAT " min", s / 60);
+}
+
+/* Elements taken out of a pipeline and still alive after the grace time:
+ * something holds them. A warning when their count keeps growing (more
+ * than a window ago, and more again): a leak each time a branch comes and
+ * goes. Shown at the pipeline they left. */
+static void
+add_leftovers (PmFindings * self, GPtrArray * findings)
+{
+  gint64 now = g_get_monotonic_time ();
+  GPtrArray *all = pm_model_leftovers (self->model,
+      now - self->leftover_grace);
+  GHashTable *counts = g_hash_table_new_full (g_int64_hash, g_int64_equal,
+      g_free, NULL);
+  GHashTableIter iter;
+  gpointer key, value;
+  guint i;
+
+  for (i = 0; i < all->len; i++) {
+    PmLeftover *left = g_ptr_array_index (all, i);
+    guint n = GPOINTER_TO_UINT (g_hash_table_lookup (counts,
+            &left->pipeline));
+
+    g_hash_table_insert (counts, key_new (left->pipeline),
+        GUINT_TO_POINTER (n + 1));
+  }
+
+  /* Each pipeline's count, noted every window / 5 (pipelines without
+   * leftovers start again). */
+  g_hash_table_iter_init (&iter, self->leftovers);
+  while (g_hash_table_iter_next (&iter, &key, NULL))
+    if (!g_hash_table_contains (counts, key))
+      g_hash_table_iter_remove (&iter);
+  g_hash_table_iter_init (&iter, counts);
+  while (g_hash_table_iter_next (&iter, &key, &value)) {
+    PmLeftoverHistory *h = g_hash_table_lookup (self->leftovers, key);
+
+    if (h == NULL) {
+      h = g_new0 (PmLeftoverHistory, 1);
+      g_hash_table_insert (self->leftovers, key_new (*(guint64 *) key), h);
+    }
+    if (now >= h->next) {
+      if (h->n == LEFTOVER_SNAPSHOTS)
+        memmove (h->counts, h->counts + 1, sizeof (guint) * (h->n-- - 1));
+      h->counts[h->n++] = GPOINTER_TO_UINT (value);
+      h->next = now + self->leftover_window / 5;
+    }
+  }
+
+  g_hash_table_iter_init (&iter, counts);
+  while (g_hash_table_iter_next (&iter, &key, &value)) {
+    guint64 pipeline = *(guint64 *) key;
+    PmLeftoverHistory *h = g_hash_table_lookup (self->leftovers, key);
+    /* Grew over each of the last two windows. */
+    gboolean growing = h->n == LEFTOVER_SNAPSHOTS &&
+        h->counts[10] > h->counts[5] && h->counts[5] > h->counts[0];
+    GString *names = g_string_new (NULL);
+    PmLeftover *first = NULL;
+    guint shown = 0, n = GPOINTER_TO_UINT (value);
+    gchar *window = ago (self->leftover_window);
+    PmFinding *f;
+
+    for (i = 0; i < all->len; i++) {
+      PmLeftover *left = g_ptr_array_index (all, i);
+      gchar *when;
+
+      if (left->pipeline != pipeline)
+        continue;
+      if (first == NULL)
+        first = left;
+      if (shown++ == 5) {
+        g_string_append_printf (names, " and %u more", n - 5);
+        break;
+      }
+      when = ago (now - left->removed_at);
+      g_string_append_printf (names, "%s%s (removed %s ago)", shown > 1 ?
+          ", " : "", left->name, when);
+      g_free (when);
+    }
+    f = finding_new ("leftovers", growing ? PM_WARNING : PM_INFO, pipeline,
+        first->pipeline_path, 0, NULL);
+    if (growing)
+      f->text = g_strdup_printf ("Elements taken out of %s keep piling up: "
+          "%u still alive, %u %s ago, %u before that: %s",
+          first->pipeline_path, n, h->counts[5], window, h->counts[0],
+          names->str);
+    else
+      f->text = g_strdup_printf ("%u %s taken out of %s %s still alive: %s",
+          n, n == 1 ? "element" : "elements", first->pipeline_path,
+          n == 1 ? "is" : "are", names->str);
+    f->hint = g_strdup_printf ("Something still holds a reference to them: "
+        "the application, a signal handler, a pad probe (%s still has %d). "
+        "If they are kept to be used again, this is expected.", first->name,
+        first->refs);
+    g_ptr_array_add (findings, f);
+    g_string_free (names, TRUE);
+    g_free (window);
+  }
+  g_hash_table_unref (counts);
+  g_ptr_array_unref (all);
+}
+
 /* Forgets queues and sinks that are gone. */
 static void
 forget_others (GHashTable * table, GHashTable * seen)
@@ -762,6 +897,7 @@ pm_findings_tick (PmFindings * self, gint64 stuck_after_us)
   add_queues (self, findings, seen);
   add_sinks (self, findings, seen);
   add_busy (self, findings);
+  add_leftovers (self, findings);
   forget_others (self->queues, seen);
   forget_others (self->sinks, seen);
   g_ptr_array_sort (findings, compare_findings);

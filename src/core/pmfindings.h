@@ -21,6 +21,14 @@ typedef struct _PmPerf PmPerf;
 PmFindings *pm_findings_new (PmModel * model);
 /* Threads' CPU, for the busy-thread finding (NULL: none). */
 void pm_findings_set_perf (PmFindings * findings, PmPerf * perf);
+
+/* Elements out of their pipeline this long and alive are reported; they
+ * pile up when their count grew over each of the last two windows. */
+#define PM_LEFTOVER_GRACE_US (30 * G_USEC_PER_SEC)
+#define PM_LEFTOVER_WINDOW_US (300 * G_USEC_PER_SEC)
+/* Other times, for tests. */
+void pm_findings_set_leftover_times (PmFindings * findings, gint64 grace_us,
+    gint64 window_us);
 void pm_findings_free (PmFindings * findings);
 gchar *pm_findings_tick (PmFindings * findings, gint64 stuck_after_us);
 
