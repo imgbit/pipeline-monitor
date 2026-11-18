@@ -160,6 +160,10 @@ void pm_model_thread_ended (PmModel * model);
  * free) and whether it runs a task. */
 gboolean pm_model_thread_info (PmModel * model, guint64 os_id, gint * id,
     gchar ** name, gboolean * task);
+/* The elements thread runs: those whose pads it pushes out of or pulls
+ * through, and those it pushes into; oldest first, each with a new
+ * reference. */
+GPtrArray *pm_model_thread_elements (PmModel * model, gint thread);
 /* t's pad is now served by thread (from pm_model_current_thread). */
 void pm_model_set_pad_thread (PmModel * model, PmPushTiming * t,
     gint thread);

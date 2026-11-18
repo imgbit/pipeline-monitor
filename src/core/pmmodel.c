@@ -1942,3 +1942,108 @@ pm_model_thread_info (PmModel * model, guint64 os_id, gint * id,
   g_mutex_unlock (&model->lock);
   return found;
 }
+
+/* Puts refs in the order data passes through them: an element after those
+ * that feed it (oldest first where nothing says otherwise). */
+static void
+order_by_flow (GPtrArray * refs, GArray * feeds)
+{
+  GPtrArray *ordered = g_ptr_array_new ();
+  guint i, j, k;
+
+  while (refs->len > 0) {
+    for (i = 0; i < refs->len; i++) {
+      PmElementRef *ref = g_ptr_array_index (refs, i);
+      gboolean fed = FALSE;
+
+      /* Fed by one not placed yet? */
+      for (j = 0; j + 1 < feeds->len && !fed; j += 2) {
+        if (g_array_index (feeds, guint64, j + 1) != ref->id)
+          continue;
+        for (k = 0; k < refs->len; k++)
+          if (k != i && ((PmElementRef *) g_ptr_array_index (refs, k))->id ==
+              g_array_index (feeds, guint64, j))
+            fed = TRUE;
+      }
+      if (!fed)
+        break;
+    }
+    /* A loop: take the oldest. */
+    if (i == refs->len)
+      i = 0;
+    g_ptr_array_add (ordered, g_ptr_array_steal_index (refs, i));
+  }
+  for (i = 0; i < ordered->len; i++)
+    g_ptr_array_add (refs, g_ptr_array_index (ordered, i));
+  g_ptr_array_unref (ordered);
+}
+
+static gint
+compare_refs (gconstpointer a, gconstpointer b)
+{
+  const PmElementRef *ra = *(PmElementRef **) a, *rb = *(PmElementRef **) b;
+
+  return (ra->id > rb->id) - (ra->id < rb->id);
+}
+
+GPtrArray *
+pm_model_thread_elements (PmModel * model, gint thread)
+{
+  GPtrArray *found = g_ptr_array_new_with_free_func ((GDestroyNotify)
+      pm_element_ref_free);
+  GHashTable *seen = g_hash_table_new (NULL, NULL);
+  /* Element ids: data goes from feeds[2i] into feeds[2i+1]. */
+  GArray *feeds = g_array_new (FALSE, FALSE, sizeof (guint64));
+  GHashTableIter iter;
+  gpointer value;
+
+  g_mutex_lock (&model->lock);
+  g_hash_table_iter_init (&iter, model->pads);
+  while (g_hash_table_iter_next (&iter, NULL, &value)) {
+    PmPad *pad = value;
+    /* The table's keys are not held: only the pad's weak reference. */
+    GstPad *pad_object = g_weak_ref_get (&pad->ref);
+    PmPushTiming *t = pad_object ? g_object_get_qdata (G_OBJECT (pad_object),
+        timing_quark ()) : NULL;
+    gboolean serves = t != NULL && g_atomic_int_get (&t->thread) == thread;
+    GstElement *object;
+    PmElementRef *ref;
+
+    PmLink *link = serves && pad_object ?
+        g_hash_table_lookup (model->links_by_src, pad_object) : NULL;
+    PmPad *peer = link ? g_hash_table_lookup (model->pads, link->sink) : NULL;
+    /* The pad's own element, and the one its data goes into: it runs that
+     * one's input too (a queue's, before its own thread). */
+    PmElement *served[2] = { serves ? pad->element : NULL,
+      peer ? peer->element : NULL
+    };
+    guint k;
+
+    if (pad_object != NULL)
+      gst_object_unref (pad_object);
+    if (served[0] != NULL && served[1] != NULL) {
+      g_array_append_val (feeds, served[0]->id);
+      g_array_append_val (feeds, served[1]->id);
+    }
+    for (k = 0; k < G_N_ELEMENTS (served); k++) {
+      if (served[k] == NULL || g_hash_table_contains (seen, served[k]))
+        continue;
+      object = g_weak_ref_get (&served[k]->ref);
+      if (object == NULL)
+        continue;
+      g_hash_table_add (seen, served[k]);
+      ref = g_new0 (PmElementRef, 1);
+      ref->element = object;
+      ref->id = served[k]->id;
+      ref->path = element_path (served[k]);
+      ref->live = top_level (served[k])->live;
+      g_ptr_array_add (found, ref);
+    }
+  }
+  g_mutex_unlock (&model->lock);
+  g_hash_table_unref (seen);
+  g_ptr_array_sort (found, compare_refs);
+  order_by_flow (found, feeds);
+  g_array_unref (feeds);
+  return found;
+}

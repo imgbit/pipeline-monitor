@@ -1719,6 +1719,7 @@ pm_server_new (PmModel * model, guint port, const gchar * ui_dir,
   self->latency = pm_latency_new (model);
   self->perf = pm_perf_new (model);
   self->findings = pm_findings_new (model);
+  pm_findings_set_perf (self->findings, self->perf);
   /* Lets tests reach the "measure all" limit with a small pipeline. */
   if (g_getenv ("PM_MEASURE_ALL_LIMIT") != NULL)
     pm_latency_set_all_limit (self->latency,

@@ -15,7 +15,26 @@ struct _PmPerf
   gint64 last_us;
   /* The process's CPU ns at the last sample, 0 if none. */
   guint64 last_cpu;
+  /* PmBusy of the threads the graph knows, from the last sample. */
+  GPtrArray *busy;
 };
+
+typedef struct
+{
+  guint64 os_id;
+  gint id;
+  gchar *name;
+  gdouble cpu;
+  /* Samples in a row at PM_PERF_BUSY or more. */
+  guint samples;
+} PmBusy;
+
+static void
+busy_free (PmBusy * b)
+{
+  g_free (b->name);
+  g_free (b);
+}
 
 typedef struct
 {
@@ -32,6 +51,7 @@ pm_perf_new (PmModel * model)
   perf->model = model;
   perf->last = g_hash_table_new_full (g_int64_hash, g_int64_equal, g_free,
       g_free);
+  perf->busy = g_ptr_array_new_with_free_func ((GDestroyNotify) busy_free);
   return perf;
 }
 
@@ -39,6 +59,7 @@ void
 pm_perf_free (PmPerf * perf)
 {
   g_hash_table_unref (perf->last);
+  g_ptr_array_unref (perf->busy);
   g_free (perf);
 }
 
@@ -61,6 +82,8 @@ pm_perf_sample (PmPerf * perf)
       g_free, g_free);
   GArray *rows = g_array_new (FALSE, FALSE, sizeof (PmRow));
   GString *json = g_string_new (NULL);
+  GPtrArray *busy = g_ptr_array_new_with_free_func ((GDestroyNotify)
+      busy_free);
   guint64 cpu_ns, memory;
   guint i;
 
@@ -119,8 +142,23 @@ pm_perf_sample (PmPerf * perf)
     /* A thread the graph knows: its id there, and its task's name. */
     if (pm_model_thread_info (perf->model, row->sample->os_id, &id, &name,
             &task)) {
+      PmBusy *b = g_new0 (PmBusy, 1);
+      guint k;
+
       g_string_append_printf (json, ",\"id\":%d,\"task\":%s", id,
           task ? "true" : "false");
+      b->os_id = row->sample->os_id;
+      b->id = id;
+      b->name = g_strdup (name && *name ? name : row->sample->name);
+      b->cpu = row->cpu;
+      for (k = 0; k < perf->busy->len; k++) {
+        PmBusy *before = g_ptr_array_index (perf->busy, k);
+
+        if (before->os_id == b->os_id)
+          b->samples = before->samples;
+      }
+      b->samples = row->cpu >= PM_PERF_BUSY ? b->samples + 1 : 0;
+      g_ptr_array_add (busy, b);
     }
     g_string_append (json, ",\"name\":");
     pm_json_append_string (json, name && *name ? name : row->sample->name);
@@ -136,6 +174,8 @@ pm_perf_sample (PmPerf * perf)
   g_string_append (json, "]}");
 
 done:
+  g_ptr_array_unref (perf->busy);
+  perf->busy = busy;
   g_hash_table_unref (perf->last);
   perf->last = next;
   perf->last_us = now;
@@ -143,4 +183,33 @@ done:
   if (all != NULL)
     g_array_unref (all);
   return g_string_free (json, FALSE);
+}
+
+static void
+busy_thread_free (PmBusyThread * b)
+{
+  g_free (b->name);
+  g_free (b);
+}
+
+GPtrArray *
+pm_perf_busy (PmPerf * perf, guint samples)
+{
+  GPtrArray *found = g_ptr_array_new_with_free_func ((GDestroyNotify)
+      busy_thread_free);
+  guint i;
+
+  for (i = 0; i < perf->busy->len; i++) {
+    PmBusy *b = g_ptr_array_index (perf->busy, i);
+    PmBusyThread *t;
+
+    if (b->samples < samples)
+      continue;
+    t = g_new0 (PmBusyThread, 1);
+    t->id = b->id;
+    t->name = g_strdup (b->name);
+    t->cpu = b->cpu;
+    g_ptr_array_add (found, t);
+  }
+  return found;
 }

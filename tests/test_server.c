@@ -3217,6 +3217,58 @@ test_performance (void)
   stop_pipeline (pipeline);
 }
 
+/* A sink that syncs to the clock asks for more frames of noise than any
+ * machine makes (1000 a second): the source's thread stays at a whole core,
+ * and after PM_BUSY_SECONDS it is a finding, naming the thread and the
+ * elements it runs in the order data passes, at the first of them. (The
+ * same without sync is quiet: see check-quiet.) */
+static void
+test_busy_thread (void)
+{
+  GstElement *pipeline = start_pipeline ("videotestsrc pattern=snow "
+      "name=bt-src ! video/x-raw,width=1280,height=720,framerate=1000/1 ! "
+      "queue name=bt-q ! fakesink sync=true");
+  SoupSession *session = soup_session_new ();
+  gchar *url = server_url ("ws");
+  gchar *text = NULL, *path = NULL;
+  gint64 end = g_get_monotonic_time () + 25 * G_USEC_PER_SEC;
+  WsClient client;
+
+  ws_connect (&client, session, url, NULL);
+  while (text == NULL && g_get_monotonic_time () < end) {
+    gchar *message = ws_next (&client, "findings");
+    JsonNode *root = parse (message);
+    JsonArray *list = json_object_get_array_member (json_node_get_object
+        (root), "findings");
+    guint i;
+
+    for (i = 0; i < json_array_get_length (list); i++) {
+      JsonObject *f = json_array_get_object_element (list, i);
+
+      if (g_str_has_prefix (json_object_get_string_member (f, "id"),
+              "busy:")) {
+        text = g_strdup (json_object_get_string_member (f, "text"));
+        path = g_strdup (json_object_get_string_member (f, "path"));
+        g_assert_cmpstr (json_object_get_string_member (f, "severity"), ==,
+            "warning");
+      }
+    }
+    json_node_unref (root);
+    g_free (message);
+  }
+  g_assert_nonnull (text);
+  g_assert_true (g_str_has_prefix (text, "thread bt-src:src uses "));
+  g_assert_true (g_regex_match_simple (" of a core; it runs bt-src, "
+          "capsfilter[0-9]+, bt-q$", text, 0, 0));
+  g_assert_true (g_str_has_suffix (path, "/bt-src"));
+  g_free (text);
+  g_free (path);
+  ws_disconnect (&client);
+  g_free (url);
+  g_object_unref (session);
+  stop_pipeline (pipeline);
+}
+
 /* GET /api/dot?pipeline=<id>: GStreamer's .dot of the pipeline; 404 for
  * an unknown id or an element that is not a bin. */
 static void
@@ -4067,6 +4119,7 @@ main (int argc, char **argv)
   g_test_add_func ("/server/dot", test_dot);
   g_test_add_func ("/server/threads", test_threads);
   g_test_add_func ("/server/performance", test_performance);
+  g_test_add_func ("/server/busy-thread", test_busy_thread);
   g_test_add_func ("/server/check-not-negotiated",
       test_check_not_negotiated);
   g_test_add_func ("/server/check-failed-link", test_check_failed_link);

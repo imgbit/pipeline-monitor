@@ -814,6 +814,8 @@ typedef struct
 {
   guint64 os_id;
   gint64 until;
+  /* If set, the thread makes itself known to it, as a pushing thread. */
+  PmModel *model;
 } Spinner;
 
 static gpointer
@@ -822,6 +824,8 @@ spin (gpointer data)
   Spinner *spinner = data;
   volatile guint64 n = 0;
 
+  if (spinner->model)
+    pm_model_current_thread (spinner->model);
   spinner->os_id = pm_thread_os_id ();
   while (g_get_monotonic_time () < spinner->until)
     n++;
@@ -845,7 +849,7 @@ cpu_of (GArray * all, guint64 os_id)
 static void
 test_thread_sample (void)
 {
-  Spinner spinner = { 0, g_get_monotonic_time () + 600000 };
+  Spinner spinner = { 0, g_get_monotonic_time () + 600000, NULL };
   GThread *thread = g_thread_new ("spinner", spin, &spinner);
   guint64 self = pm_thread_os_id ();
   GArray *before, *after;
@@ -872,7 +876,7 @@ test_perf_sample (void)
 {
   PmModel *model = pm_model_new ();
   PmPerf *perf = pm_perf_new (model);
-  Spinner spinner = { 0, g_get_monotonic_time () + 800000 };
+  Spinner spinner = { 0, g_get_monotonic_time () + 800000, NULL };
   GThread *thread;
   gchar *first, *second, *os;
   JsonParser *parser = json_parser_new ();
@@ -911,6 +915,52 @@ test_perf_sample (void)
   g_object_unref (parser);
   g_free (first);
   g_free (second);
+  g_thread_join (thread);
+  pm_perf_free (perf);
+  pm_model_free (model);
+}
+
+/* A thread the graph knows is busy only after enough busy samples in a
+ * row; one that sleeps never is. */
+static void
+test_perf_busy (void)
+{
+  PmModel *model = pm_model_new ();
+  PmPerf *perf = pm_perf_new (model);
+  Spinner spinner = { 0, g_get_monotonic_time () + 3 * G_USEC_PER_SEC,
+    model
+  };
+  GThread *thread = g_thread_new ("spinner", spin, &spinner);
+  GPtrArray *busy;
+  gint i;
+
+  pm_model_current_thread (model);
+  while (g_atomic_pointer_get (&spinner.os_id) == 0)
+    g_usleep (1000);
+  g_free (pm_perf_sample (perf));
+  for (i = 0; i < 3; i++) {
+    g_usleep (200000);
+    g_free (pm_perf_sample (perf));
+  }
+  busy = pm_perf_busy (perf, 5);
+  g_assert_cmpuint (busy->len, ==, 0);
+  g_ptr_array_unref (busy);
+  /* Two more busy samples: five in a row. A dip under the threshold on a
+   * loaded machine starts again, so allow a few more. */
+  for (i = 0; i < 8; i++) {
+    g_usleep (200000);
+    g_free (pm_perf_sample (perf));
+    busy = pm_perf_busy (perf, 5);
+    if (busy->len > 0)
+      break;
+    g_ptr_array_unref (busy);
+    busy = NULL;
+  }
+  g_assert_nonnull (busy);
+  g_assert_cmpuint (busy->len, ==, 1);
+  g_assert_cmpfloat (((PmBusyThread *) g_ptr_array_index (busy, 0))->cpu, >=,
+      PM_PERF_BUSY);
+  g_ptr_array_unref (busy);
   g_thread_join (thread);
   pm_perf_free (perf);
   pm_model_free (model);
@@ -1016,6 +1066,7 @@ main (int argc, char **argv)
   g_test_add_func ("/core/json-string", test_json_string);
   g_test_add_func ("/core/thread-sample", test_thread_sample);
   g_test_add_func ("/core/perf-sample", test_perf_sample);
+  g_test_add_func ("/core/perf-busy", test_perf_busy);
   g_test_add ("/core/latency-path", PathFixture, NULL, path_setup,
       test_latency_path, path_teardown);
   g_test_add ("/core/latency-segment", PathFixture, NULL, path_setup,

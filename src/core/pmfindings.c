@@ -3,6 +3,7 @@
 #include "pmfindings.h"
 #include "pmjson.h"
 #include "pmlevels.h"
+#include "pmperf.h"
 
 #include <string.h>
 
@@ -140,6 +141,7 @@ struct _PmFindings
   GHashTable *queues;
   GHashTable *sinks;
   guint64 tick;
+  PmPerf *perf;
 };
 
 static void
@@ -213,6 +215,12 @@ pm_findings_new (PmModel * model)
   f->sinks = g_hash_table_new_full (g_int64_hash, g_int64_equal, g_free,
       g_free);
   return f;
+}
+
+void
+pm_findings_set_perf (PmFindings * f, PmPerf * perf)
+{
+  f->perf = perf;
 }
 
 void
@@ -644,6 +652,81 @@ add_sinks (PmFindings * self, GPtrArray * findings, GHashTable * seen)
   g_ptr_array_unref (sinks);
 }
 
+/* Whether the pipeline at path's top level must keep up with time: live,
+ * or with a sink that syncs to the clock. Otherwise (a file transcoded as
+ * fast as it goes) a whole core is just its pace. */
+static gboolean
+keeps_time (PmFindings * self, const gchar * path, gboolean live)
+{
+  const gchar *slash = strchr (path, '/');
+  gsize top = slash ? (gsize) (slash - path) : strlen (path);
+  GPtrArray *sinks;
+  gboolean found = live;
+  guint i;
+
+  if (found)
+    return TRUE;
+  sinks = pm_model_find_elements (self->model, sink_filter);
+  for (i = 0; i < sinks->len && !found; i++) {
+    PmElementRef *ref = g_ptr_array_index (sinks, i);
+    gboolean sync = FALSE;
+
+    if (strncmp (ref->path, path, top) != 0 || ref->path[top] != '/')
+      continue;
+    g_object_get (ref->element, "sync", &sync, NULL);
+    found = sync;
+  }
+  g_ptr_array_unref (sinks);
+  return found;
+}
+
+/* A streaming thread using a whole core for a while, in a pipeline that
+ * must keep up with time: its elements can go no faster. Shown at the
+ * first element it runs. */
+static void
+add_busy (PmFindings * self, GPtrArray * findings)
+{
+  GPtrArray *busy;
+  guint i;
+
+  if (self->perf == NULL)
+    return;
+  busy = pm_perf_busy (self->perf, PM_BUSY_SECONDS);
+  for (i = 0; i < busy->len; i++) {
+    PmBusyThread *b = g_ptr_array_index (busy, i);
+    GPtrArray *elements = pm_model_thread_elements (self->model, b->id);
+    GString *names = g_string_new (NULL);
+    PmElementRef *first;
+    PmFinding *f;
+    guint j;
+
+    first = elements->len ? g_ptr_array_index (elements, 0) : NULL;
+    if (first == NULL || !keeps_time (self, first->path, first->live)) {
+      g_ptr_array_unref (elements);
+      g_string_free (names, TRUE);
+      continue;
+    }
+    for (j = 0; j < elements->len; j++) {
+      PmElementRef *ref = g_ptr_array_index (elements, j);
+      const gchar *slash = strrchr (ref->path, '/');
+
+      g_string_append_printf (names, "%s%s", j ? ", " : "",
+          slash ? slash + 1 : ref->path);
+    }
+    f = finding_new ("busy", PM_WARNING, first->id, first->path, 0, NULL);
+    f->text = g_strdup_printf ("thread %s uses %.0f %% of a core; it runs %s",
+        b->name, b->cpu * 100, names->str);
+    f->hint = g_strdup ("A thread runs on one core at a time, so these "
+        "elements cannot go faster. A queue before the slowest of them "
+        "gives it a thread of its own; or make that element do less (a "
+        "cheaper setting, a hardware element).");
+    g_ptr_array_add (findings, f);
+    g_string_free (names, TRUE);
+    g_ptr_array_unref (elements);
+  }
+  g_ptr_array_unref (busy);
+}
+
 /* Forgets queues and sinks that are gone. */
 static void
 forget_others (GHashTable * table, GHashTable * seen)
@@ -678,6 +761,7 @@ pm_findings_tick (PmFindings * self, gint64 stuck_after_us)
   add_structure (self, findings);
   add_queues (self, findings, seen);
   add_sinks (self, findings, seen);
+  add_busy (self, findings);
   forget_others (self->queues, seen);
   forget_others (self->sinks, seen);
   g_ptr_array_sort (findings, compare_findings);

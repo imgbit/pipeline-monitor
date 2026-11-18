@@ -15,6 +15,20 @@ void pm_perf_free (PmPerf * perf);
  * message, with each thread's share of one core since the last sample. */
 gchar *pm_perf_sample (PmPerf * perf);
 
+/* A thread at this share of one core or more cannot go faster. */
+#define PM_PERF_BUSY 0.95
+
+typedef struct
+{
+  /* The graph's id of the thread, its name and its last share. */
+  gint id;
+  gchar *name;
+  gdouble cpu;
+} PmBusyThread;
+
+/* Threads the graph knows that were busy in each of the last samples. */
+GPtrArray *pm_perf_busy (PmPerf * perf, guint samples);
+
 G_END_DECLS
 
 #endif

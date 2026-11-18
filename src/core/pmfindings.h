@@ -13,7 +13,14 @@ G_BEGIN_DECLS
 
 typedef struct _PmFindings PmFindings;
 
+/* A thread this busy for this many seconds is reported. */
+#define PM_BUSY_SECONDS 5
+
+typedef struct _PmPerf PmPerf;
+
 PmFindings *pm_findings_new (PmModel * model);
+/* Threads' CPU, for the busy-thread finding (NULL: none). */
+void pm_findings_set_perf (PmFindings * findings, PmPerf * perf);
 void pm_findings_free (PmFindings * findings);
 gchar *pm_findings_tick (PmFindings * findings, gint64 stuck_after_us);
 
