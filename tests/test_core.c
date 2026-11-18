@@ -816,53 +816,116 @@ count_change (gpointer data)
   (*(guint *) data)++;
 }
 
-/* A pad's threads: the one pushing; a second pushing at the same time is
- * shown too and reported once, not on every buffer (a funnel); one that
- * stopped for over a second is dropped (a restart on new threads). */
+/* A thread of its own that runs a task for the model on request: its id,
+ * and the task started or ended from inside it. */
+typedef struct
+{
+  PmModel *model;
+  GAsyncQueue *todo, *done;
+  GThread *thread;
+  gint id;
+} Worker;
+
+enum
+{ WORK_START = 1, WORK_END, WORK_QUIT };
+
+static gpointer
+work (gpointer data)
+{
+  Worker *w = data;
+  gint what;
+
+  while ((what = GPOINTER_TO_INT (g_async_queue_pop (w->todo))) != WORK_QUIT) {
+    if (what == WORK_START) {
+      w->id = pm_model_current_thread (w->model);
+      pm_model_thread_task (w->model, "task:src");
+    } else {
+      pm_model_thread_ended (w->model);
+    }
+    g_async_queue_push (w->done, GINT_TO_POINTER (1));
+  }
+  return NULL;
+}
+
+static void
+worker_do (Worker * w, gint what)
+{
+  g_async_queue_push (w->todo, GINT_TO_POINTER (what));
+  if (what != WORK_QUIT)
+    g_async_queue_pop (w->done);
+}
+
+static Worker *
+worker_new (PmModel * model)
+{
+  Worker *w = g_new0 (Worker, 1);
+
+  w->model = model;
+  w->todo = g_async_queue_new ();
+  w->done = g_async_queue_new ();
+  w->thread = g_thread_new ("worker", work, w);
+  worker_do (w, WORK_START);
+  return w;
+}
+
+static void
+worker_free (Worker * w)
+{
+  worker_do (w, WORK_QUIT);
+  g_thread_join (w->thread);
+  g_async_queue_unref (w->todo);
+  g_async_queue_unref (w->done);
+  g_free (w);
+}
+
+/* A pad's threads: the one pushing; a second also pushing is shown too and
+ * reported once, however long either pauses (a funnel's two inputs take
+ * turns); one whose task ends leaves the pad to the other; a new one takes
+ * the place of one that ended (a restart). */
 static void
 test_pad_threads (void)
 {
   PmModel *model = pm_model_new ();
+  Worker *a = worker_new (model), *b = worker_new (model);
+  Worker *c = worker_new (model);
   PmPushTiming t = { 0 };
   guint changes = 0;
-  gint ms;
+  gint i;
 
   pm_model_set_changed_func (model, count_change, &changes);
-  pm_model_note_pad_thread (model, &t, 1, 100);
-  g_assert_cmpint (t.thread, ==, 1);
+  pm_model_note_pad_thread (model, &t, a->id);
+  g_assert_cmpint (t.thread, ==, a->id);
   g_assert_cmpuint (changes, ==, 1);
 
-  /* Two threads in turn, every 10 ms for 3 s: one change. */
-  for (ms = 110; ms < 3110; ms += 10)
-    pm_model_note_pad_thread (model, &t, ms % 20 ? 2 : 1, ms);
-  g_assert_cmpint (t.thread, ==, 1);
-  g_assert_cmpint (t.other_thread, ==, 2);
+  /* Two in turn: one change. A third at once is not shown. */
+  for (i = 0; i < 300; i++)
+    pm_model_note_pad_thread (model, &t, i % 2 ? b->id : a->id);
+  pm_model_note_pad_thread (model, &t, c->id);
+  g_assert_cmpint (t.thread, ==, a->id);
+  g_assert_cmpint (t.other_thread, ==, b->id);
   g_assert_cmpuint (changes, ==, 2);
 
-  /* The first stops: the second alone, once it has been quiet 1 s. */
-  for (ms = 3110; ms < 4500; ms += 10)
-    pm_model_note_pad_thread (model, &t, 2, ms);
-  g_assert_cmpint (t.thread, ==, 2);
-  g_assert_cmpint (t.other_thread, ==, 0);
-  g_assert_cmpuint (changes, ==, 3);
-
-  /* Stopped, then started again on a new thread. */
-  pm_model_note_pad_thread (model, &t, 3, 9000);
-  g_assert_cmpint (t.thread, ==, 3);
-  g_assert_cmpint (t.other_thread, ==, 0);
+  /* a's task ends (this pad is not in the model, so it is seen at the
+   * next push): b goes on, c joins it. */
+  worker_do (a, WORK_END);
+  pm_model_note_pad_thread (model, &t, c->id);
+  g_assert_cmpint (t.thread, ==, b->id);
+  g_assert_cmpint (t.other_thread, ==, c->id);
+  /* The task's end, and c joining. */
   g_assert_cmpuint (changes, ==, 4);
 
-  /* A second that stops: dropped when the first pushes next. */
-  pm_model_note_pad_thread (model, &t, 4, 9010);
-  g_assert_cmpint (t.other_thread, ==, 4);
-  pm_model_note_pad_thread (model, &t, 3, 9500);
-  g_assert_cmpint (t.other_thread, ==, 4);
-  pm_model_note_pad_thread (model, &t, 3, 10100);
+  /* Both end: a new one alone (a restart). */
+  worker_do (b, WORK_END);
+  worker_do (c, WORK_END);
+  worker_do (a, WORK_START);
+  pm_model_note_pad_thread (model, &t, a->id);
+  g_assert_cmpint (t.thread, ==, a->id);
   g_assert_cmpint (t.other_thread, ==, 0);
-  g_assert_cmpint (t.thread, ==, 3);
-  g_assert_cmpuint (changes, ==, 6);
 
   pm_model_set_changed_func (model, NULL, NULL);
+  worker_free (a);
+  worker_free (b);
+  worker_free (c);
   pm_model_free (model);
 }
 
@@ -881,8 +944,8 @@ start_task (gpointer model)
 }
 
 /* Threads that ended are forgotten, so a program that keeps making
- * pipelines does not pile them up; a running task, and a thread the
- * sample could not have seen yet, are kept. */
+ * pipelines does not pile them up; a thread the sample could not have
+ * seen yet is kept. */
 static void
 test_forget_threads (void)
 {
@@ -900,11 +963,12 @@ test_forget_threads (void)
   g_usleep (1000);
   g_thread_join (g_thread_new ("later", make_known, model));
   pm_model_forget_threads (model, none, sampled);
-  /* The task (its end not reported) and the later one. */
-  g_assert_cmpuint (pm_model_thread_count (model), ==, 2);
+  /* Only the later one: the task's thread is gone too, though its end
+   * was not reported. */
+  g_assert_cmpuint (pm_model_thread_count (model), ==, 1);
 
   pm_model_forget_threads (model, none, g_get_monotonic_time ());
-  g_assert_cmpuint (pm_model_thread_count (model), ==, 1);
+  g_assert_cmpuint (pm_model_thread_count (model), ==, 0);
 
   g_array_unref (none);
   pm_model_free (model);

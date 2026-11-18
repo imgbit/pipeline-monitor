@@ -144,6 +144,8 @@ typedef struct
   /* Runs a GStreamer task; alive until the task ends. */
   gboolean task;
   gboolean alive;
+  /* The operating system no longer has it; kept for a pad that shows it. */
+  gboolean gone;
   gint64 created_us;
 } PmThread;
 
@@ -1936,6 +1938,8 @@ pm_model_thread_task (PmModel * model, const gchar * name)
   g_mutex_unlock (&model->lock);
 }
 
+static gboolean drop_gone_all (PmModel * model);
+
 void
 pm_model_thread_ended (PmModel * model)
 {
@@ -1946,65 +1950,90 @@ pm_model_thread_ended (PmModel * model)
   thread = g_hash_table_lookup (model->threads, GINT_TO_POINTER (id));
   if (thread != NULL && thread->alive) {
     thread->alive = FALSE;
+    drop_gone_all (model);
     changed (model);
   }
   g_mutex_unlock (&model->lock);
 }
 
-/* A pad's thread that has not pushed for this long is gone from it. */
-#define PAD_THREAD_STALE_MS 1000
-
+/* Whether thread (an id) has ended: its task stopped, or the operating
+ * system no longer has it. Called with the lock held. */
 static gboolean
-stale (gint * ms, gint now_ms)
+thread_gone (PmModel * model, gint id)
 {
-  return (guint) now_ms - (guint) g_atomic_int_get (ms) > PAD_THREAD_STALE_MS;
+  PmThread *t = g_hash_table_lookup (model->threads, GINT_TO_POINTER (id));
+
+  return t == NULL || t->gone || (t->task && !t->alive);
 }
 
-void
-pm_model_note_pad_thread (PmModel * model, PmPushTiming * t, gint thread,
-    gint now_ms)
+/* Takes ended threads out of t: a second one goes, a first one gives its
+ * place to the second (one alone stays, to show what last ran the pad).
+ * TRUE if t changed. Called with the lock held. */
+static gboolean
+drop_gone (PmModel * model, PmPushTiming * t)
 {
   gint first = g_atomic_int_get (&t->thread);
   gint other = g_atomic_int_get (&t->other_thread);
+
+  if (other != 0 && thread_gone (model, other)) {
+    g_atomic_int_set (&t->other_thread, 0);
+    return TRUE;
+  }
+  if (other != 0 && thread_gone (model, first)) {
+    g_atomic_int_set (&t->thread, other);
+    g_atomic_int_set (&t->other_thread, 0);
+    return TRUE;
+  }
+  return FALSE;
+}
+
+/* drop_gone on every pad. Called with the lock held. */
+static gboolean
+drop_gone_all (PmModel * model)
+{
+  GHashTableIter iter;
+  gpointer value;
   gboolean change = FALSE;
 
-  /* The usual case, without the lock: the pad's own thread, or the second
-   * of two still pushing. */
-  if (G_LIKELY (thread == first)) {
-    g_atomic_int_set (&t->thread_ms, now_ms);
-    if (G_LIKELY (other == 0 || !stale (&t->other_ms, now_ms)))
-      return;
-  } else if (thread == other && !stale (&t->thread_ms, now_ms)) {
-    g_atomic_int_set (&t->other_ms, now_ms);
-    return;
+  g_hash_table_iter_init (&iter, model->pads);
+  while (g_hash_table_iter_next (&iter, NULL, &value)) {
+    GstPad *pad = g_weak_ref_get (&((PmPad *) value)->ref);
+    PmPushTiming *t;
+
+    if (pad == NULL)
+      continue;
+    t = g_object_get_qdata (G_OBJECT (pad), timing_quark ());
+    if (t != NULL && drop_gone (model, t))
+      change = TRUE;
+    gst_object_unref (pad);
   }
+  return change;
+}
+
+void
+pm_model_note_pad_thread (PmModel * model, PmPushTiming * t, gint thread)
+{
+  gint first, other;
+  gboolean change;
+
+  /* The usual case, without the lock: one of the pad's threads. */
+  if (G_LIKELY (thread == g_atomic_int_get (&t->thread) ||
+          thread == g_atomic_int_get (&t->other_thread)))
+    return;
 
   g_mutex_lock (&model->lock);
+  change = drop_gone (model, t);
   first = g_atomic_int_get (&t->thread);
   other = g_atomic_int_get (&t->other_thread);
-  if (other != 0 && other != thread && stale (&t->other_ms, now_ms)) {
-    g_atomic_int_set (&t->other_thread, other = 0);
-    change = TRUE;
-  }
-  if (first != 0 && first != thread && stale (&t->thread_ms, now_ms)) {
-    /* The first has stopped: the second, if any, takes its place. */
-    g_atomic_int_set (&t->thread, first = other);
-    g_atomic_int_set (&t->thread_ms, g_atomic_int_get (&t->other_ms));
-    g_atomic_int_set (&t->other_thread, other = 0);
-    change = TRUE;
-  }
-  if (first == 0 || first == thread) {
-    if (first == 0)
+  if (thread != first && thread != other) {
+    if (first == 0 || thread_gone (model, first)) {
+      g_atomic_int_set (&t->thread, thread);
       change = TRUE;
-    g_atomic_int_set (&t->thread, thread);
-    g_atomic_int_set (&t->thread_ms, now_ms);
-    if (other == thread)
-      g_atomic_int_set (&t->other_thread, 0);
-  } else if (other == 0 || other == thread) {
-    if (other == 0)
+    } else if (other == 0) {
+      g_atomic_int_set (&t->other_thread, thread);
       change = TRUE;
-    g_atomic_int_set (&t->other_thread, thread);
-    g_atomic_int_set (&t->other_ms, now_ms);
+    }
+    /* A third at once: not shown; the two are enough to say "several". */
   }
   if (change)
     changed (model);
@@ -2044,12 +2073,25 @@ pm_model_forget_threads (PmModel * model, GArray * alive, gint64 sampled_us)
   GHashTable *shown = g_hash_table_new (NULL, NULL);
   GHashTableIter iter;
   gpointer value;
+  gboolean gone = FALSE;
   guint i;
 
   for (i = 0; i < alive->len; i++)
     g_hash_table_add (os_ids, &g_array_index (alive, PmThreadSample,
             i).os_id);
   g_mutex_lock (&model->lock);
+  g_hash_table_iter_init (&iter, model->threads);
+  while (g_hash_table_iter_next (&iter, NULL, &value)) {
+    PmThread *t = value;
+
+    if (!t->gone && t->created_us < sampled_us &&
+        !g_hash_table_contains (os_ids, &t->os_id)) {
+      t->gone = TRUE;
+      gone = TRUE;
+    }
+  }
+  if (gone && drop_gone_all (model))
+    changed (model);
   /* Threads a pad still shows keep their names. */
   g_hash_table_iter_init (&iter, model->pads);
   while (g_hash_table_iter_next (&iter, NULL, &value)) {
@@ -2071,9 +2113,7 @@ pm_model_forget_threads (PmModel * model, GArray * alive, gint64 sampled_us)
   while (g_hash_table_iter_next (&iter, NULL, &value)) {
     PmThread *t = value;
 
-    if (t->created_us < sampled_us && !(t->task && t->alive) &&
-        !g_hash_table_contains (os_ids, &t->os_id) &&
-        !g_hash_table_contains (shown, GINT_TO_POINTER (t->id)))
+    if (t->gone && !g_hash_table_contains (shown, GINT_TO_POINTER (t->id)))
       g_hash_table_iter_remove (&iter);
   }
   g_mutex_unlock (&model->lock);

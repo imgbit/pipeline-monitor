@@ -594,7 +594,7 @@ do_pad_push_pre (GstTracer * tracer, GstClockTime ts, GstPad * pad,
   g_atomic_int_set (&t->start_ms, (gint) (ts / GST_MSECOND) + 1);
   if (G_UNLIKELY (!g_atomic_int_get (&t->moved)))
     g_atomic_int_set (&t->moved, 1);
-  pm_model_note_pad_thread (model, t, thread, (gint) (ts / GST_MSECOND));
+  pm_model_note_pad_thread (model, t, thread);
 }
 
 static void
@@ -620,7 +620,7 @@ do_pad_pull_range_post (GstTracer * tracer, GstClockTime ts, GstPad * pad,
     gint thread = pm_model_current_thread (model);
 
     /* The pulling pad's thread carries the data over the link. */
-    pm_model_note_pad_thread (model, t, thread, (gint) (ts / GST_MSECOND));
+    pm_model_note_pad_thread (model, t, thread);
     if (G_UNLIKELY (!g_atomic_int_get (&t->moved))) {
       GstPad *peer = gst_pad_get_peer (pad);
 

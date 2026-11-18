@@ -3123,6 +3123,85 @@ pad_thread (const gchar * element, const gchar * pad, gchar ** name,
   return id;
 }
 
+/* How many threads the graph shows for element:pad: 2 with "threads", 1
+ * with "thread" alone, 0 if none. */
+static guint
+count_pad_threads (JsonObject * element, const gchar * name,
+    const gchar * pad)
+{
+  JsonArray *list = json_object_get_array_member (element, "pads");
+  guint i, n;
+
+  if (g_strcmp0 (json_object_get_string_member (element, "name"), name) == 0)
+    for (i = 0; i < json_array_get_length (list); i++) {
+      JsonObject *p = json_array_get_object_element (list, i);
+
+      if (g_strcmp0 (json_object_get_string_member (p, "name"), pad) != 0)
+        continue;
+      if (json_object_has_member (p, "threads"))
+        return json_array_get_length (json_object_get_array_member (p,
+                "threads"));
+      return json_object_has_member (p, "thread") ? 1 : 0;
+    }
+  list = json_object_get_array_member (element, "children");
+  for (i = 0; i < json_array_get_length (list); i++)
+    if ((n = count_pad_threads (json_array_get_object_element (list, i),
+                name, pad)) > 0)
+      return n;
+  return 0;
+}
+
+static guint
+pad_threads_now (const gchar * element, const gchar * pad)
+{
+  gchar *graph;
+  JsonNode *root;
+  JsonArray *pipelines;
+  guint i, n = 0;
+
+  get_status ("api/graph", "GET", NULL, &graph, NULL);
+  root = parse (graph);
+  pipelines = json_object_get_array_member (json_node_get_object (root),
+      "pipelines");
+  for (i = 0; i < json_array_get_length (pipelines) && n == 0; i++)
+    n = count_pad_threads (json_array_get_object_element (pipelines, i),
+        element, pad);
+  json_node_unref (root);
+  g_free (graph);
+  return n;
+}
+
+/* A funnel fed by two queues shows both threads on its output, however
+ * they take turns; when one branch stops, its thread goes from the pad at
+ * once. */
+static void
+test_funnel_threads (void)
+{
+  GstElement *pipeline = start_pipeline ("funnel name=tf ! fakesink "
+      "sync=true videotestsrc is-live=true name=tf-a ! queue name=tf-qa ! "
+      "tf. videotestsrc is-live=true name=tf-b ! queue name=tf-qb ! tf.");
+  GstElement *src = gst_bin_get_by_name (GST_BIN (pipeline), "tf-b");
+  GstElement *queue = gst_bin_get_by_name (GST_BIN (pipeline), "tf-qb");
+  gint tries;
+
+  for (tries = 0; tries < 100 && pad_threads_now ("tf", "src") != 2; tries++)
+    g_usleep (50 * G_TIME_SPAN_MILLISECOND);
+  g_assert_cmpuint (pad_threads_now ("tf", "src"), ==, 2);
+  /* Both still shown after a while of taking turns. */
+  g_usleep (2 * G_USEC_PER_SEC);
+  g_assert_cmpuint (pad_threads_now ("tf", "src"), ==, 2);
+
+  gst_element_set_locked_state (src, TRUE);
+  gst_element_set_locked_state (queue, TRUE);
+  gst_element_set_state (src, GST_STATE_NULL);
+  gst_element_set_state (queue, GST_STATE_NULL);
+  g_assert_cmpuint (pad_threads_now ("tf", "src"), ==, 1);
+
+  gst_object_unref (src);
+  gst_object_unref (queue);
+  stop_pipeline (pipeline);
+}
+
 /* Threads: each task thread named after its pad, the pads it pushes out of
  * served by it, a queue starting a new one; a thread that is not a task
  * (here the test's, pushing into an identity as an application can)
@@ -4266,6 +4345,7 @@ main (int argc, char **argv)
   g_test_add_func ("/server/findings-stuck", test_findings_stuck);
   g_test_add_func ("/server/dot", test_dot);
   g_test_add_func ("/server/threads", test_threads);
+  g_test_add_func ("/server/funnel-threads", test_funnel_threads);
   g_test_add_func ("/server/performance", test_performance);
   g_test_add_func ("/server/busy-thread", test_busy_thread);
   g_test_add_func ("/server/leftovers", test_leftovers);

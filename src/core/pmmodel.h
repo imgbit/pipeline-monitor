@@ -128,16 +128,14 @@ void pm_link_failure_free (PmLinkFailure * f);
  * one (0 = none). Written by the pad's streaming thread only. moved: data
  * has been pushed or pulled through the pad. thread: the model's id of the
  * thread that pushes out of it (src) or pulls through it (sink), 0 if none
- * yet; other_thread: a second one pushing at the same time (a funnel's
- * output), 0 if none. *_ms: when each last did. */
+ * yet; other_thread: a second one also pushing (a funnel's output), 0 if
+ * none, until one of the two ends. */
 typedef struct
 {
   gint start_ms;
   gint moved;
   gint thread;
   gint other_thread;
-  gint thread_ms;
-  gint other_ms;
 } PmPushTiming;
 
 typedef struct
@@ -164,8 +162,9 @@ void pm_model_thread_ended (PmModel * model);
  * free) and whether it runs a task. */
 gboolean pm_model_thread_info (PmModel * model, guint64 os_id, gint * id,
     gchar ** name, gboolean * task);
-/* Forgets threads that have ended: not in alive (PmThreadSample, sampled
- * at sampled_us), not a running task, shown by no pad. */
+/* Threads not in alive (PmThreadSample, sampled at sampled_us) have
+ * ended: taken out of pads where another thread goes on, and forgotten
+ * once no pad shows them. */
 void pm_model_forget_threads (PmModel * model, GArray * alive,
     gint64 sampled_us);
 /* How many threads the model remembers. */
@@ -192,9 +191,9 @@ typedef struct
  * and still alive, oldest first. */
 GPtrArray *pm_model_leftovers (PmModel * model, gint64 older_than);
 void pm_leftover_free (PmLeftover * left);
-/* thread (from pm_model_current_thread) pushed through t's pad at now_ms. */
+/* thread (from pm_model_current_thread) pushed through t's pad. */
 void pm_model_note_pad_thread (PmModel * model, PmPushTiming * t,
-    gint thread, gint now_ms);
+    gint thread);
 GPtrArray *pm_model_blocked_pushes (PmModel * model, gint now_ms,
     gint min_ms);
 void pm_blocked_free (PmBlocked * b);
