@@ -3217,55 +3217,81 @@ test_performance (void)
   stop_pipeline (pipeline);
 }
 
+/* The highest share of a core the thread named name had in a few
+ * "performance" messages. */
+static gdouble
+peak_cpu (const gchar * name)
+{
+  SoupSession *session = soup_session_new ();
+  gchar *url = server_url ("ws");
+  gdouble peak = 0;
+  WsClient client;
+  gint n;
+
+  ws_connect (&client, session, url, NULL);
+  for (n = 0; n < 3; n++) {
+    gchar *message = ws_next (&client, "performance");
+    JsonNode *root = parse (message);
+    JsonArray *threads = json_object_get_array_member (json_node_get_object
+        (root), "threads");
+    guint i;
+
+    for (i = 0; i < json_array_get_length (threads); i++) {
+      JsonObject *t = json_array_get_object_element (threads, i);
+
+      if (g_strcmp0 (json_object_get_string_member (t, "name"), name) == 0 &&
+          !json_object_get_null_member (t, "cpu"))
+        peak = MAX (peak, json_object_get_double_member (t, "cpu"));
+    }
+    json_node_unref (root);
+    g_free (message);
+  }
+  ws_disconnect (&client);
+  g_free (url);
+  g_object_unref (session);
+  return peak;
+}
+
 /* A sink that syncs to the clock asks for more frames of noise than any
  * machine makes (1000 a second): the source's thread stays at a whole core,
  * and after PM_BUSY_SECONDS it is a finding, naming the thread and the
  * elements it runs in the order data passes, at the first of them. (The
- * same without sync is quiet: see check-quiet.) */
+ * same without sync is quiet: see check-quiet.) On a machine too busy to
+ * give that thread a whole core it cannot be shown: skipped, saying so. */
 static void
 test_busy_thread (void)
 {
   GstElement *pipeline = start_pipeline ("videotestsrc pattern=snow "
       "name=bt-src ! video/x-raw,width=1280,height=720,framerate=1000/1 ! "
       "queue name=bt-q ! fakesink sync=true");
-  SoupSession *session = soup_session_new ();
-  gchar *url = server_url ("ws");
-  gchar *text = NULL, *path = NULL;
-  gint64 end = g_get_monotonic_time () + 25 * G_USEC_PER_SEC;
-  WsClient client;
+  gchar *id = g_strdup_printf ("busy:%s/bt-src", GST_OBJECT_NAME (pipeline));
+  JsonNode *found = wait_finding (id, 25);
 
-  ws_connect (&client, session, url, NULL);
-  while (text == NULL && g_get_monotonic_time () < end) {
-    gchar *message = ws_next (&client, "findings");
-    JsonNode *root = parse (message);
-    JsonArray *list = json_object_get_array_member (json_node_get_object
-        (root), "findings");
-    guint i;
+  if (found != NULL) {
+    JsonObject *f = json_node_get_object (found);
+    const gchar *text = json_object_get_string_member (f, "text");
 
-    for (i = 0; i < json_array_get_length (list); i++) {
-      JsonObject *f = json_array_get_object_element (list, i);
+    g_assert_cmpstr (json_object_get_string_member (f, "severity"), ==,
+        "warning");
+    g_assert_true (g_str_has_prefix (text, "thread bt-src:src uses "));
+    g_assert_true (g_regex_match_simple (" of a core; it runs bt-src, "
+            "capsfilter[0-9]+, bt-q$", text, 0, 0));
+    json_node_unref (found);
+  } else {
+    gdouble peak = peak_cpu ("bt-src:src");
 
-      if (g_str_has_prefix (json_object_get_string_member (f, "id"),
-              "busy:")) {
-        text = g_strdup (json_object_get_string_member (f, "text"));
-        path = g_strdup (json_object_get_string_member (f, "path"));
-        g_assert_cmpstr (json_object_get_string_member (f, "severity"), ==,
-            "warning");
-      }
+    if (peak >= 0.95)
+      g_error ("bt-src:src at %.0f %% of a core, but not reported",
+          peak * 100);
+    else {
+      gchar *why = g_strdup_printf ("bt-src:src got only %.0f %% of a core "
+          "on this machine", peak * 100);
+
+      g_test_skip (why);
+      g_free (why);
     }
-    json_node_unref (root);
-    g_free (message);
   }
-  g_assert_nonnull (text);
-  g_assert_true (g_str_has_prefix (text, "thread bt-src:src uses "));
-  g_assert_true (g_regex_match_simple (" of a core; it runs bt-src, "
-          "capsfilter[0-9]+, bt-q$", text, 0, 0));
-  g_assert_true (g_str_has_suffix (path, "/bt-src"));
-  g_free (text);
-  g_free (path);
-  ws_disconnect (&client);
-  g_free (url);
-  g_object_unref (session);
+  g_free (id);
   stop_pipeline (pipeline);
 }
 

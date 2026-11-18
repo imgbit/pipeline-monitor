@@ -921,46 +921,64 @@ test_perf_sample (void)
 }
 
 /* A thread the graph knows is busy only after enough busy samples in a
- * row; one that sleeps never is. */
+ * row. Samples half a second apart: thread clocks count in steps of 10 to
+ * 16 ms. On a machine too busy to give the spinner a whole core, the
+ * second half cannot be shown: skipped, saying so. */
 static void
 test_perf_busy (void)
 {
   PmModel *model = pm_model_new ();
   PmPerf *perf = pm_perf_new (model);
-  Spinner spinner = { 0, g_get_monotonic_time () + 3 * G_USEC_PER_SEC,
+  Spinner spinner = { 0, g_get_monotonic_time () + 9 * G_USEC_PER_SEC,
     model
   };
   GThread *thread = g_thread_new ("spinner", spin, &spinner);
-  GPtrArray *busy;
+  GPtrArray *busy = NULL;
+  GArray *before, *after;
+  gint64 start;
+  gdouble share;
   gint i;
 
   pm_model_current_thread (model);
   while (g_atomic_pointer_get (&spinner.os_id) == 0)
     g_usleep (1000);
+  before = pm_thread_sample_all ();
+  start = g_get_monotonic_time ();
   g_free (pm_perf_sample (perf));
   for (i = 0; i < 3; i++) {
-    g_usleep (200000);
+    g_usleep (500000);
     g_free (pm_perf_sample (perf));
   }
+  /* At most three busy samples so far: not yet. */
   busy = pm_perf_busy (perf, 5);
   g_assert_cmpuint (busy->len, ==, 0);
-  g_ptr_array_unref (busy);
-  /* Two more busy samples: five in a row. A dip under the threshold on a
-   * loaded machine starts again, so allow a few more. */
-  for (i = 0; i < 8; i++) {
-    g_usleep (200000);
+  g_clear_pointer (&busy, g_ptr_array_unref);
+  for (i = 0; i < 10 && busy == NULL; i++) {
+    g_usleep (500000);
     g_free (pm_perf_sample (perf));
     busy = pm_perf_busy (perf, 5);
-    if (busy->len > 0)
-      break;
-    g_ptr_array_unref (busy);
-    busy = NULL;
+    if (busy->len == 0)
+      g_clear_pointer (&busy, g_ptr_array_unref);
   }
-  g_assert_nonnull (busy);
-  g_assert_cmpuint (busy->len, ==, 1);
-  g_assert_cmpfloat (((PmBusyThread *) g_ptr_array_index (busy, 0))->cpu, >=,
-      PM_PERF_BUSY);
-  g_ptr_array_unref (busy);
+  after = pm_thread_sample_all ();
+  share = (cpu_of (after, spinner.os_id) - cpu_of (before, spinner.os_id)) /
+      1e3 / (g_get_monotonic_time () - start);
+  if (busy != NULL) {
+    g_assert_cmpuint (busy->len, ==, 1);
+    g_assert_cmpfloat (((PmBusyThread *) g_ptr_array_index (busy, 0))->cpu,
+        >=, PM_PERF_BUSY);
+    g_ptr_array_unref (busy);
+  } else if (share < PM_PERF_BUSY) {
+    gchar *why = g_strdup_printf ("the spinning thread got only %.0f %% of "
+        "a core on this machine", share * 100);
+
+    g_test_skip (why);
+    g_free (why);
+  } else {
+    g_error ("busy at %.0f %% of a core, but not reported", share * 100);
+  }
+  g_array_unref (before);
+  g_array_unref (after);
   g_thread_join (thread);
   pm_perf_free (perf);
   pm_model_free (model);
