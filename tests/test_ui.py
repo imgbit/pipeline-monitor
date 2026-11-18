@@ -1383,6 +1383,12 @@ def check_threads_view(browser, serve):
         assert browser.wait(f"(s => s.length === 2 && s.every(Boolean) && "
                             f"s[0] !== s[1])({strokes})"), \
             "links not in two thread colours: " + str(browser.eval(strokes))
+        # CPU per thread from the "performance" message, once a second.
+        cpu = (f"[...{legend}.querySelectorAll('.cpu')].map(c => "
+               "c.textContent)")
+        assert browser.wait(f"(c => c.length === 3 && c.every(t => "
+                            f"/^\\d+ %$/.test(t)))({cpu})", timeout=10), \
+            "no CPU in the legend: " + str(browser.eval(cpu))
         box = "(n => n?.querySelector(':scope > rect.box').style.fill)"
         assert browser.eval(f"{box}({element_selector('tq')})")\
             .find("thread-split-") >= 0, "the queue is not split"

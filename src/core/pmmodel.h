@@ -156,6 +156,10 @@ gint pm_model_current_thread (PmModel * model);
 void pm_model_thread_task (PmModel * model, const gchar * name);
 /* The calling thread's task has ended. */
 void pm_model_thread_ended (PmModel * model);
+/* The thread with this OS id, if the model knows it: its id, its name (to
+ * free) and whether it runs a task. */
+gboolean pm_model_thread_info (PmModel * model, guint64 os_id, gint * id,
+    gchar ** name, gboolean * task);
 /* t's pad is now served by thread (from pm_model_current_thread). */
 void pm_model_set_pad_thread (PmModel * model, PmPushTiming * t,
     gint thread);

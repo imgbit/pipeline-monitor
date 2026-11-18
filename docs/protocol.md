@@ -103,10 +103,11 @@ belongs to that connection only. A new connection starts with nothing.
 | `graph` | when the graph changes, at most every 100 ms | all | `GET /api/graph` |
 | `log` | new or repeated errors and warnings, at most every 100 ms | all | `GET /api/log` (whole log) |
 | `findings` | when the list changes, at most once per second | all | `GET /api/findings` |
-| `levels` | every 250 ms | all | `GET /api/levels` |
+| `levels` | every 250 ms, and with each graph | all | `GET /api/levels` |
 | `pads` | every 250 ms, for watched pads | that connection | – |
 | `properties` | every 250 ms, for watched properties | that connection | `GET /api/properties?element=ID` |
 | `latency` | every 250 ms, while measuring | that connection | – |
+| `performance` | once per second | all | – |
 | `recordings` | on connecting, when the list changes, every second while recording | all | `GET /api/recordings` |
 | `error` | a command failed | that connection | – |
 | `bye` | the program is ending | all | – |
@@ -128,7 +129,9 @@ hello also has `"viewer":true`, and the graph is empty.
 ```json
 {"type":"graph","protocol":1,"time":…,
  "pipelines":[ELEMENT],
- "links":[{"src":2,"sink":4}]}
+ "links":[{"src":2,"sink":4}],
+ "threads":[{"id":1,"os":12417,"name":"queue0:src","task":true,
+   "alive":true}]}
 ```
 
 ELEMENT:
@@ -149,11 +152,18 @@ ELEMENT:
 PAD: `id`, `name`, `path`, `direction` (`src`, `sink`), `presence`
 (`always`, `sometimes`, `request`), `mode` (`push`, `pull`, `none` when not
 active; since 0.11), `caps` (once negotiated; a pulled pad usually has
-none), `ghost`, and
+none), `ghost`, `thread` (the id in `threads` of the thread that last
+pushed out of it, or pulled through it; since 0.12), and
 `flow` when the last push or pull did not return ok:
 `{"result":"not-linked","count":12,"first":…,"last":…}`.
 
 `links` connect pad ids. A link is listed once both its pads are known.
+
+`threads` (since 0.12): the threads a pad names, and GStreamer tasks still
+running. `id` is the model's (from 1), `os` the operating system's thread
+id, `name` the task's name (`element:pad`) or the name the thread has
+(may be `""`), `task` whether it runs a GStreamer task, `alive` false once
+the task has ended.
 
 ### log
 
@@ -300,6 +310,25 @@ element: `404`.
 - A connection gets only what it measures; when its last measurement ends
   it gets one message with empty lists.
 
+### performance
+
+Since 0.12.
+
+```json
+{"type":"performance","protocol":1,"time":…,"cores":8,
+ "threads":[{"os":12417,"id":1,"task":true,"name":"queue0:src","cpu":0.98},
+   {"os":12420,"name":"","cpu":0.12}]}
+```
+
+- `threads`: every thread of the process, busiest first; `null` where the
+  platform cannot list them.
+- `cpu`: the share of one core it used since the previous message (1 = a
+  whole core), `null` in the first message it appears in.
+- `id`, `task`: for a thread in the graph's `threads`.
+- `name`: the task's name for a GStreamer task, otherwise the name the
+  operating system has for the thread (often `""`).
+- `cores`: the processors the system has.
+
 ### error
 
 ```json
@@ -419,11 +448,12 @@ version, and readers ignore what they do not know.
    bins), or `null`.
 2. Then messages in the order they were made, as above, each with its
    `type` and `time`: `graph`, `log`, `findings`, `levels`, `properties`,
-   `pads`, `latency`. At the start: the graph, the whole log, the
-   findings, the levels and every element's properties; then changes to
-   the graph, new log entries and findings as they come, and once a second
-   the levels, pipeline times and what pages watch or measure. An element
-   added later gets its properties once it is in its pipeline.
+   `pads`, `latency`, `performance`. At the start: the graph, the whole
+   log, the findings, the levels and every element's properties; then
+   changes to the graph, new log entries and findings as they come, and
+   once a second the levels, pipeline times, performance and what pages
+   watch or measure. Each graph is followed by the levels of its moment.
+   An element added later gets its properties once it is in its pipeline.
 3. The last line, `{"type":"end",…,"reason":…}`: `stopped`, `limit` (the
    file reached its size), `snapshot` (a snapshot is complete),
    `program-ended` or `error` (it could not be written; see `failure` in

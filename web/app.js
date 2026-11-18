@@ -421,14 +421,55 @@ function showThreads(pipeline) {
     const kind = document.createElement("span");
     kind.className = "kind";
     kind.textContent = t?.task ? "" : "not a GStreamer task";
-    row.append(swatch, name, kind);
+    const cpu = document.createElement("span");
+    cpu.className = "cpu";
+    cpu.dataset.thread = id;
+    row.append(swatch, name, kind, cpu);
     return row;
   }));
   if (!order.length)
     legend.textContent = state.viewing && !state.graph.threads
       ? "No thread data in this recording (made before 0.12)"
       : "No data has moved yet";
+  else {
+    const others = document.createElement("div");
+    others.className = "row others";
+    const label = document.createElement("span");
+    label.textContent = "other threads";
+    label.title = "Threads that move no data through a pad: a program's " +
+      "own, or an element's helpers (x264enc encodes in its own threads)";
+    const cpu = document.createElement("span");
+    cpu.className = "cpu";
+    cpu.dataset.thread = "other";
+    others.append(label, cpu);
+    legend.append(others);
+  }
   legend.hidden = false;
+  showThreadCpu();
+}
+
+// CPU per thread in the legend, from the last "performance" message: the
+// share of one core, and the threads the graph does not name added up.
+function showThreadCpu() {
+  const threads = state.performance?.threads;
+  const used = new Set([...$("threads-legend")
+    .querySelectorAll(".cpu[data-thread]")].map((c) => c.dataset.thread));
+  const percent = (cpu) => cpu === null || cpu === undefined
+    ? "" : `${Math.round(cpu * 100)} %`;
+  for (const cell of $("threads-legend").querySelectorAll(".cpu")) {
+    const id = cell.dataset.thread;
+    if (!threads) {
+      cell.textContent = "";
+    } else if (id === "other") {
+      const rest = threads.filter((t) => !used.has(String(t.id)) &&
+        t.cpu !== null);
+      cell.textContent = rest.length
+        ? percent(rest.reduce((sum, t) => sum + t.cpu, 0)) : "";
+    } else {
+      cell.textContent = percent(threads.find((t) => String(t.id) === id)
+        ?.cpu);
+    }
+  }
 }
 
 // Lookups over the whole graph for the details panel and edge highlighting.
@@ -1499,6 +1540,9 @@ function handleMessage(message) {
     if (state.graph.pipelines.length)
       lastAlive.findings = message;
     showProblems();
+  } else if (message.type === "performance") {
+    state.performance = message;
+    showThreadCpu();
   } else if (message.type === "latency") {
     applyLatency(message);
   } else if (message.type === "levels") {

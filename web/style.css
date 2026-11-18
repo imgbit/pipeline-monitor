@@ -197,6 +197,12 @@ main {
 .threads-legend .row { display: flex; gap: 6px; align-items: center; }
 .threads-legend .swatch { width: 14px; height: 3px; border-radius: 1.5px; }
 .threads-legend .kind { color: var(--muted); }
+.threads-legend .cpu {
+  margin-left: auto;
+  padding-left: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.threads-legend .others { color: var(--muted); }
 
 #details {
   position: absolute;

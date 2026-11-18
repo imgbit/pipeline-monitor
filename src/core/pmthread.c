@@ -5,14 +5,21 @@
 #endif
 #include "pmthread.h"
 
+#include <string.h>
+
 #ifdef G_OS_WIN32
 #include <windows.h>
+#include <tlhelp32.h>
 #else
 #include <pthread.h>
 #endif
 #ifdef __linux__
 #include <sys/syscall.h>
 #include <unistd.h>
+#include <stdlib.h>
+#endif
+#ifdef __APPLE__
+#include <mach/mach.h>
 #endif
 
 guint64
@@ -45,5 +52,155 @@ pm_thread_os_name (void)
   if (pthread_getname_np (pthread_self (), name, sizeof (name)) != 0)
     name[0] = '\0';
   return g_strdup (name);
+#endif
+}
+
+static void
+sample_clear (PmThreadSample * sample)
+{
+  g_free (sample->name);
+}
+
+static GArray *
+new_samples (void)
+{
+  GArray *all = g_array_new (FALSE, TRUE, sizeof (PmThreadSample));
+
+  g_array_set_clear_func (all, (GDestroyNotify) sample_clear);
+  return all;
+}
+
+#if defined(__linux__)
+/* /proc/self/task/TID/stat: "TID (name) state ...", utime and stime are
+ * the 14th and 15th fields, in clock ticks. */
+static gboolean
+read_stat (const gchar * tid, PmThreadSample * sample)
+{
+  gchar *path = g_strdup_printf ("/proc/self/task/%s/stat", tid);
+  gchar *text = NULL, *open, *close, **fields;
+  gboolean ok = FALSE;
+
+  if (g_file_get_contents (path, &text, NULL, NULL) &&
+      (open = strchr (text, '(')) != NULL &&
+      (close = strrchr (text, ')')) != NULL && close > open) {
+    /* After ") ": field 3 (state) onwards. */
+    fields = g_strsplit (close + 2, " ", 14);
+    if (g_strv_length (fields) >= 13) {
+      guint64 ticks = g_ascii_strtoull (fields[11], NULL, 10) +
+          g_ascii_strtoull (fields[12], NULL, 10);
+
+      sample->os_id = g_ascii_strtoull (tid, NULL, 10);
+      sample->name = g_strndup (open + 1, close - open - 1);
+      sample->cpu_ns = ticks * (G_GUINT64_CONSTANT (1000000000) /
+          sysconf (_SC_CLK_TCK));
+      ok = TRUE;
+    }
+    g_strfreev (fields);
+  }
+  g_free (text);
+  g_free (path);
+  return ok;
+}
+#endif
+
+GArray *
+pm_thread_sample_all (void)
+{
+#if defined(__linux__)
+  GDir *dir = g_dir_open ("/proc/self/task", 0, NULL);
+  GArray *all;
+  const gchar *tid;
+
+  if (dir == NULL)
+    return NULL;
+  all = new_samples ();
+  while ((tid = g_dir_read_name (dir)) != NULL) {
+    PmThreadSample sample = { 0 };
+
+    if (read_stat (tid, &sample))
+      g_array_append_val (all, sample);
+  }
+  g_dir_close (dir);
+  return all;
+#elif defined(__APPLE__)
+  thread_act_array_t threads;
+  mach_msg_type_number_t count;
+  GArray *all;
+  guint i;
+
+  if (task_threads (mach_task_self (), &threads, &count) != KERN_SUCCESS)
+    return NULL;
+  all = new_samples ();
+  for (i = 0; i < count; i++) {
+    thread_identifier_info_data_t id;
+    thread_basic_info_data_t basic;
+    thread_extended_info_data_t extended;
+    mach_msg_type_number_t n = THREAD_IDENTIFIER_INFO_COUNT;
+    PmThreadSample sample = { 0 };
+
+    if (thread_info (threads[i], THREAD_IDENTIFIER_INFO, (thread_info_t) & id,
+            &n) == KERN_SUCCESS) {
+      n = THREAD_BASIC_INFO_COUNT;
+      if (thread_info (threads[i], THREAD_BASIC_INFO, (thread_info_t) & basic,
+              &n) == KERN_SUCCESS) {
+        sample.os_id = id.thread_id;
+        sample.cpu_ns =
+            ((guint64) basic.user_time.seconds + basic.system_time.seconds) *
+            G_GUINT64_CONSTANT (1000000000) +
+            ((guint64) basic.user_time.microseconds +
+            basic.system_time.microseconds) * 1000;
+        n = THREAD_EXTENDED_INFO_COUNT;
+        sample.name = thread_info (threads[i], THREAD_EXTENDED_INFO,
+            (thread_info_t) & extended, &n) == KERN_SUCCESS ?
+            g_strndup (extended.pth_name, sizeof (extended.pth_name)) :
+            g_strdup ("");
+        g_array_append_val (all, sample);
+      }
+    }
+    mach_port_deallocate (mach_task_self (), threads[i]);
+  }
+  vm_deallocate (mach_task_self (), (vm_address_t) threads,
+      count * sizeof (*threads));
+  return all;
+#elif defined(G_OS_WIN32)
+  HANDLE snapshot = CreateToolhelp32Snapshot (TH32CS_SNAPTHREAD, 0);
+  DWORD self = GetCurrentProcessId ();
+  THREADENTRY32 entry;
+  GArray *all;
+
+  if (snapshot == INVALID_HANDLE_VALUE)
+    return NULL;
+  all = new_samples ();
+  entry.dwSize = sizeof (entry);
+  if (Thread32First (snapshot, &entry)) {
+    do {
+      HANDLE thread;
+      FILETIME created, exited, kernel, user;
+
+      if (entry.th32OwnerProcessID != self)
+        continue;
+      thread = OpenThread (THREAD_QUERY_LIMITED_INFORMATION, FALSE,
+          entry.th32ThreadID);
+      if (thread == NULL)
+        continue;
+      if (GetThreadTimes (thread, &created, &exited, &kernel, &user)) {
+        PmThreadSample sample = { 0 };
+        guint64 k = ((guint64) kernel.dwHighDateTime << 32) |
+            kernel.dwLowDateTime;
+        guint64 u = ((guint64) user.dwHighDateTime << 32) | user.dwLowDateTime;
+
+        sample.os_id = entry.th32ThreadID;
+        sample.name = g_strdup ("");
+        /* 100 ns units. */
+        sample.cpu_ns = (k + u) * 100;
+        g_array_append_val (all, sample);
+      }
+      CloseHandle (thread);
+    } while (Thread32Next (snapshot, &entry));
+  }
+  CloseHandle (snapshot);
+  return all;
+#else
+  return NULL;
 #endif
 }

@@ -1919,3 +1919,26 @@ pm_model_set_pad_thread (PmModel * model, PmPushTiming * t, gint thread)
   changed (model);
   g_mutex_unlock (&model->lock);
 }
+
+gboolean
+pm_model_thread_info (PmModel * model, guint64 os_id, gint * id,
+    gchar ** name, gboolean * task)
+{
+  gboolean found = FALSE;
+  guint i;
+
+  g_mutex_lock (&model->lock);
+  /* The newest first: an OS id can be reused by a later thread. */
+  for (i = model->threads->len; i > 0 && !found; i--) {
+    PmThread *t = g_ptr_array_index (model->threads, i - 1);
+
+    if (t->os_id == os_id) {
+      *id = t->id;
+      *name = g_strdup (t->name);
+      *task = t->task;
+      found = TRUE;
+    }
+  }
+  g_mutex_unlock (&model->lock);
+  return found;
+}

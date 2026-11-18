@@ -11,6 +11,8 @@
 #include "pmlatency.h"
 #include "pmfindings.h"
 #include "pmjson.h"
+#include "pmthread.h"
+#include "pmperf.h"
 
 /* Model tests without a pipeline: objects are created and destroyed by the
  * test itself, in orders the tracer hooks can't easily produce. */
@@ -808,6 +810,101 @@ test_latency_segment (PathFixture * f, gconstpointer data)
   pm_latency_free (latency);
 }
 
+typedef struct
+{
+  guint64 os_id;
+  gint64 until;
+} Spinner;
+
+static gpointer
+spin (gpointer data)
+{
+  Spinner *spinner = data;
+  volatile guint64 n = 0;
+
+  spinner->os_id = pm_thread_os_id ();
+  while (g_get_monotonic_time () < spinner->until)
+    n++;
+  return NULL;
+}
+
+static guint64
+cpu_of (GArray * all, guint64 os_id)
+{
+  guint i;
+
+  for (i = 0; i < all->len; i++)
+    if (g_array_index (all, PmThreadSample, i).os_id == os_id)
+      return g_array_index (all, PmThreadSample, i).cpu_ns;
+  g_error ("thread %" G_GUINT64_FORMAT " not listed", os_id);
+  return 0;
+}
+
+/* Every thread of the process is listed with its CPU time: a busy one's
+ * grows by about the time it spun, a sleeping one's hardly. */
+static void
+test_thread_sample (void)
+{
+  Spinner spinner = { 0, g_get_monotonic_time () + 600000 };
+  GThread *thread = g_thread_new ("spinner", spin, &spinner);
+  guint64 self = pm_thread_os_id ();
+  GArray *before, *after;
+
+  while (g_atomic_pointer_get (&spinner.os_id) == 0)
+    g_usleep (1000);
+  before = pm_thread_sample_all ();
+  g_assert_nonnull (before);
+  g_usleep (400000);
+  after = pm_thread_sample_all ();
+  g_assert_cmpuint (cpu_of (after, spinner.os_id) -
+      cpu_of (before, spinner.os_id), >=, 200000000);
+  g_assert_cmpuint (cpu_of (after, self) - cpu_of (before, self), <,
+      100000000);
+  g_array_unref (before);
+  g_array_unref (after);
+  g_thread_join (thread);
+}
+
+/* The "performance" body: cores, every thread, the busy one near a whole
+ * core and listed first, null before there are two samples. */
+static void
+test_perf_sample (void)
+{
+  PmModel *model = pm_model_new ();
+  PmPerf *perf = pm_perf_new (model);
+  Spinner spinner = { 0, g_get_monotonic_time () + 800000 };
+  GThread *thread;
+  gchar *first, *second, *os;
+  JsonParser *parser = json_parser_new ();
+  JsonArray *threads;
+  JsonObject *busiest;
+
+  thread = g_thread_new ("spinner", spin, &spinner);
+  while (g_atomic_pointer_get (&spinner.os_id) == 0)
+    g_usleep (1000);
+  first = pm_perf_sample (perf);
+  g_assert_nonnull (strstr (first, "\"cpu\":null"));
+  g_usleep (500000);
+  second = pm_perf_sample (perf);
+  g_assert_true (json_parser_load_from_data (parser, second, -1, NULL));
+  g_assert_cmpint (json_object_get_int_member (json_node_get_object
+          (json_parser_get_root (parser)), "cores"), >=, 1);
+  threads = json_object_get_array_member (json_node_get_object
+      (json_parser_get_root (parser)), "threads");
+  busiest = json_array_get_object_element (threads, 0);
+  os = g_strdup_printf ("%" G_GUINT64_FORMAT, spinner.os_id);
+  g_assert_cmpuint (json_object_get_int_member (busiest, "os"), ==,
+      spinner.os_id);
+  g_assert_cmpfloat (json_object_get_double_member (busiest, "cpu"), >, 0.6);
+  g_free (os);
+  g_object_unref (parser);
+  g_free (first);
+  g_free (second);
+  g_thread_join (thread);
+  pm_perf_free (perf);
+  pm_model_free (model);
+}
+
 /* Strings are escaped, and text that is not valid UTF-8 is repaired. */
 static void
 test_json_string (void)
@@ -906,6 +1003,8 @@ main (int argc, char **argv)
   g_test_add_func ("/core/props-values", test_props_values);
   g_test_add_func ("/core/props-read", test_props_read);
   g_test_add_func ("/core/json-string", test_json_string);
+  g_test_add_func ("/core/thread-sample", test_thread_sample);
+  g_test_add_func ("/core/perf-sample", test_perf_sample);
   g_test_add ("/core/latency-path", PathFixture, NULL, path_setup,
       test_latency_path, path_teardown);
   g_test_add ("/core/latency-segment", PathFixture, NULL, path_setup,

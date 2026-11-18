@@ -4,6 +4,7 @@
 #include "pmfindings.h"
 #include "pmjson.h"
 #include "pmlatency.h"
+#include "pmperf.h"
 #include "pmlevels.h"
 #include "pmprops.h"
 #include "pmmonitor.h"
@@ -33,6 +34,7 @@ struct _PmServer
   PmModel *model;
   PmMonitor *monitor;
   PmLatency *latency;
+  PmPerf *perf;
   PmFindings *findings;
   gchar *ui_dir;
   guint requested_port;
@@ -1298,7 +1300,14 @@ update (PmServer * self, gboolean sample, gboolean force)
    * once per second while one is running, and once when it ends. */
   if (self->ticks++ % 4 == 0) {
     gboolean running = pm_recorder_running (self->recorder);
+    gchar *perf = pm_perf_sample (self->perf);
+    gchar *text = pm_json_message ("performance", perf);
 
+    /* CPU per thread: to every page, and recorded. */
+    send_to_all (self, text);
+    record (self, text);
+    g_free (text);
+    g_free (perf);
     send_findings (self);
     if (running || self->was_running)
       send_recordings (self, NULL);
@@ -1708,6 +1717,7 @@ pm_server_new (PmModel * model, guint port, const gchar * ui_dir,
   self->model = model;
   self->monitor = pm_monitor_new (model);
   self->latency = pm_latency_new (model);
+  self->perf = pm_perf_new (model);
   self->findings = pm_findings_new (model);
   /* Lets tests reach the "measure all" limit with a small pipeline. */
   if (g_getenv ("PM_MEASURE_ALL_LIMIT") != NULL)
@@ -1769,6 +1779,7 @@ pm_server_free (PmServer * self)
   g_ptr_array_unref (self->clients);
   g_hash_table_unref (self->watches);
   pm_latency_free (self->latency);
+  pm_perf_free (self->perf);
   pm_findings_free (self->findings);
   pm_monitor_free (self->monitor);
   g_main_loop_unref (self->loop);

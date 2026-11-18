@@ -1646,8 +1646,8 @@ test_recordings (void)
 
 /* The rules every message follows (docs/protocol.md). */
 static const gchar *message_types[] = { "hello", "graph", "log", "findings",
-  "levels", "pads", "properties", "latency", "error", "bye", "watched-pads",
-  "recordings", NULL
+  "levels", "pads", "properties", "latency", "performance", "error", "bye",
+  "watched-pads", "recordings", NULL
 };
 
 /* Each reference to an element or pad has its path next to its id. */
@@ -3172,6 +3172,49 @@ test_threads (void)
   stop_pipeline (pipeline);
 }
 
+/* "performance" once a second: every thread with its share of a core; a
+ * streaming thread the graph knows with its id and task name. A source
+ * making noise as fast as it can keeps its thread busy. */
+static void
+test_performance (void)
+{
+  GstElement *pipeline = start_pipeline ("videotestsrc pattern=snow "
+      "name=pf-src ! video/x-raw,width=1280,height=720 ! fakesink sync=false");
+  SoupSession *session = soup_session_new ();
+  gchar *url = server_url ("ws");
+  WsClient client;
+  gdouble cpu = -1;
+  gint tries;
+
+  ws_connect (&client, session, url, NULL);
+  for (tries = 0; tries < 6 && cpu < 0.3; tries++) {
+    gchar *message = ws_next (&client, "performance");
+    JsonNode *root = parse (message);
+    JsonObject *m = json_node_get_object (root);
+    JsonArray *threads = json_object_get_array_member (m, "threads");
+    guint i;
+
+    g_assert_cmpint (json_object_get_int_member (m, "cores"), >=, 1);
+    g_assert_cmpuint (json_array_get_length (threads), >=, 2);
+    for (i = 0; i < json_array_get_length (threads); i++) {
+      JsonObject *t = json_array_get_object_element (threads, i);
+
+      if (g_strcmp0 (json_object_get_string_member (t, "name"),
+              "pf-src:src") == 0 && json_object_has_member (t, "id") &&
+          json_object_get_boolean_member (t, "task") &&
+          !json_object_get_null_member (t, "cpu"))
+        cpu = json_object_get_double_member (t, "cpu");
+    }
+    json_node_unref (root);
+    g_free (message);
+  }
+  g_assert_cmpfloat (cpu, >=, 0.3);
+  ws_disconnect (&client);
+  g_free (url);
+  g_object_unref (session);
+  stop_pipeline (pipeline);
+}
+
 /* GET /api/dot?pipeline=<id>: GStreamer's .dot of the pipeline; 404 for
  * an unknown id or an element that is not a bin. */
 static void
@@ -4021,6 +4064,7 @@ main (int argc, char **argv)
   g_test_add_func ("/server/findings-stuck", test_findings_stuck);
   g_test_add_func ("/server/dot", test_dot);
   g_test_add_func ("/server/threads", test_threads);
+  g_test_add_func ("/server/performance", test_performance);
   g_test_add_func ("/server/check-not-negotiated",
       test_check_not_negotiated);
   g_test_add_func ("/server/check-failed-link", test_check_failed_link);
