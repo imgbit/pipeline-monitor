@@ -30,6 +30,6 @@ body:
     attributes:
       label: Versions
       description: pipeline-monitor (pipeline-monitor --version), GStreamer, the operating system.
-      placeholder: pipeline-monitor 0.11.0, GStreamer 1.28.8, Ubuntu 24.04
+      placeholder: pipeline-monitor 0.12.0, GStreamer 1.28.8, Ubuntu 24.04
     validations:
       required: true
