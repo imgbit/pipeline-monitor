@@ -9,6 +9,12 @@ the browser's own work is not counted.
 
   bench_overhead.py [--seconds 30] [--runs 5] [--out results.json]
 
+With --per-push, it instead pushes empty buffers as fast as it can through
+a chain of identity elements, with and without the tracer, and reports the
+time pipeline-monitor adds to each push (the cost on the data path):
+
+  bench_overhead.py --per-push [--buffers 500000] [--elements 10]
+
 Needs gst-launch-1.0 and Python with GStreamer (gi) on PATH/PYTHONPATH,
 and GST_PLUGIN_PATH pointing at the built plugin.
 """
@@ -303,8 +309,42 @@ def summary(results):
     return out
 
 
+def per_push(buffers, elements, runs):
+    """CPU time per push with and without the tracer, as medians."""
+    pipeline = (["gst-launch-1.0", "-q", "fakesrc", f"num-buffers={buffers}",
+                 "sizetype=empty"] + ["!", "identity"] * elements +
+                ["!", "fakesink", "sync=false"])
+    pushes = buffers * (elements + 1)
+    times = {False: [], True: []}
+    for tracer in (False, True):
+        subprocess.run(pipeline[:4] + ["num-buffers=1"] + pipeline[5:],
+                       env=env_for(tracer), capture_output=True)
+    # Interleaved, so a busier moment of the machine hits both.
+    for _ in range(runs):
+        for tracer in (False, True):
+            proc = subprocess.Popen(pipeline, env=env_for(tracer),
+                                    stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL)
+            _, _, usage = os.wait4(proc.pid, 0)
+            times[tracer].append(usage.ru_utime + usage.ru_stime)
+    off = statistics.median(times[False])
+    on = statistics.median(times[True])
+    print(f"{buffers} buffers through {elements} elements ({pushes} pushes), "
+          f"{runs} runs")
+    print(f"  without: {off:.2f} s CPU, {off / pushes * 1e9:.0f} ns per push")
+    print(f"  with:    {on:.2f} s CPU, {on / pushes * 1e9:.0f} ns per push")
+    print(f"  pipeline-monitor adds {(on - off) / pushes * 1e9:.0f} ns per "
+          f"push")
+    return {"buffers": buffers, "elements": elements, "runs": runs,
+            "off_s": times[False], "on_s": times[True],
+            "added_ns_per_push": (on - off) / pushes * 1e9}
+
+
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--per-push", action="store_true")
+    parser.add_argument("--buffers", type=int, default=500000)
+    parser.add_argument("--elements", type=int, default=10)
     parser.add_argument("--seconds", type=float, default=30)
     parser.add_argument("--runs", type=int, default=5)
     parser.add_argument("--pipelines", default="simple,busy,changing")
@@ -312,6 +352,12 @@ def main():
     parser.add_argument("--label", default="")
     parser.add_argument("--out")
     args = parser.parse_args()
+    if args.per_push:
+        report = per_push(args.buffers, args.elements, args.runs)
+        if args.out:
+            with open(args.out, "w") as f:
+                json.dump(report, f, indent=1)
+        return
 
     cases = [c for c in (("off", False, False), ("no page", True, False),
                          ("page", True, True))
