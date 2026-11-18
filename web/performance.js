@@ -8,7 +8,7 @@ import { formatBytes } from "./units.js";
 
 const SVG = "http://www.w3.org/2000/svg";
 // A thread at this share of one core or more cannot go faster.
-const BUSY = 0.95;
+const BUSY = 0.9;
 
 function el(tag, cls, text) {
   const node = document.createElement(tag);

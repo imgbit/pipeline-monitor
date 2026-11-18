@@ -16,7 +16,7 @@ void pm_perf_free (PmPerf * perf);
 gchar *pm_perf_sample (PmPerf * perf);
 
 /* A thread at this share of one core or more cannot go faster. */
-#define PM_PERF_BUSY 0.95
+#define PM_PERF_BUSY 0.90
 
 typedef struct
 {

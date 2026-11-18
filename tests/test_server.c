@@ -3257,15 +3257,36 @@ peak_cpu (const gchar * name)
  * and after PM_BUSY_SECONDS it is a finding, naming the thread and the
  * elements it runs in the order data passes, at the first of them. (The
  * same without sync is quiet: see check-quiet.) On a machine too busy to
- * give that thread a whole core it cannot be shown: skipped, saying so. */
+ * give that thread 90 % of a core it cannot be shown: skipped, saying so. */
 static void
 test_busy_thread (void)
 {
   GstElement *pipeline = start_pipeline ("videotestsrc pattern=snow "
       "name=bt-src ! video/x-raw,width=1280,height=720,framerate=1000/1 ! "
       "queue name=bt-q ! fakesink sync=true");
-  gchar *id = g_strdup_printf ("busy:%s/bt-src", GST_OBJECT_NAME (pipeline));
-  JsonNode *found = wait_finding (id, 25);
+  gint64 end = g_get_monotonic_time () + 25 * G_USEC_PER_SEC;
+  JsonNode *found = NULL;
+  gchar *last = NULL;
+
+  /* Any busy-thread finding: its id is at the element it names first. */
+  while (found == NULL && g_get_monotonic_time () < end) {
+    JsonNode *root;
+    JsonArray *list;
+    guint i;
+
+    g_free (last);
+    get_status ("api/findings", "GET", NULL, &last, NULL);
+    root = parse (last);
+    list = json_object_get_array_member (json_node_get_object (root),
+        "findings");
+    for (i = 0; i < json_array_get_length (list) && found == NULL; i++)
+      if (g_str_has_prefix (json_object_get_string_member
+              (json_array_get_object_element (list, i), "id"), "busy:"))
+        found = json_node_copy (json_array_get_element (list, i));
+    json_node_unref (root);
+    if (found == NULL)
+      g_usleep (200 * G_TIME_SPAN_MILLISECOND);
+  }
 
   if (found != NULL) {
     JsonObject *f = json_node_get_object (found);
@@ -3273,16 +3294,19 @@ test_busy_thread (void)
 
     g_assert_cmpstr (json_object_get_string_member (f, "severity"), ==,
         "warning");
-    g_assert_true (g_str_has_prefix (text, "thread bt-src:src uses "));
-    g_assert_true (g_regex_match_simple (" of a core; it runs bt-src, "
-            "capsfilter[0-9]+, bt-q$", text, 0, 0));
+    if (!g_str_has_prefix (text, "thread bt-src:src uses ") ||
+        !g_regex_match_simple (" of a core; it runs bt-src, capsfilter[0-9]+, "
+            "bt-q$", text, 0, 0) ||
+        !g_str_has_suffix (json_object_get_string_member (f, "path"),
+            "/bt-src"))
+      g_error ("unexpected busy-thread finding: %s", last);
     json_node_unref (found);
   } else {
     gdouble peak = peak_cpu ("bt-src:src");
 
-    if (peak >= 0.95)
-      g_error ("bt-src:src at %.0f %% of a core, but not reported",
-          peak * 100);
+    if (peak >= 0.9)
+      g_error ("bt-src:src at %.0f %% of a core, but not reported; "
+          "findings: %s", peak * 100, last);
     else {
       gchar *why = g_strdup_printf ("bt-src:src got only %.0f %% of a core "
           "on this machine", peak * 100);
@@ -3291,7 +3315,7 @@ test_busy_thread (void)
       g_free (why);
     }
   }
-  g_free (id);
+  g_free (last);
   stop_pipeline (pipeline);
 }
 
