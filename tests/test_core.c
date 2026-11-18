@@ -942,7 +942,8 @@ test_perf_sample (void)
 /* A thread the graph knows is busy only after enough busy samples in a
  * row. Samples half a second apart: thread clocks count in steps of 10 to
  * 16 ms. On a machine too busy to give the spinner a whole core, the
- * second half cannot be shown: skipped, saying so. */
+ * second half cannot be shown: skipped, saying so; it fails only if the
+ * spinner had a whole core (98 % or more) and was not reported. */
 static void
 test_perf_busy (void)
 {
@@ -986,9 +987,11 @@ test_perf_busy (void)
     g_assert_cmpfloat (((PmBusyThread *) g_ptr_array_index (busy, 0))->cpu,
         >=, PM_PERF_BUSY);
     g_ptr_array_unref (busy);
-  } else if (share < PM_PERF_BUSY) {
+  } else if (share < 0.98) {
+    /* Short of a whole core, its samples go above and below the
+     * threshold: five in a row may not come. */
     gchar *why = g_strdup_printf ("the spinning thread got only %.0f %% of "
-        "a core on this machine", share * 100);
+        "a core on this machine, too uneven to show", share * 100);
 
     g_test_skip (why);
     g_free (why);

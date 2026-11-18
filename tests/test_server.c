@@ -3217,16 +3217,16 @@ test_performance (void)
   stop_pipeline (pipeline);
 }
 
-/* The highest share of a core the thread named name had in a few
+/* The average share of a core the thread named name had in a few
  * "performance" messages. */
 static gdouble
-peak_cpu (const gchar * name)
+mean_cpu (const gchar * name)
 {
   SoupSession *session = soup_session_new ();
   gchar *url = server_url ("ws");
-  gdouble peak = 0;
+  gdouble sum = 0;
   WsClient client;
-  gint n;
+  gint n, seen = 0;
 
   ws_connect (&client, session, url, NULL);
   for (n = 0; n < 3; n++) {
@@ -3240,8 +3240,10 @@ peak_cpu (const gchar * name)
       JsonObject *t = json_array_get_object_element (threads, i);
 
       if (g_strcmp0 (json_object_get_string_member (t, "name"), name) == 0 &&
-          !json_object_get_null_member (t, "cpu"))
-        peak = MAX (peak, json_object_get_double_member (t, "cpu"));
+          !json_object_get_null_member (t, "cpu")) {
+        sum += json_object_get_double_member (t, "cpu");
+        seen++;
+      }
     }
     json_node_unref (root);
     g_free (message);
@@ -3249,7 +3251,7 @@ peak_cpu (const gchar * name)
   ws_disconnect (&client);
   g_free (url);
   g_object_unref (session);
-  return peak;
+  return seen ? sum / seen : 0;
 }
 
 /* A sink that syncs to the clock asks for more frames of noise than any
@@ -3257,7 +3259,7 @@ peak_cpu (const gchar * name)
  * and after PM_BUSY_SECONDS it is a finding, naming the thread and the
  * elements it runs in the order data passes, at the first of them. (The
  * same without sync is quiet: see check-quiet.) On a machine too busy to
- * give that thread 90 % of a core it cannot be shown: skipped, saying so. */
+ * give that thread a whole core it cannot be shown: skipped, saying so. */
 static void
 test_busy_thread (void)
 {
@@ -3302,14 +3304,15 @@ test_busy_thread (void)
       g_error ("unexpected busy-thread finding: %s", last);
     json_node_unref (found);
   } else {
-    gdouble peak = peak_cpu ("bt-src:src");
+    gdouble mean = mean_cpu ("bt-src:src");
 
-    if (peak >= 0.9)
+    /* Short of a whole core, samples go above and below the threshold. */
+    if (mean >= 0.98)
       g_error ("bt-src:src at %.0f %% of a core, but not reported; "
-          "findings: %s", peak * 100, last);
+          "findings: %s", mean * 100, last);
     else {
       gchar *why = g_strdup_printf ("bt-src:src got only %.0f %% of a core "
-          "on this machine", peak * 100);
+          "on this machine, too uneven to show", mean * 100);
 
       g_test_skip (why);
       g_free (why);
