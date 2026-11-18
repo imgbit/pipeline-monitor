@@ -82,6 +82,13 @@ GUIDE = [
     ("troubleshooting", "Troubleshooting", "When pipeline-monitor shows no "
      "address, no page or no graph: the usual causes and their fixes."),
 ]
+# Common pipeline problems, one page each (site/guide/problems/NAME.md),
+# listed on the guide's "Problems" page.
+PROBLEMS = [
+    ("tee-without-queues", "Stuck in PAUSED: a tee without queues",
+     "A GStreamer pipeline with a tee hangs in PAUSED with no error: why "
+     "each branch needs a queue, how to see it, and the fix."),
+]
 
 PAGE = """<!doctype html>
 <html lang="en">
@@ -132,14 +139,29 @@ def build_guide(out, require):
     if os.path.isdir(os.path.join(source, "images")):
         shutil.copytree(os.path.join(source, "images"),
                         os.path.join(target, "images"))
-    for name, title, description in GUIDE:
-        with open(os.path.join(source, f"{name}.md"), encoding="utf-8") as f:
-            body = markdown.markdown(f.read(), extensions=["tables",
-                                                           "fenced_code"])
+    pages = [(name, title, description, os.path.join(source, f"{name}.md"))
+             for name, title, description in GUIDE]
+    pages += [(name, title, description,
+               os.path.join(source, "problems", f"{name}.md"))
+              for name, title, description in PROBLEMS]
+    listing = "# Problems\n\nCommon pipeline problems: what you see, why, " \
+        "what pipeline-monitor shows, and the fix.\n\n" + "\n".join(
+            f"- [{t}]({n}.html): {d}" for n, t, d in PROBLEMS) + "\n"
+    pages.append(("problems", "Problems", "Common GStreamer pipeline "
+                  "problems: the symptom, the cause, what pipeline-monitor "
+                  "shows and the fix.", listing))
+    menu = [(n, t) for n, t, _ in GUIDE] + [("problems", "Problems")]
+    problem_names = {n for n, _, _ in PROBLEMS}
+    for name, title, description, text in pages:
+        if os.path.exists(text):
+            with open(text, encoding="utf-8") as f:
+                text = f.read()
+        body = markdown.markdown(text, extensions=["tables", "fenced_code"])
+        current = "problems" if name in problem_names else name
         nav = "\n".join(
-            f'<a href="{n}.html"' + (' aria-current="page"' if n == name
+            f'<a href="{n}.html"' + (' aria-current="page"' if n == current
                                      else "") + f">{html.escape(t)}</a>"
-            for n, t, _ in GUIDE)
+            for n, t in menu)
         with open(os.path.join(target, f"{name}.html"), "w",
                   encoding="utf-8") as f:
             f.write(PAGE.format(
@@ -151,9 +173,11 @@ def build_guide(out, require):
 
 
 def write_sitemap(out, guide):
-    """sitemap.xml: the viewer and the guide's pages."""
-    urls = [SITE] + ([f"{SITE}guide/{n}.html" for n, _, _ in GUIDE]
-                     if guide else [])
+    """sitemap.xml: the viewer, the guide's pages and the problems."""
+    names = [n for n, _, _ in GUIDE] + ["problems"] + \
+        [n for n, _, _ in PROBLEMS]
+    urls = [SITE] + ([f"{SITE}guide/{n}.html" for n in names] if guide
+                     else [])
     with open(os.path.join(out, "sitemap.xml"), "w", encoding="utf-8") as f:
         f.write('<?xml version="1.0" encoding="UTF-8"?>\n'
                 '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
@@ -167,6 +191,8 @@ def write_llms(out):
     """llms.txt: a short summary for AI tools (llmstxt.org)."""
     guide = "\n".join(f"- [{t}]({SITE}guide/{n}.html): {d}"
                       for n, t, d in GUIDE)
+    problems = "\n".join(f"- [{t}]({SITE}guide/{n}.html): {d}"
+                         for n, t, d in PROBLEMS)
     with open(os.path.join(out, "llms.txt"), "w", encoding="utf-8") as f:
         f.write(f"""# pipeline-monitor
 
@@ -185,6 +211,10 @@ macOS and Windows; or build from source (GStreamer 1.22 or newer).
 ## Docs
 
 {guide}
+
+## Common pipeline problems
+
+{problems}
 
 ## Links
 

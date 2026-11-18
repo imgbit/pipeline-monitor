@@ -2624,6 +2624,19 @@ def check_site(browser, serve):
         sitemap = f.read()
     assert "<loc>https://imaginarybit.com/pipeline-monitor/</loc>" in sitemap
     assert ("guide/tour.html</loc>" in sitemap) == guide, sitemap
+    assert ("guide/tee-without-queues.html</loc>" in sitemap) == guide
+    if guide:
+        # A problem page: in the guide's menu as "Problems", listed there,
+        # with a link that opens its demo recording.
+        with open(os.path.join(out, "guide", "problems.html"),
+                  encoding="utf-8") as f:
+            listing = f.read()
+        assert 'href="tee-without-queues.html"' in listing, listing
+        with open(os.path.join(out, "guide", "tee-without-queues.html"),
+                  encoding="utf-8") as f:
+            page = f.read()
+        assert 'aria-current="page">Problems</a>' in page
+        assert 'href="../#file=demos/tee-without-queues.jsonl"' in page
     with open(os.path.join(out, "llms.txt"), encoding="utf-8") as f:
         assert f.readline() == "# pipeline-monitor\n"
     # The package's own page stays as it is: no site tags.
