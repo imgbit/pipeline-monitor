@@ -27,6 +27,11 @@ typedef struct
  * process, so it needs no privileges. */
 GArray *pm_thread_sample_all (void);
 
+/* This process as a whole: user and system time so far, and the memory the
+ * operating system counts for it (resident on Linux, footprint on macOS,
+ * working set on Windows); FALSE where it cannot be read. */
+gboolean pm_process_sample (guint64 * cpu_ns, guint64 * memory);
+
 G_END_DECLS
 
 #endif

@@ -4,8 +4,8 @@
 #include "pmjson.h"
 #include "pmthread.h"
 
-/* CPU per thread, read by the server once a second (docs/protocol.md,
- * "performance"). */
+/* CPU per thread and the process's CPU and memory, read by the server once
+ * a second (docs/protocol.md, "performance"). */
 
 struct _PmPerf
 {
@@ -13,6 +13,8 @@ struct _PmPerf
   /* os id -> CPU ns at the last sample. */
   GHashTable *last;
   gint64 last_us;
+  /* The process's CPU ns at the last sample, 0 if none. */
+  guint64 last_cpu;
 };
 
 typedef struct
@@ -59,10 +61,31 @@ pm_perf_sample (PmPerf * perf)
       g_free, g_free);
   GArray *rows = g_array_new (FALSE, FALSE, sizeof (PmRow));
   GString *json = g_string_new (NULL);
+  guint64 cpu_ns, memory;
   guint i;
 
-  g_string_append_printf (json, "{\"cores\":%u,\"threads\":",
+  g_string_append_printf (json, "{\"cores\":%u,\"process\":",
       g_get_num_processors ());
+  if (pm_process_sample (&cpu_ns, &memory)) {
+    gchar buf[G_ASCII_DTOSTR_BUF_SIZE];
+
+    g_string_append (json, "{\"cpu\":");
+    if (perf->last_cpu > 0 && seconds > 0 && cpu_ns >= perf->last_cpu)
+      g_string_append (json, g_ascii_formatd (buf, sizeof (buf), "%.3f",
+              (cpu_ns - perf->last_cpu) / 1e9 / seconds));
+    else
+      g_string_append (json, "null");
+    g_string_append_printf (json, ",\"memory\":%" G_GUINT64_FORMAT
+        ",\"threads\":", memory);
+    if (all != NULL)
+      g_string_append_printf (json, "%u}", all->len);
+    else
+      g_string_append (json, "null}");
+    perf->last_cpu = cpu_ns;
+  } else {
+    g_string_append (json, "null");
+  }
+  g_string_append (json, ",\"threads\":");
   if (all == NULL) {
     /* The platform cannot list threads. */
     g_string_append (json, "null}");

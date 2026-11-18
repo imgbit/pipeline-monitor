@@ -896,6 +896,17 @@ test_perf_sample (void)
   g_assert_cmpuint (json_object_get_int_member (busiest, "os"), ==,
       spinner.os_id);
   g_assert_cmpfloat (json_object_get_double_member (busiest, "cpu"), >, 0.6);
+  /* The whole process: at least the spinner's CPU, some memory, threads. */
+  {
+    JsonObject *process = json_object_get_object_member (json_node_get_object
+        (json_parser_get_root (parser)), "process");
+
+    g_assert_cmpfloat (json_object_get_double_member (process, "cpu"), >,
+        0.6);
+    g_assert_cmpint (json_object_get_int_member (process, "memory"), >,
+        1000000);
+    g_assert_cmpint (json_object_get_int_member (process, "threads"), >=, 2);
+  }
   g_free (os);
   g_object_unref (parser);
   g_free (first);

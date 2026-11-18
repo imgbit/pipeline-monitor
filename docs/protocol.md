@@ -316,6 +316,7 @@ Since 0.12.
 
 ```json
 {"type":"performance","protocol":1,"time":…,"cores":8,
+ "process":{"cpu":1.2,"memory":210000000,"threads":23},
  "threads":[{"os":12417,"id":1,"task":true,"name":"queue0:src","cpu":0.98},
    {"os":12420,"name":"","cpu":0.12}]}
 ```
@@ -327,6 +328,10 @@ Since 0.12.
 - `id`, `task`: for a thread in the graph's `threads`.
 - `name`: the task's name for a GStreamer task, otherwise the name the
   operating system has for the thread (often `""`).
+- `process`: the whole program; `null` where it cannot be read. `cpu`: as
+  for a thread, so up to `cores` (`null` at first); `memory`: bytes, as the
+  operating system counts them (resident on Linux, footprint on macOS,
+  working set on Windows); `threads`: how many it has.
 - `cores`: the processors the system has.
 
 ### error

@@ -1438,6 +1438,12 @@ def check_threads_view(browser, serve):
         for left, right in halves:
             assert fill_difference(left, right) >= 9.5, \
                 f"a queue's two threads look alike: {left} / {right}"
+        # The whole program in the header: CPU and memory.
+        perf = "document.getElementById('process-perf')"
+        assert browser.wait(f"!{perf}.hidden && /^CPU \\d+ % · [\\d.]+ "
+                            f"(MiB|GiB)$/.test({perf}.textContent)"), \
+            "no CPU and memory in the header: " + str(browser.eval(
+                f"{perf}.textContent"))
         # CPU per thread from the "performance" message, once a second.
         cpu = (f"[...{legend}.querySelectorAll('.cpu')].map(c => "
                "c.textContent)")
@@ -2248,7 +2254,9 @@ def check_finding_age(browser, good):
                         ".textContent.includes('No thread data in this "
                         "recording')"), "no note for a recording without threads"
     browser.click("#threads")
-    # Live pages only: a recording has no .dot.
+    # Live pages only: a recording has no .dot, nor the program's CPU.
+    assert browser.eval("document.getElementById('process-perf').hidden"), \
+        "the program's CPU shown in a recording"
     assert browser.eval("document.getElementById('save-dot')"
                         ".offsetParent === null"), ".dot shown in a recording"
     open_panel(browser, "problems")

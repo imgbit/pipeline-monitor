@@ -11,7 +11,7 @@ import { LogView } from "./log.js";
 import { Tooltip } from "./tooltip.js";
 import { linkCaps } from "./caps.js";
 import { ElementPins, Pins } from "./pins.js";
-import { TIME_UNITS, formatSpan } from "./units.js";
+import { TIME_UNITS, formatBytes, formatSpan } from "./units.js";
 import { pipelineTimes, queueRows } from "./levels.js";
 import { cannotMeasure, latencyRows } from "./latency.js";
 import { Measuring } from "./measure.js";
@@ -559,6 +559,23 @@ function updateHeader(pipeline) {
   $("empty").hidden = Boolean(pipeline) || Boolean(state.viewing) ||
     siteList !== null;
   $("empty-moment").hidden = Boolean(pipeline) || !state.viewing;
+}
+
+// The whole program, from the last "performance" message: CPU as a share of
+// one core (as top shows it: 200 % is two cores busy) and memory. Live only.
+function showProcess() {
+  const process = state.performance?.process;
+  const node = $("process-perf");
+  node.hidden = !process || Boolean(state.viewing);
+  if (node.hidden)
+    return;
+  const cpu = process.cpu === null ? "" : `CPU ${Math.round(process.cpu *
+    100)} % · `;
+  node.textContent = `${cpu}${formatBytes(process.memory)}`;
+  node.title = `The whole program: CPU as a share of one core (${
+    state.performance.cores} cores: up to ${state.performance.cores * 100
+  } %), memory as the operating system counts it, ${process.threads ??
+    "?"} threads`;
 }
 
 function showTimes(pipeline) {
@@ -1554,6 +1571,7 @@ function handleMessage(message) {
   } else if (message.type === "performance") {
     state.performance = message;
     showThreadCpu();
+    showProcess();
   } else if (message.type === "latency") {
     applyLatency(message);
   } else if (message.type === "levels") {

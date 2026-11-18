@@ -10,8 +10,10 @@
 #ifdef G_OS_WIN32
 #include <windows.h>
 #include <tlhelp32.h>
+#include <psapi.h>
 #else
 #include <pthread.h>
+#include <sys/resource.h>
 #endif
 #ifdef __linux__
 #include <sys/syscall.h>
@@ -202,5 +204,67 @@ pm_thread_sample_all (void)
   return all;
 #else
   return NULL;
+#endif
+}
+
+gboolean
+pm_process_sample (guint64 * cpu_ns, guint64 * memory)
+{
+#if defined(G_OS_WIN32)
+  FILETIME created, exited, kernel, user;
+  PROCESS_MEMORY_COUNTERS counters = { 0 };
+
+  if (!GetProcessTimes (GetCurrentProcess (), &created, &exited, &kernel,
+          &user) || !K32GetProcessMemoryInfo (GetCurrentProcess (), &counters,
+          sizeof (counters)))
+    return FALSE;
+  /* 100 ns units. */
+  *cpu_ns = ((((guint64) kernel.dwHighDateTime << 32) | kernel.dwLowDateTime)
+      + (((guint64) user.dwHighDateTime << 32) | user.dwLowDateTime)) * 100;
+  *memory = counters.WorkingSetSize;
+  return TRUE;
+#else
+  struct rusage usage;
+
+  if (getrusage (RUSAGE_SELF, &usage) != 0)
+    return FALSE;
+  *cpu_ns = ((guint64) usage.ru_utime.tv_sec + usage.ru_stime.tv_sec) *
+      G_GUINT64_CONSTANT (1000000000) +
+      ((guint64) usage.ru_utime.tv_usec + usage.ru_stime.tv_usec) * 1000;
+#if defined(__APPLE__)
+  {
+    task_vm_info_data_t info;
+    mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+
+    if (task_info (mach_task_self (), TASK_VM_INFO, (task_info_t) & info,
+            &count) != KERN_SUCCESS)
+      return FALSE;
+    *memory = info.phys_footprint;
+  }
+#elif defined(__linux__)
+  {
+    gchar *text = NULL;
+    gchar **fields;
+    gboolean ok = FALSE;
+
+    /* /proc/self/statm: size resident ... in pages. */
+    if (g_file_get_contents ("/proc/self/statm", &text, NULL, NULL)) {
+      fields = g_strsplit (text, " ", 3);
+      if (g_strv_length (fields) >= 2) {
+        *memory = g_ascii_strtoull (fields[1], NULL, 10) *
+            sysconf (_SC_PAGESIZE);
+        ok = TRUE;
+      }
+      g_strfreev (fields);
+    }
+    g_free (text);
+    if (!ok)
+      return FALSE;
+  }
+#else
+  /* ru_maxrss: the peak, not now; better than nothing. */
+  *memory = (guint64) usage.ru_maxrss * 1024;
+#endif
+  return TRUE;
 #endif
 }

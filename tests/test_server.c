@@ -3196,6 +3196,8 @@ test_performance (void)
 
     g_assert_cmpint (json_object_get_int_member (m, "cores"), >=, 1);
     g_assert_cmpuint (json_array_get_length (threads), >=, 2);
+    g_assert_cmpint (json_object_get_int_member (json_object_get_object_member
+            (m, "process"), "memory"), >, 1000000);
     for (i = 0; i < json_array_get_length (threads); i++) {
       JsonObject *t = json_array_get_object_element (threads, i);
 
