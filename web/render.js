@@ -578,13 +578,16 @@ export function threadColours(index) {
     fill: `hsl(${h} ${s}% ${l}% / 0.3)` };
 }
 
-// "thread: a" or "threads: a → b" for an element's input and output.
+// "thread: a" or "threads: a → b" for an element's input and output; two
+// at once ("1+2") as "threads: a and b".
 export function threadText(t, names) {
   const name = (id) => names.get(id) ?? `thread ${id}`;
   const into = t.in || t.out;
   const out = t.out || t.in;
-  return into === out ? `thread: ${name(into)}`
-    : `threads: ${name(into)} → ${name(out)}`;
+  if (into === out)
+    return `${String(into).includes("+") ? "threads" : "thread"}: ${
+      name(into)}`;
+  return `threads: ${name(into)} → ${name(out)}`;
 }
 
 export function countElements(element) {

@@ -75,8 +75,8 @@ compare_rows (gconstpointer a, gconstpointer b)
 gchar *
 pm_perf_sample (PmPerf * perf)
 {
-  GArray *all = pm_thread_sample_all ();
   gint64 now = g_get_monotonic_time ();
+  GArray *all = pm_thread_sample_all ();
   gdouble seconds = perf->last_us ? (now - perf->last_us) / 1e6 : 0;
   GHashTable *next = g_hash_table_new_full (g_int64_hash, g_int64_equal,
       g_free, g_free);
@@ -149,7 +149,10 @@ pm_perf_sample (PmPerf * perf)
           task ? "true" : "false");
       b->os_id = row->sample->os_id;
       b->id = id;
-      b->name = g_strdup (name && *name ? name : row->sample->name);
+      /* Windows names no threads but GStreamer's tasks. */
+      b->name = name && *name ? g_strdup (name) : *row->sample->name ?
+          g_strdup (row->sample->name) : g_strdup_printf ("%"
+          G_GUINT64_FORMAT, row->sample->os_id);
       b->cpu = row->cpu;
       for (k = 0; k < perf->busy->len; k++) {
         PmBusy *before = g_ptr_array_index (perf->busy, k);
@@ -172,6 +175,7 @@ pm_perf_sample (PmPerf * perf)
     g_free (name);
   }
   g_string_append (json, "]}");
+  pm_model_forget_threads (perf->model, all, now);
 
 done:
   g_ptr_array_unref (perf->busy);

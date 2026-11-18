@@ -127,7 +127,8 @@ function showTooltip(target, x, y) {
       []).map((f) => [f.severity, f.text]);
     const thread = state.threadView?.edges.get(`${target.src} ${target.sink}`);
     if (thread)
-      rows.push(["thread", state.threadView.names.get(thread)]);
+      rows.push([String(thread).includes("+") ? "threads" : "thread",
+        state.threadView.names.get(thread)]);
     tooltip.show(x, y, `${src.element.name}:${src.pad.name} → ` +
       `${sink.element.name}:${sink.pad.name}`, rows,
     linkCaps(info, target.src, target.sink), src.pad.mode === "pull");
@@ -410,9 +411,19 @@ function currentPipeline() {
   return pipelines.find((p) => p.id === state.pipelineId) || pipelines[0];
 }
 
+// A pad's threads: one, or two pushing at the same time (a funnel's output).
+// Data from two threads at once: neither thread's colour.
+const SEVERAL_THREADS = { line: "hsl(0 0% 55%)", fill: "hsl(0 0% 55% / 0.3)" };
+
+function padThreads(pad) {
+  const ids = Array.isArray(pad.threads) ? pad.threads : [pad.thread];
+  return ids.filter((id) => Number.isInteger(id) && id > 0);
+}
+
 // The threads of a pipeline: which thread carries each link (the pushing
-// pad's, or the pulling pad's), each element's first input and output
-// thread, the elements each thread runs, colours in order of appearance.
+// pad's, or the pulling pad's; "1+2" for two at once), each element's
+// first input and output thread, the elements each thread runs, colours in
+// order of appearance (two at once in grey).
 function threadMap(pipeline) {
   const pads = new Map();
   const visit = (e) => {
@@ -425,14 +436,20 @@ function threadMap(pipeline) {
   const edges = new Map();
   const elements = new Map();
   const entry = (id) => elements.get(id) || elements.set(id, {}).get(id);
+  const together = new Map();
   for (const { src, sink } of state.graph.links) {
     const a = pads.get(src);
     const b = pads.get(sink);
-    const id = a && b && (a.pad.thread || b.pad.thread);
-    if (!id)
+    const ids = a && b ? padThreads(a.pad).length ? padThreads(a.pad)
+      : padThreads(b.pad) : [];
+    if (!ids.length)
       continue;
-    if (!order.includes(id))
-      order.push(id);
+    for (const one of ids)
+      if (!order.includes(one))
+        order.push(one);
+    const id = ids.length > 1 ? ids.join("+") : ids[0];
+    if (ids.length > 1)
+      together.set(id, ids);
     edges.set(`p${src} p${sink}`, id);
     entry(b.element.id).in ??= id;
     entry(a.element.id).out ??= id;
@@ -441,6 +458,10 @@ function threadMap(pipeline) {
   const known = new Map((state.graph.threads || []).map((t) => [t.id, t]));
   const names = new Map(order.map((id) => [id, known.get(id)?.name ||
     `thread ${known.get(id)?.os ?? id}`]));
+  for (const [id, ids] of together) {
+    colours.set(id, SEVERAL_THREADS);
+    names.set(id, ids.map((one) => names.get(one)).join(" and "));
+  }
   // The elements each thread runs, in the order data passes through them:
   // each one after the elements that feed it.
   const feeds = new Map();
@@ -470,11 +491,13 @@ function threadMap(pipeline) {
   const runs = new Map();
   for (const id of flow) {
     const t = elements.get(id);
-    for (const thread of new Set([t?.in, t?.out].filter(Boolean)))
+    const threads = [t?.in, t?.out].filter(Boolean)
+      .flatMap((one) => together.get(one) || [one]);
+    for (const thread of new Set(threads))
       runs.set(thread, [...runs.get(thread) || [],
         { id, name: byId.get(id).name }]);
   }
-  return { order, colours, edges, elements, names, runs, known };
+  return { order, colours, edges, elements, names, runs, known, together };
 }
 
 // The "threads" view of the pipeline shown, and its legend.
@@ -486,7 +509,7 @@ function showThreads(pipeline) {
     legend.hidden = true;
     return;
   }
-  const { order, colours, edges, elements, names, known } =
+  const { order, colours, edges, elements, names, known, together } =
     threadMap(pipeline);
   state.threadView = { colours, edges, elements, names };
   view.setThreads(state.threadView);
@@ -514,6 +537,19 @@ function showThreads(pipeline) {
       ? "No thread data in this recording (made before 0.12)"
       : "No data has moved yet";
   else {
+    if (together.size) {
+      const row = document.createElement("div");
+      row.className = "row";
+      const swatch = document.createElement("span");
+      swatch.className = "swatch";
+      swatch.style.background = SEVERAL_THREADS.line;
+      const label = document.createElement("span");
+      label.textContent = "several threads at once";
+      label.title = "Data comes through from more than one thread at a " +
+        "time (a funnel's output): hover one for their names";
+      row.append(swatch, label);
+      legend.append(row);
+    }
     const others = document.createElement("div");
     others.className = "row others";
     const label = document.createElement("span");

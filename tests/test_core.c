@@ -810,6 +810,106 @@ test_latency_segment (PathFixture * f, gconstpointer data)
   pm_latency_free (latency);
 }
 
+static void
+count_change (gpointer data)
+{
+  (*(guint *) data)++;
+}
+
+/* A pad's threads: the one pushing; a second pushing at the same time is
+ * shown too and reported once, not on every buffer (a funnel); one that
+ * stopped for over a second is dropped (a restart on new threads). */
+static void
+test_pad_threads (void)
+{
+  PmModel *model = pm_model_new ();
+  PmPushTiming t = { 0 };
+  guint changes = 0;
+  gint ms;
+
+  pm_model_set_changed_func (model, count_change, &changes);
+  pm_model_note_pad_thread (model, &t, 1, 100);
+  g_assert_cmpint (t.thread, ==, 1);
+  g_assert_cmpuint (changes, ==, 1);
+
+  /* Two threads in turn, every 10 ms for 3 s: one change. */
+  for (ms = 110; ms < 3110; ms += 10)
+    pm_model_note_pad_thread (model, &t, ms % 20 ? 2 : 1, ms);
+  g_assert_cmpint (t.thread, ==, 1);
+  g_assert_cmpint (t.other_thread, ==, 2);
+  g_assert_cmpuint (changes, ==, 2);
+
+  /* The first stops: the second alone, once it has been quiet 1 s. */
+  for (ms = 3110; ms < 4500; ms += 10)
+    pm_model_note_pad_thread (model, &t, 2, ms);
+  g_assert_cmpint (t.thread, ==, 2);
+  g_assert_cmpint (t.other_thread, ==, 0);
+  g_assert_cmpuint (changes, ==, 3);
+
+  /* Stopped, then started again on a new thread. */
+  pm_model_note_pad_thread (model, &t, 3, 9000);
+  g_assert_cmpint (t.thread, ==, 3);
+  g_assert_cmpint (t.other_thread, ==, 0);
+  g_assert_cmpuint (changes, ==, 4);
+
+  /* A second that stops: dropped when the first pushes next. */
+  pm_model_note_pad_thread (model, &t, 4, 9010);
+  g_assert_cmpint (t.other_thread, ==, 4);
+  pm_model_note_pad_thread (model, &t, 3, 9500);
+  g_assert_cmpint (t.other_thread, ==, 4);
+  pm_model_note_pad_thread (model, &t, 3, 10100);
+  g_assert_cmpint (t.other_thread, ==, 0);
+  g_assert_cmpint (t.thread, ==, 3);
+  g_assert_cmpuint (changes, ==, 6);
+
+  pm_model_set_changed_func (model, NULL, NULL);
+  pm_model_free (model);
+}
+
+static gpointer
+make_known (gpointer model)
+{
+  pm_model_current_thread (model);
+  return NULL;
+}
+
+static gpointer
+start_task (gpointer model)
+{
+  pm_model_thread_task (model, "task:src");
+  return NULL;
+}
+
+/* Threads that ended are forgotten, so a program that keeps making
+ * pipelines does not pile them up; a running task, and a thread the
+ * sample could not have seen yet, are kept. */
+static void
+test_forget_threads (void)
+{
+  PmModel *model = pm_model_new ();
+  GArray *none = g_array_new (FALSE, TRUE, sizeof (PmThreadSample));
+  gint64 sampled;
+  guint i;
+
+  for (i = 0; i < 20; i++)
+    g_thread_join (g_thread_new ("short", make_known, model));
+  g_thread_join (g_thread_new ("task", start_task, model));
+  g_assert_cmpuint (pm_model_thread_count (model), ==, 21);
+
+  sampled = g_get_monotonic_time ();
+  g_usleep (1000);
+  g_thread_join (g_thread_new ("later", make_known, model));
+  pm_model_forget_threads (model, none, sampled);
+  /* The task (its end not reported) and the later one. */
+  g_assert_cmpuint (pm_model_thread_count (model), ==, 2);
+
+  pm_model_forget_threads (model, none, g_get_monotonic_time ());
+  g_assert_cmpuint (pm_model_thread_count (model), ==, 1);
+
+  g_array_unref (none);
+  pm_model_free (model);
+}
+
 /* A thread that keeps a core busy until it is told to stop (slow builds,
  * such as with ThreadSanitizer, must not outlast it), or until "until". */
 typedef struct
@@ -1170,6 +1270,8 @@ main (int argc, char **argv)
   g_test_add_func ("/core/props-values", test_props_values);
   g_test_add_func ("/core/props-read", test_props_read);
   g_test_add_func ("/core/json-string", test_json_string);
+  g_test_add_func ("/core/pad-threads", test_pad_threads);
+  g_test_add_func ("/core/forget-threads", test_forget_threads);
   g_test_add_func ("/core/thread-sample", test_thread_sample);
   g_test_add_func ("/core/perf-sample", test_perf_sample);
   g_test_add_func ("/core/perf-busy", test_perf_busy);

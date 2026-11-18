@@ -129,9 +129,10 @@ struct _PmModel
   guint64 next_log_id;
   guint64 log_seq;
 
-  /* PmThread, index = id - 1. serial tells models apart in the threads'
-   * own records (a new model may reuse a freed one's address). */
-  GPtrArray *threads;
+  /* PmThread by id; ids are never reused. serial tells models apart in the
+   * threads' own records (a new model may reuse a freed one's address). */
+  GHashTable *threads;
+  gint last_thread;
   guint serial;
 };
 
@@ -143,6 +144,7 @@ typedef struct
   /* Runs a GStreamer task; alive until the task ends. */
   gboolean task;
   gboolean alive;
+  gint64 created_us;
 } PmThread;
 
 /* Each thread's own record of its id, for the model with that serial. */
@@ -217,8 +219,8 @@ pm_model_new (void)
   g_queue_init (&model->log);
   model->log_by_key = g_hash_table_new (g_str_hash, g_str_equal);
   model->next_log_id = 1;
-  model->threads = g_ptr_array_new_with_free_func ((GDestroyNotify)
-      pm_thread_free);
+  model->threads = g_hash_table_new_full (NULL, NULL, NULL,
+      (GDestroyNotify) pm_thread_free);
   model->serial = g_atomic_int_add (&model_serial, 1) + 1;
 
   return model;
@@ -234,7 +236,7 @@ pm_model_free (PmModel * model)
   g_hash_table_unref (model->elements);
   g_hash_table_unref (model->log_by_key);
   g_queue_clear_full (&model->log, (GDestroyNotify) pm_log_entry_free);
-  g_ptr_array_unref (model->threads);
+  g_hash_table_unref (model->threads);
   g_mutex_clear (&model->lock);
   g_free (model);
 }
@@ -624,6 +626,7 @@ append_pad (GString * json, PmPad * pad, const gchar * element_path,
     PmPushTiming *t = g_object_get_qdata (G_OBJECT (object),
         timing_quark ());
     gint thread = t != NULL ? g_atomic_int_get (&t->thread) : 0;
+    gint other = t != NULL ? g_atomic_int_get (&t->other_thread) : 0;
 
     g_string_append_printf (json, ",\"mode\":\"%s\"",
         mode == GST_PAD_MODE_PUSH ? "push" :
@@ -631,6 +634,10 @@ append_pad (GString * json, PmPad * pad, const gchar * element_path,
     if (thread > 0) {
       g_string_append_printf (json, ",\"thread\":%d", thread);
       g_hash_table_add (threads, GINT_TO_POINTER (thread));
+    }
+    if (thread > 0 && other > 0) {
+      g_string_append_printf (json, ",\"threads\":[%d,%d]", thread, other);
+      g_hash_table_add (threads, GINT_TO_POINTER (other));
     }
     gst_object_unref (object);
   }
@@ -731,6 +738,12 @@ compare_links (gconstpointer a, gconstpointer b)
   return (la->sink > lb->sink) - (la->sink < lb->sink);
 }
 
+static gint
+compare_ints (gconstpointer a, gconstpointer b)
+{
+  return GPOINTER_TO_INT (a) - GPOINTER_TO_INT (b);
+}
+
 gchar *
 pm_model_to_json (PmModel * model)
 {
@@ -787,8 +800,11 @@ pm_model_to_json (PmModel * model)
   {
     gboolean first = TRUE;
 
-    for (i = 0; i < model->threads->len; i++) {
-      PmThread *t = g_ptr_array_index (model->threads, i);
+    GList *ids = g_list_sort (g_hash_table_get_keys (model->threads),
+        compare_ints), *l;
+
+    for (l = ids; l != NULL; l = l->next) {
+      PmThread *t = g_hash_table_lookup (model->threads, l->data);
 
       if (!(t->task && t->alive) &&
           !g_hash_table_contains (threads, GINT_TO_POINTER (t->id)))
@@ -800,6 +816,7 @@ pm_model_to_json (PmModel * model)
           t->task ? "true" : "false", t->alive ? "true" : "false");
       first = FALSE;
     }
+    g_list_free (ids);
   }
   g_string_append (json, "]}");
 
@@ -1885,9 +1902,10 @@ pm_model_current_thread (PmModel * model)
   thread = g_new0 (PmThread, 1);
   thread->os_id = pm_thread_os_id ();
   thread->name = pm_thread_os_name ();
+  thread->created_us = g_get_monotonic_time ();
   g_mutex_lock (&model->lock);
-  g_ptr_array_add (model->threads, thread);
-  thread->id = model->threads->len;
+  thread->id = ++model->last_thread;
+  g_hash_table_insert (model->threads, GINT_TO_POINTER (thread->id), thread);
   g_mutex_unlock (&model->lock);
 
   if (key == NULL) {
@@ -1906,8 +1924,9 @@ pm_model_thread_task (PmModel * model, const gchar * name)
   PmThread *thread;
 
   g_mutex_lock (&model->lock);
-  thread = g_ptr_array_index (model->threads, id - 1);
-  if (!thread->task || !thread->alive || g_strcmp0 (thread->name, name)) {
+  thread = g_hash_table_lookup (model->threads, GINT_TO_POINTER (id));
+  if (thread != NULL && (!thread->task || !thread->alive ||
+          g_strcmp0 (thread->name, name))) {
     g_free (thread->name);
     thread->name = g_strdup (name);
     thread->task = TRUE;
@@ -1924,20 +1943,71 @@ pm_model_thread_ended (PmModel * model)
   PmThread *thread;
 
   g_mutex_lock (&model->lock);
-  thread = g_ptr_array_index (model->threads, id - 1);
-  if (thread->alive) {
+  thread = g_hash_table_lookup (model->threads, GINT_TO_POINTER (id));
+  if (thread != NULL && thread->alive) {
     thread->alive = FALSE;
     changed (model);
   }
   g_mutex_unlock (&model->lock);
 }
 
-void
-pm_model_set_pad_thread (PmModel * model, PmPushTiming * t, gint thread)
+/* A pad's thread that has not pushed for this long is gone from it. */
+#define PAD_THREAD_STALE_MS 1000
+
+static gboolean
+stale (gint * ms, gint now_ms)
 {
-  g_atomic_int_set (&t->thread, thread);
+  return (guint) now_ms - (guint) g_atomic_int_get (ms) > PAD_THREAD_STALE_MS;
+}
+
+void
+pm_model_note_pad_thread (PmModel * model, PmPushTiming * t, gint thread,
+    gint now_ms)
+{
+  gint first = g_atomic_int_get (&t->thread);
+  gint other = g_atomic_int_get (&t->other_thread);
+  gboolean change = FALSE;
+
+  /* The usual case, without the lock: the pad's own thread, or the second
+   * of two still pushing. */
+  if (G_LIKELY (thread == first)) {
+    g_atomic_int_set (&t->thread_ms, now_ms);
+    if (G_LIKELY (other == 0 || !stale (&t->other_ms, now_ms)))
+      return;
+  } else if (thread == other && !stale (&t->thread_ms, now_ms)) {
+    g_atomic_int_set (&t->other_ms, now_ms);
+    return;
+  }
+
   g_mutex_lock (&model->lock);
-  changed (model);
+  first = g_atomic_int_get (&t->thread);
+  other = g_atomic_int_get (&t->other_thread);
+  if (other != 0 && other != thread && stale (&t->other_ms, now_ms)) {
+    g_atomic_int_set (&t->other_thread, other = 0);
+    change = TRUE;
+  }
+  if (first != 0 && first != thread && stale (&t->thread_ms, now_ms)) {
+    /* The first has stopped: the second, if any, takes its place. */
+    g_atomic_int_set (&t->thread, first = other);
+    g_atomic_int_set (&t->thread_ms, g_atomic_int_get (&t->other_ms));
+    g_atomic_int_set (&t->other_thread, other = 0);
+    change = TRUE;
+  }
+  if (first == 0 || first == thread) {
+    if (first == 0)
+      change = TRUE;
+    g_atomic_int_set (&t->thread, thread);
+    g_atomic_int_set (&t->thread_ms, now_ms);
+    if (other == thread)
+      g_atomic_int_set (&t->other_thread, 0);
+  } else if (other == 0 || other == thread) {
+    if (other == 0)
+      change = TRUE;
+    g_atomic_int_set (&t->other_thread, thread);
+    g_atomic_int_set (&t->other_ms, now_ms);
+  }
+  if (change)
+    changed (model);
   g_mutex_unlock (&model->lock);
 }
 
@@ -1945,23 +2015,81 @@ gboolean
 pm_model_thread_info (PmModel * model, guint64 os_id, gint * id,
     gchar ** name, gboolean * task)
 {
-  gboolean found = FALSE;
-  guint i;
+  PmThread *newest = NULL;
+  GHashTableIter iter;
+  gpointer value;
 
   g_mutex_lock (&model->lock);
-  /* The newest first: an OS id can be reused by a later thread. */
-  for (i = model->threads->len; i > 0 && !found; i--) {
-    PmThread *t = g_ptr_array_index (model->threads, i - 1);
+  /* The newest: an OS id can be reused by a later thread. */
+  g_hash_table_iter_init (&iter, model->threads);
+  while (g_hash_table_iter_next (&iter, NULL, &value)) {
+    PmThread *t = value;
 
-    if (t->os_id == os_id) {
-      *id = t->id;
-      *name = g_strdup (t->name);
-      *task = t->task;
-      found = TRUE;
-    }
+    if (t->os_id == os_id && (newest == NULL || t->id > newest->id))
+      newest = t;
+  }
+  if (newest != NULL) {
+    *id = newest->id;
+    *name = g_strdup (newest->name);
+    *task = newest->task;
   }
   g_mutex_unlock (&model->lock);
-  return found;
+  return newest != NULL;
+}
+
+void
+pm_model_forget_threads (PmModel * model, GArray * alive, gint64 sampled_us)
+{
+  GHashTable *os_ids = g_hash_table_new (g_int64_hash, g_int64_equal);
+  GHashTable *shown = g_hash_table_new (NULL, NULL);
+  GHashTableIter iter;
+  gpointer value;
+  guint i;
+
+  for (i = 0; i < alive->len; i++)
+    g_hash_table_add (os_ids, &g_array_index (alive, PmThreadSample,
+            i).os_id);
+  g_mutex_lock (&model->lock);
+  /* Threads a pad still shows keep their names. */
+  g_hash_table_iter_init (&iter, model->pads);
+  while (g_hash_table_iter_next (&iter, NULL, &value)) {
+    GstPad *pad = g_weak_ref_get (&((PmPad *) value)->ref);
+    PmPushTiming *t;
+
+    if (pad == NULL)
+      continue;
+    t = g_object_get_qdata (G_OBJECT (pad), timing_quark ());
+    if (t != NULL) {
+      g_hash_table_add (shown, GINT_TO_POINTER (g_atomic_int_get
+              (&t->thread)));
+      g_hash_table_add (shown, GINT_TO_POINTER (g_atomic_int_get
+              (&t->other_thread)));
+    }
+    gst_object_unref (pad);
+  }
+  g_hash_table_iter_init (&iter, model->threads);
+  while (g_hash_table_iter_next (&iter, NULL, &value)) {
+    PmThread *t = value;
+
+    if (t->created_us < sampled_us && !(t->task && t->alive) &&
+        !g_hash_table_contains (os_ids, &t->os_id) &&
+        !g_hash_table_contains (shown, GINT_TO_POINTER (t->id)))
+      g_hash_table_iter_remove (&iter);
+  }
+  g_mutex_unlock (&model->lock);
+  g_hash_table_unref (shown);
+  g_hash_table_unref (os_ids);
+}
+
+guint
+pm_model_thread_count (PmModel * model)
+{
+  guint n;
+
+  g_mutex_lock (&model->lock);
+  n = g_hash_table_size (model->threads);
+  g_mutex_unlock (&model->lock);
+  return n;
 }
 
 /* Puts refs in the order data passes through them: an element after those
@@ -2026,7 +2154,8 @@ pm_model_thread_elements (PmModel * model, gint thread)
     GstPad *pad_object = g_weak_ref_get (&pad->ref);
     PmPushTiming *t = pad_object ? g_object_get_qdata (G_OBJECT (pad_object),
         timing_quark ()) : NULL;
-    gboolean serves = t != NULL && g_atomic_int_get (&t->thread) == thread;
+    gboolean serves = t != NULL && (g_atomic_int_get (&t->thread) == thread
+        || g_atomic_int_get (&t->other_thread) == thread);
     GstElement *object;
     PmElementRef *ref;
 

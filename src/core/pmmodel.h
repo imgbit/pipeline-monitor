@@ -127,13 +127,17 @@ void pm_link_failure_free (PmLinkFailure * f);
 /* A push in progress on a pad: start in ms since the tracer started, plus
  * one (0 = none). Written by the pad's streaming thread only. moved: data
  * has been pushed or pulled through the pad. thread: the model's id of the
- * thread that last pushed out of it (src) or pulled through it (sink), 0
- * if none yet. */
+ * thread that pushes out of it (src) or pulls through it (sink), 0 if none
+ * yet; other_thread: a second one pushing at the same time (a funnel's
+ * output), 0 if none. *_ms: when each last did. */
 typedef struct
 {
   gint start_ms;
   gint moved;
   gint thread;
+  gint other_thread;
+  gint thread_ms;
+  gint other_ms;
 } PmPushTiming;
 
 typedef struct
@@ -160,6 +164,12 @@ void pm_model_thread_ended (PmModel * model);
  * free) and whether it runs a task. */
 gboolean pm_model_thread_info (PmModel * model, guint64 os_id, gint * id,
     gchar ** name, gboolean * task);
+/* Forgets threads that have ended: not in alive (PmThreadSample, sampled
+ * at sampled_us), not a running task, shown by no pad. */
+void pm_model_forget_threads (PmModel * model, GArray * alive,
+    gint64 sampled_us);
+/* How many threads the model remembers. */
+guint pm_model_thread_count (PmModel * model);
 /* The elements thread runs: those whose pads it pushes out of or pulls
  * through, and those it pushes into; oldest first, each with a new
  * reference. */
@@ -182,9 +192,9 @@ typedef struct
  * and still alive, oldest first. */
 GPtrArray *pm_model_leftovers (PmModel * model, gint64 older_than);
 void pm_leftover_free (PmLeftover * left);
-/* t's pad is now served by thread (from pm_model_current_thread). */
-void pm_model_set_pad_thread (PmModel * model, PmPushTiming * t,
-    gint thread);
+/* thread (from pm_model_current_thread) pushed through t's pad at now_ms. */
+void pm_model_note_pad_thread (PmModel * model, PmPushTiming * t,
+    gint thread, gint now_ms);
 GPtrArray *pm_model_blocked_pushes (PmModel * model, gint now_ms,
     gint min_ms);
 void pm_blocked_free (PmBlocked * b);

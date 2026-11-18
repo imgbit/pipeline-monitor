@@ -152,8 +152,10 @@ ELEMENT:
 PAD: `id`, `name`, `path`, `direction` (`src`, `sink`), `presence`
 (`always`, `sometimes`, `request`), `mode` (`push`, `pull`, `none` when not
 active; since 0.11), `caps` (once negotiated; a pulled pad usually has
-none), `ghost`, `thread` (the id in `threads` of the thread that last
-pushed out of it, or pulled through it; since 0.12), and
+none), `ghost`, `thread` (the id in `threads` of the thread that pushes
+out of it, or pulls through it; since 0.12), `threads` (`[first,second]`
+when two push at the same time, as into a funnel's output; a thread that
+has not pushed for a second is dropped), and
 `flow` when the last push or pull did not return ok:
 `{"result":"not-linked","count":12,"first":…,"last":…}`.
 

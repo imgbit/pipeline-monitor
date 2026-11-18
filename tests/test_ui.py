@@ -1412,6 +1412,49 @@ def fill_difference(a, b):
                      rt * (dc / sc) * (dhh / sh))
 
 
+# A funnel fed by two threads at once: its output in grey, both threads
+# named, and the graph not sent again on every buffer.
+def check_funnel_threads(browser, serve):
+    server, url = start_server(serve, "funnel name=fun ! fakesink name=fsink "
+                               "sync=true videotestsrc is-live=true ! queue "
+                               "name=fq1 ! fun. videotestsrc is-live=true ! "
+                               "queue name=fq2 ! fun.")
+    legend = "document.getElementById('threads-legend')"
+    # Counts the graphs the page receives.
+    count = browser.call(
+        "Page.addScriptToEvaluateOnNewDocument", source=(
+            "window.__graphs = 0; const Open = WebSocket; window.WebSocket ="
+            " function (...a) { const ws = new Open(...a); ws.addEventListener"
+            "('message', e => { if (typeof e.data === 'string' && e.data"
+            ".includes('\"type\":\"graph\"')) window.__graphs++; }); "
+            "return ws; };"))["identifier"]
+    try:
+        browser.call("Page.navigate", url=url)
+        assert browser.wait(f"!!{element_selector('fsink')}", timeout=15)
+        if browser.eval("document.getElementById('threads')"
+                        ".getAttribute('aria-pressed') !== 'true'"):
+            browser.click("#threads")
+        assert browser.wait(f"{legend}.textContent.includes("
+                            "'several threads at once')"), \
+            "legend: " + str(browser.eval(f"{legend}.textContent"))
+        title = (f"{element_selector('fsink')}.querySelector(':scope > "
+                 "title').textContent")
+        assert browser.wait(f"/threads: fq[12]:src and fq[12]:src$/"
+                            f".test({title})"), \
+            "sink's tooltip: " + str(browser.eval(title))
+        # The graph stays as it is while both threads push.
+        before = browser.eval("window.__graphs")
+        time.sleep(3)
+        graphs = browser.eval("window.__graphs") - before
+        assert before > 0 and graphs <= 1, \
+            f"the graph was sent {graphs} times in 3 s"
+    finally:
+        browser.call("Page.removeScriptToEvaluateOnNewDocument",
+                     identifier=count)
+        server.terminate()
+        server.wait()
+
+
 def check_threads_view(browser, serve):
     server, url = start_server(serve, THREADS_PIPELINE)
     legend = "document.getElementById('threads-legend')"
@@ -3357,6 +3400,7 @@ def main():
             check_format_finding(browser, serve)
             check_pull_mode(browser, serve)
             check_threads_view(browser, serve)
+            check_funnel_threads(browser, serve)
     finally:
         if browser:
             browser.close()
