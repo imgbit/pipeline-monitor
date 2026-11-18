@@ -88,9 +88,11 @@ export function pipelineTimes(p, unit) {
   const latency = p.latency
     ? `latency ${formatSpan(p.latency.min, unit)}${p.latency.live ? " live"
       : ""}` : "latency —";
-  const text = [clock, `running ${clockTime(p.running_time)}`, position,
-    latency].join(" · ");
+  // The clock's name only in the tooltip: the header has little room.
+  const text = [`running ${clockTime(p.running_time)}`, position, latency]
+    .join(" · ");
   const title = [
+    clock,
     `clock type: ${p.clock_type || "—"}`,
     `clock provider: ${p.clock_provider || "system"}`,
     `clock time: ${p.clock_time ?? "—"} ns`,

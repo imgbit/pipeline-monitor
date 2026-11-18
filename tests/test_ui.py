@@ -929,6 +929,11 @@ def check_levels(browser):
         "no pipeline times in the header"
     assert browser.wait("document.querySelectorAll('#graph .level-fill')"
                         ".length >= 2"), "no fill bars on queues"
+    # The clock's name in the tooltip, not the header's text.
+    assert browser.eval(f"!{times}.textContent.includes('clock') && "
+                        f"{times}.title.startsWith('clock ')"), \
+        "clock: " + str(browser.eval(f"{times}.textContent + ' | ' + "
+                                     f"{times}.title"))
 
     queue = element_selector("queue0")
     tip = "document.querySelector('.tooltip')"
