@@ -1419,10 +1419,11 @@ def fill_difference(a, b):
 
 
 # A funnel fed by two threads at once: its output in grey, both threads
-# named, and the graph not sent again on every buffer.
+# named, and the graph not sent again on every buffer. (A syncing sink
+# would let one queue wait for the funnel's lock for seconds on Linux.)
 def check_funnel_threads(browser, serve):
     server, url = start_server(serve, "funnel name=fun ! fakesink name=fsink "
-                               "sync=true videotestsrc is-live=true ! queue "
+                               "sync=false videotestsrc is-live=true ! queue "
                                "name=fq1 ! fun. videotestsrc is-live=true ! "
                                "queue name=fq2 ! fun.")
     legend = "document.getElementById('threads-legend')"

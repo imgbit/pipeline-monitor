@@ -3173,12 +3173,13 @@ pad_threads_now (const gchar * element, const gchar * pad)
 
 /* A funnel fed by two queues shows both threads on its output, however
  * they take turns; when one branch stops, its thread goes from the pad at
- * once. */
+ * once. (A syncing sink would hold the funnel's lock between pushes, and
+ * on Linux one queue could wait for it for seconds.) */
 static void
 test_funnel_threads (void)
 {
   GstElement *pipeline = start_pipeline ("funnel name=tf ! fakesink "
-      "sync=true videotestsrc is-live=true name=tf-a ! queue name=tf-qa ! "
+      "sync=false videotestsrc is-live=true name=tf-a ! queue name=tf-qa ! "
       "tf. videotestsrc is-live=true name=tf-b ! queue name=tf-qb ! tf.");
   GstElement *src = gst_bin_get_by_name (GST_BIN (pipeline), "tf-b");
   GstElement *queue = gst_bin_get_by_name (GST_BIN (pipeline), "tf-qb");
