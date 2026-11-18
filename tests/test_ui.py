@@ -1495,10 +1495,10 @@ def check_threads_view(browser, serve):
             "performance: " + str(browser.eval(f"{body}.textContent"))
         rows = f"{body}.querySelectorAll('tr').length"
         summed = browser.eval(rows)
-        browser.click("#performance-others")
+        browser.eval("document.getElementById('performance-others').click()")
         assert browser.wait(f"{rows} > {summed}"), \
             "the other threads not listed one by one"
-        browser.click("#performance-others")
+        browser.eval("document.getElementById('performance-others').click()")
         link = (f"[...{body}.querySelectorAll('.perf-element')].find(b => "
                 "b.textContent === 'tsink')")
         browser.eval(f"{link}.click()")
