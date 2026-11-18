@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 import { buildElkGraph, keepPlaces } from "./layout.js";
-import { GraphView, countElements } from "./render.js";
+import { GraphView, countElements, threadColours } from "./render.js";
 import { isTimeProperty, propertyText, showDetails, updateLatencyDetails,
   updateProblemsDetails, updateProperties, updateQueueDetails, valueText }
   from "./panel.js";
@@ -21,6 +21,7 @@ import { Dock } from "./dock.js";
 const $ = (id) => document.getElementById(id);
 const COLLAPSED_KEY = "pipeline-monitor.collapsed";
 const CAPS_LABELS_KEY = "pipeline-monitor.caps-labels";
+const THREADS_KEY = "pipeline-monitor.threads";
 const TIME_UNIT_KEY = "pipeline-monitor.time-unit";
 const AUTO_FIT_KEY = "pipeline-monitor.auto-fit";
 
@@ -48,6 +49,7 @@ const state = {
   reselect: false,
   collapsed: loadCollapsed(),
   capsLabels: loadFlag(CAPS_LABELS_KEY),
+  threads: loadFlag(THREADS_KEY),
   known: new Map(),
   // A program is connected: measurements and pins are applied.
   connected: false,
@@ -370,6 +372,65 @@ function currentPipeline() {
   return pipelines.find((p) => p.id === state.pipelineId) || pipelines[0];
 }
 
+// The "threads" view of the pipeline shown: which thread carries each link
+// (the pushing pad's, or the pulling pad's), each element's first input
+// and output thread, and a legend in order of appearance.
+function showThreads(pipeline) {
+  const legend = $("threads-legend");
+  if (!state.threads || !pipeline) {
+    view.setThreads(null);
+    legend.hidden = true;
+    return;
+  }
+  const pads = new Map();
+  const visit = (e) => {
+    for (const pad of e.pads)
+      pads.set(pad.id, { pad, element: e });
+    e.children.forEach(visit);
+  };
+  visit(pipeline);
+  const order = [];
+  const edges = new Map();
+  const elements = new Map();
+  const entry = (id) => elements.get(id) || elements.set(id, {}).get(id);
+  for (const { src, sink } of state.graph.links) {
+    const a = pads.get(src);
+    const b = pads.get(sink);
+    const id = a && b && (a.pad.thread || b.pad.thread);
+    if (!id)
+      continue;
+    if (!order.includes(id))
+      order.push(id);
+    edges.set(`p${src} p${sink}`, id);
+    entry(b.element.id).in ??= id;
+    entry(a.element.id).out ??= id;
+  }
+  const colours = new Map(order.map((id, i) => [id, threadColours(i)]));
+  view.setThreads({ colours, edges, elements });
+
+  const known = new Map((state.graph.threads || []).map((t) => [t.id, t]));
+  legend.replaceChildren(...order.map((id) => {
+    const t = known.get(id);
+    const row = document.createElement("div");
+    row.className = "row";
+    const swatch = document.createElement("span");
+    swatch.className = "swatch";
+    swatch.style.background = colours.get(id).line;
+    const name = document.createElement("span");
+    name.textContent = t?.name || `thread ${t?.os ?? id}`;
+    const kind = document.createElement("span");
+    kind.className = "kind";
+    kind.textContent = t?.task ? "" : "not a GStreamer task";
+    row.append(swatch, name, kind);
+    return row;
+  }));
+  if (!order.length)
+    legend.textContent = state.viewing && !state.graph.threads
+      ? "No thread data in this recording (made before 0.12)"
+      : "No data has moved yet";
+  legend.hidden = false;
+}
+
 // Lookups over the whole graph for the details panel and edge highlighting.
 function buildIndex(graph) {
   const pads = new Map();
@@ -540,6 +601,7 @@ async function layoutAndRender() {
     view.setAutoFit(false);
   }
   view.setLevels(state.queues);
+  showThreads(pipeline);
   showLatencyLabels();
   // A click being made on the panel: rebuilding it now would remove the
   // pressed button and lose the click. It is rebuilt once released.
@@ -1414,7 +1476,8 @@ function handleMessage(message) {
     return;
   }
   if (message.type === "graph") {
-    state.graph = { pipelines: message.pipelines, links: message.links };
+    state.graph = { pipelines: message.pipelines, links: message.links,
+      threads: message.threads };
     if (state.graph.pipelines.length)
       lastAlive.graph = state.graph;
     const index = buildIndex(state.graph);
@@ -1564,6 +1627,13 @@ $("zoom-out").addEventListener("click", () => view.zoomCenter(0.8));
 $("auto-fit").addEventListener("click", () => {
   view.setAutoFit(!view.autoFit);
   saveFlag(AUTO_FIT_KEY, view.autoFit);
+});
+$("threads").setAttribute("aria-pressed", String(state.threads));
+$("threads").addEventListener("click", () => {
+  state.threads = !state.threads;
+  saveFlag(THREADS_KEY, state.threads);
+  $("threads").setAttribute("aria-pressed", String(state.threads));
+  update();
 });
 $("caps-labels").setAttribute("aria-pressed", String(state.capsLabels));
 $("caps-labels").addEventListener("click", () => {

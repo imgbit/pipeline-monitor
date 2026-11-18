@@ -8,7 +8,7 @@
 
 #include "envelope.h"
 
-#define EMPTY_GRAPH "{\"pipelines\":[],\"links\":[]}"
+#define EMPTY_GRAPH "{\"pipelines\":[],\"links\":[],\"threads\":[]}"
 
 static SoupSession *session;
 static gchar *graph_url;

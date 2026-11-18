@@ -1353,6 +1353,51 @@ def check_pull_mode(browser, serve):
         server.wait()
 
 
+# The "threads" view: links and elements in their thread's colour, a queue
+# split where its input thread ends and its own starts, a legend; off again
+# clears it.
+THREADS_PIPELINE = ("videotestsrc is-live=true name=tsrc ! queue name=tq ! "
+                    "fakesink name=tsink")
+
+
+def check_threads_view(browser, serve):
+    server, url = start_server(serve, THREADS_PIPELINE)
+    legend = "document.getElementById('threads-legend')"
+    try:
+        browser.call("Page.navigate", url=url)
+        assert browser.wait(f"!!{element_selector('tsink')}", timeout=15), \
+            "no graph"
+        if browser.eval("document.getElementById('threads')"
+                        ".getAttribute('aria-pressed') === 'true'"):
+            browser.click("#threads")
+        browser.click("#threads")
+        assert browser.wait(f"!{legend}.hidden && {legend}.textContent"
+                            f".includes('tsrc:src') && {legend}.textContent"
+                            f".includes('tq:src')"), \
+            "legend: " + str(browser.eval(
+                f"JSON.stringify({{hidden: {legend}.hidden, text: "
+                f"{legend}.textContent, pressed: document.getElementById("
+                f"'threads').getAttribute('aria-pressed')}})"))
+        strokes = ("[...document.querySelectorAll('#graph path.edge')]"
+                   ".map(p => p.style.stroke)")
+        assert browser.wait(f"(s => s.length === 2 && s.every(Boolean) && "
+                            f"s[0] !== s[1])({strokes})"), \
+            "links not in two thread colours: " + str(browser.eval(strokes))
+        box = "(n => n?.querySelector(':scope > rect.box').style.fill)"
+        assert browser.eval(f"{box}({element_selector('tq')})")\
+            .find("thread-split-") >= 0, "the queue is not split"
+        fill = browser.eval(f"{box}({element_selector('tsink')})")
+        assert fill and "thread-split-" not in fill, \
+            f"the sink has no thread colour: {fill!r}"
+        browser.click("#threads")
+        assert browser.wait(f"{legend}.hidden && ({strokes}).every(s => !s)"), \
+            "the threads view did not turn off"
+        assert not browser.errors, f"errors in the page: {browser.errors}"
+    finally:
+        server.terminate()
+        server.wait()
+
+
 def check_format_finding(browser, serve):
     # It fails at once and ends: it waits for the page to be there.
     server, url = start_server(serve, FORMAT_PIPELINE, "--set-caps",
@@ -2087,6 +2132,16 @@ def check_snapshot(browser, good):
     os.remove(path)
 
 
+# A graph message as recorded before 0.12: no threads, no pad threads.
+def without_threads(value):
+    if isinstance(value, dict):
+        return {k: without_threads(v) for k, v in value.items()
+                if k not in ("threads", "thread")}
+    if isinstance(value, list):
+        return [without_threads(v) for v in value]
+    return value
+
+
 # In a recording, a problem's "ago" counts from the moment shown, not from
 # now: a recording made two days ago says "0 s ago" at its problem.
 def check_finding_age(browser, good):
@@ -2100,7 +2155,7 @@ def check_finding_age(browser, good):
                "path": "pipeline0", "text": "Data stopped here",
                "count": 1, "first": then + 100000, "last": then + 100000}
     path = open_messages(browser, {**header, "started": then}, [
-        {**graph, "time": then},
+        {**without_threads(graph), "time": then},
         {"type": "findings", "protocol": 1, "time": then + 100000,
          "findings": [finding]},
         {"type": "end", "protocol": 1, "time": then + 200000,
@@ -2109,6 +2164,12 @@ def check_finding_age(browser, good):
     assert browser.wait("document.getElementById('play-time').textContent"
                         ".endsWith('/ 0:00.100')"), "old recording not opened"
     move_slider(browser, 1000)
+    # A recording made before 0.12 has no threads: the legend says so.
+    browser.click("#threads")
+    assert browser.wait("document.getElementById('threads-legend')"
+                        ".textContent.includes('No thread data in this "
+                        "recording')"), "no note for a recording without threads"
+    browser.click("#threads")
     # Live pages only: a recording has no .dot.
     assert browser.eval("document.getElementById('save-dot')"
                         ".offsetParent === null"), ".dot shown in a recording"
@@ -3060,6 +3121,7 @@ def main():
             check_two_pipelines(browser, serve)
             check_format_finding(browser, serve)
             check_pull_mode(browser, serve)
+            check_threads_view(browser, serve)
     finally:
         if browser:
             browser.close()

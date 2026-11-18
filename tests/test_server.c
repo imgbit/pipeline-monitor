@@ -27,7 +27,7 @@ static gchar *pad_finding (const gchar * kind, const gchar * element,
 static gchar *element_finding (const gchar * kind, const gchar * element);
 static JsonNode *parse (const gchar * text);
 
-#define EMPTY_GRAPH "{\"pipelines\":[],\"links\":[]}"
+#define EMPTY_GRAPH "{\"pipelines\":[],\"links\":[],\"threads\":[]}"
 
 static gchar *
 tracer_string (const gchar * property)
@@ -3058,6 +3058,120 @@ finding_gone (const gchar * id, gint timeout_s)
   return FALSE;
 }
 
+static gint64
+find_pad_thread (JsonObject * element, const gchar * name, const gchar * pad)
+{
+  JsonArray *list = json_object_get_array_member (element, "pads");
+  guint i;
+
+  if (g_strcmp0 (json_object_get_string_member (element, "name"), name) == 0)
+    for (i = 0; i < json_array_get_length (list); i++) {
+      JsonObject *p = json_array_get_object_element (list, i);
+      if (g_strcmp0 (json_object_get_string_member (p, "name"), pad) == 0)
+        return json_object_get_int_member_with_default (p, "thread", 0);
+    }
+  list = json_object_get_array_member (element, "children");
+  for (i = 0; i < json_array_get_length (list); i++) {
+    gint64 id = find_pad_thread (json_array_get_object_element (list, i), name,
+        pad);
+    if (id > 0)
+      return id;
+  }
+  return 0;
+}
+
+/* The "thread" of element:pad in the graph (0 if none yet), and in *name
+ * and *task the thread's name and kind from the graph's "threads". */
+static gint64
+pad_thread (const gchar * element, const gchar * pad, gchar ** name,
+    gboolean * task)
+{
+  gchar *graph;
+  JsonNode *root;
+  JsonObject *top;
+  JsonArray *list;
+  JsonArray *pipelines;
+  gint64 id = 0;
+  guint i;
+
+  *name = NULL;
+  *task = FALSE;
+  get_status ("api/graph", "GET", NULL, &graph, NULL);
+  root = parse (graph);
+  top = json_node_get_object (root);
+  pipelines = json_object_get_array_member (top, "pipelines");
+  for (i = 0; i < json_array_get_length (pipelines) && id == 0; i++)
+    id = find_pad_thread (json_array_get_object_element (pipelines, i),
+        element, pad);
+  list = json_object_get_array_member (top, "threads");
+  for (i = 0; i < json_array_get_length (list); i++) {
+    JsonObject *t = json_array_get_object_element (list, i);
+
+    if (json_object_get_int_member (t, "id") == id) {
+      *name = g_strdup (json_object_get_string_member (t, "name"));
+      *task = json_object_get_boolean_member (t, "task");
+    }
+  }
+  json_node_unref (root);
+  g_free (graph);
+  return id;
+}
+
+/* Threads: each task thread named after its pad, the pads it pushes out of
+ * served by it, a queue starting a new one; a thread that is not a task
+ * (here the test's, pushing into an identity as an application can)
+ * listed as such. */
+static void
+test_threads (void)
+{
+  GstElement *pipeline = start_pipeline ("videotestsrc is-live=true "
+      "name=th-src ! queue name=th-q ! fakesink "
+      "identity name=th-id ! fakesink async=false");
+  GstElement *identity = gst_bin_get_by_name (GST_BIN (pipeline), "th-id");
+  GstPad *sink = gst_element_get_static_pad (identity, "sink");
+  GstSegment segment;
+  gint64 src = 0, q = 0, other = 0;
+  gchar *src_name = NULL, *q_name = NULL, *other_name = NULL;
+  gboolean src_task, q_task, other_task = TRUE;
+  gint tries;
+
+  gst_segment_init (&segment, GST_FORMAT_TIME);
+  gst_pad_send_event (sink, gst_event_new_stream_start ("th"));
+  gst_pad_send_event (sink, gst_event_new_segment (&segment));
+  for (tries = 0; tries < 100 && (src == 0 || q == 0 || other == 0);
+      tries++) {
+    GstBuffer *buffer = gst_buffer_new_allocate (NULL, 16, NULL);
+
+    GST_BUFFER_PTS (buffer) = tries * GST_MSECOND;
+    gst_pad_chain (sink, buffer);
+    g_usleep (50 * G_TIME_SPAN_MILLISECOND);
+    g_clear_pointer (&src_name, g_free);
+    g_clear_pointer (&q_name, g_free);
+    g_clear_pointer (&other_name, g_free);
+    src = pad_thread ("th-src", "src", &src_name, &src_task);
+    q = pad_thread ("th-q", "src", &q_name, &q_task);
+    other = pad_thread ("th-id", "src", &other_name, &other_task);
+  }
+  g_assert_cmpint (src, >, 0);
+  g_assert_cmpint (q, >, 0);
+  g_assert_cmpint (other, >, 0);
+  g_assert_cmpint (src, !=, q);
+  g_assert_cmpint (other, !=, src);
+  g_assert_cmpint (other, !=, q);
+  g_assert_cmpstr (src_name, ==, "th-src:src");
+  g_assert_cmpstr (q_name, ==, "th-q:src");
+  g_assert_true (src_task && q_task);
+  g_assert_false (other_task);
+  g_assert_nonnull (other_name);
+
+  g_free (src_name);
+  g_free (q_name);
+  g_free (other_name);
+  gst_object_unref (sink);
+  gst_object_unref (identity);
+  stop_pipeline (pipeline);
+}
+
 /* GET /api/dot?pipeline=<id>: GStreamer's .dot of the pipeline; 404 for
  * an unknown id or an element that is not a bin. */
 static void
@@ -3906,6 +4020,7 @@ main (int argc, char **argv)
   g_test_add_func ("/server/findings-flow", test_findings_flow);
   g_test_add_func ("/server/findings-stuck", test_findings_stuck);
   g_test_add_func ("/server/dot", test_dot);
+  g_test_add_func ("/server/threads", test_threads);
   g_test_add_func ("/server/check-not-negotiated",
       test_check_not_negotiated);
   g_test_add_func ("/server/check-failed-link", test_check_failed_link);

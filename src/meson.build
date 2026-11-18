@@ -8,6 +8,7 @@ plugin_c_args = [
 plugin_sources = files(
   'core/pmjson.c',
   'core/pmmodel.c',
+  'core/pmthread.c',
   'core/pmmonitor.c',
   'core/pmlevels.c',
   'core/pmprops.c',
@@ -36,7 +37,7 @@ plugin_build_dir = meson.current_build_dir()
 # The pipeline-monitor command: shows recordings without a program.
 pipeline_monitor_tool = executable('pipeline-monitor',
   'tool/pipeline-monitor.c',
-  'core/pmjson.c', 'core/pmmodel.c', 'core/pmmonitor.c', 'core/pmlevels.c',
+  'core/pmjson.c', 'core/pmmodel.c', 'core/pmthread.c', 'core/pmmonitor.c', 'core/pmlevels.c',
   'core/pmprops.c', 'core/pmlatency.c', 'core/pmfindings.c',
   'server/pmrecorder.c', 'server/pmserver.c',
   ui_resources,

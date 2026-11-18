@@ -183,6 +183,21 @@ main {
   gap: 4px;
 }
 
+.threads-legend {
+  position: absolute;
+  left: 16px;
+  bottom: 52px;
+  max-width: 320px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  font-size: 12px;
+}
+.threads-legend .row { display: flex; gap: 6px; align-items: center; }
+.threads-legend .swatch { width: 14px; height: 3px; border-radius: 1.5px; }
+.threads-legend .kind { color: var(--muted); }
+
 #details {
   position: absolute;
   top: 16px;

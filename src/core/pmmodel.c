@@ -2,6 +2,7 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #include "pmmodel.h"
 #include "pmjson.h"
+#include "pmthread.h"
 
 typedef struct _PmElement PmElement;
 
@@ -122,7 +123,40 @@ struct _PmModel
   GHashTable *log_by_key;
   guint64 next_log_id;
   guint64 log_seq;
+
+  /* PmThread, index = id - 1. serial tells models apart in the threads'
+   * own records (a new model may reuse a freed one's address). */
+  GPtrArray *threads;
+  guint serial;
 };
+
+typedef struct
+{
+  gint id;
+  guint64 os_id;
+  gchar *name;
+  /* Runs a GStreamer task; alive until the task ends. */
+  gboolean task;
+  gboolean alive;
+} PmThread;
+
+/* Each thread's own record of its id, for the model with that serial. */
+typedef struct
+{
+  guint serial;
+  gint id;
+} PmThreadKey;
+
+static GPrivate thread_key = G_PRIVATE_INIT (g_free);
+static GQuark timing_quark (void);
+static guint model_serial;
+
+static void
+pm_thread_free (PmThread * thread)
+{
+  g_free (thread->name);
+  g_free (thread);
+}
 
 static void
 pm_element_free (PmElement * element)
@@ -177,6 +211,9 @@ pm_model_new (void)
   g_queue_init (&model->log);
   model->log_by_key = g_hash_table_new (g_str_hash, g_str_equal);
   model->next_log_id = 1;
+  model->threads = g_ptr_array_new_with_free_func ((GDestroyNotify)
+      pm_thread_free);
+  model->serial = g_atomic_int_add (&model_serial, 1) + 1;
 
   return model;
 }
@@ -191,6 +228,7 @@ pm_model_free (PmModel * model)
   g_hash_table_unref (model->elements);
   g_hash_table_unref (model->log_by_key);
   g_queue_clear_full (&model->log, (GDestroyNotify) pm_log_entry_free);
+  g_ptr_array_unref (model->threads);
   g_mutex_clear (&model->lock);
   g_free (model);
 }
@@ -543,7 +581,8 @@ append_string (GString * json, const gchar * str)
 }
 
 static void
-append_pad (GString * json, PmPad * pad, const gchar * element_path)
+append_pad (GString * json, PmPad * pad, const gchar * element_path,
+    GHashTable * threads)
 {
   gchar *path = g_strdup_printf ("%s:%s", element_path, pad->name);
   GstPad *object = g_weak_ref_get (&pad->ref);
@@ -561,10 +600,17 @@ append_pad (GString * json, PmPad * pad, const gchar * element_path)
     g_string_append_printf (json, ",\"presence\":\"%s\"", pad->presence);
   if (object != NULL) {
     GstPadMode mode = GST_PAD_MODE (object);
+    PmPushTiming *t = g_object_get_qdata (G_OBJECT (object),
+        timing_quark ());
+    gint thread = t != NULL ? g_atomic_int_get (&t->thread) : 0;
 
     g_string_append_printf (json, ",\"mode\":\"%s\"",
         mode == GST_PAD_MODE_PUSH ? "push" :
         mode == GST_PAD_MODE_PULL ? "pull" : "none");
+    if (thread > 0) {
+      g_string_append_printf (json, ",\"thread\":%d", thread);
+      g_hash_table_add (threads, GINT_TO_POINTER (thread));
+    }
     gst_object_unref (object);
   }
   if (pad->caps != NULL) {
@@ -587,7 +633,8 @@ static const gchar *preroll_names[] = { NULL, "waiting", "done", "eos",
 static gchar *element_path (PmElement * element);
 
 static void
-append_element (PmModel * model, GString * json, PmElement * element)
+append_element (PmModel * model, GString * json, PmElement * element,
+    GHashTable * threads)
 {
   gchar *path = element_path (element);
   guint i;
@@ -622,7 +669,7 @@ append_element (PmModel * model, GString * json, PmElement * element)
     if (i > 0)
       g_string_append_c (json, ',');
     append_pad (json, g_hash_table_lookup (model->pads,
-            g_ptr_array_index (element->pads, i)), path);
+            g_ptr_array_index (element->pads, i)), path, threads);
   }
   g_free (path);
 
@@ -631,7 +678,7 @@ append_element (PmModel * model, GString * json, PmElement * element)
     if (i > 0)
       g_string_append_c (json, ',');
     append_element (model, json, g_hash_table_lookup (model->elements,
-            g_ptr_array_index (element->children, i)));
+            g_ptr_array_index (element->children, i)), threads);
   }
   g_string_append (json, "]}");
 }
@@ -667,14 +714,15 @@ gchar *
 pm_model_to_json (PmModel * model)
 {
   GString *json = g_string_new ("{\"pipelines\":[");
-
-  /* Counted by tests/bench_overhead.py (G_MESSAGES_DEBUG=pipeline-monitor). */
-  g_log ("pipeline-monitor", G_LOG_LEVEL_DEBUG, "graph built");
   GPtrArray *roots = g_ptr_array_new ();
   GArray *links = g_array_new (FALSE, FALSE, sizeof (PmLinkIds));
+  GHashTable *threads = g_hash_table_new (NULL, NULL);
   GHashTableIter iter;
   gpointer value;
   guint i;
+
+  /* Counted by tests/bench_overhead.py (G_MESSAGES_DEBUG=pipeline-monitor). */
+  g_log ("pipeline-monitor", G_LOG_LEVEL_DEBUG, "graph built");
 
   g_mutex_lock (&model->lock);
 
@@ -688,7 +736,7 @@ pm_model_to_json (PmModel * model)
   for (i = 0; i < roots->len; i++) {
     if (i > 0)
       g_string_append_c (json, ',');
-    append_element (model, json, g_ptr_array_index (roots, i));
+    append_element (model, json, g_ptr_array_index (roots, i), threads);
   }
 
   /* A link is stored as soon as it is made, which can be before its pads
@@ -705,8 +753,6 @@ pm_model_to_json (PmModel * model)
   }
   g_array_sort (links, compare_links);
 
-  g_mutex_unlock (&model->lock);
-
   g_string_append (json, "],\"links\":[");
   for (i = 0; i < links->len; i++) {
     PmLinkIds *ids = &g_array_index (links, PmLinkIds, i);
@@ -714,8 +760,31 @@ pm_model_to_json (PmModel * model)
         "%s{\"src\":%" G_GUINT64_FORMAT ",\"sink\":%" G_GUINT64_FORMAT "}",
         i > 0 ? "," : "", ids->src, ids->sink);
   }
+
+  /* Threads a pad shows, and tasks still running (one may wait). */
+  g_string_append (json, "],\"threads\":[");
+  {
+    gboolean first = TRUE;
+
+    for (i = 0; i < model->threads->len; i++) {
+      PmThread *t = g_ptr_array_index (model->threads, i);
+
+      if (!(t->task && t->alive) &&
+          !g_hash_table_contains (threads, GINT_TO_POINTER (t->id)))
+        continue;
+      g_string_append_printf (json, "%s{\"id\":%d,\"os\":%" G_GUINT64_FORMAT
+          ",\"name\":", first ? "" : ",", t->id, t->os_id);
+      append_string (json, t->name);
+      g_string_append_printf (json, ",\"task\":%s,\"alive\":%s}",
+          t->task ? "true" : "false", t->alive ? "true" : "false");
+      first = FALSE;
+    }
+  }
   g_string_append (json, "]}");
 
+  g_mutex_unlock (&model->lock);
+
+  g_hash_table_unref (threads);
   g_ptr_array_unref (roots);
   g_array_unref (links);
 
@@ -1370,8 +1439,6 @@ pm_model_starved_sinks (PmModel * model, guint64 pipeline)
   return found;
 }
 
-static GQuark timing_quark (void);
-
 static gboolean
 pad_moved (PmPad * pad)
 {
@@ -1783,4 +1850,72 @@ pm_model_now_ms (void)
   offset = ts_offset;
   g_mutex_unlock (&ts_lock);
   return (gint) ((gst_util_get_timestamp () - offset) / GST_MSECOND);
+}
+
+gint
+pm_model_current_thread (PmModel * model)
+{
+  PmThreadKey *key = g_private_get (&thread_key);
+  PmThread *thread;
+
+  if (G_LIKELY (key != NULL && key->serial == model->serial))
+    return key->id;
+
+  thread = g_new0 (PmThread, 1);
+  thread->os_id = pm_thread_os_id ();
+  thread->name = pm_thread_os_name ();
+  g_mutex_lock (&model->lock);
+  g_ptr_array_add (model->threads, thread);
+  thread->id = model->threads->len;
+  g_mutex_unlock (&model->lock);
+
+  if (key == NULL) {
+    key = g_new0 (PmThreadKey, 1);
+    g_private_set (&thread_key, key);
+  }
+  key->serial = model->serial;
+  key->id = thread->id;
+  return thread->id;
+}
+
+void
+pm_model_thread_task (PmModel * model, const gchar * name)
+{
+  gint id = pm_model_current_thread (model);
+  PmThread *thread;
+
+  g_mutex_lock (&model->lock);
+  thread = g_ptr_array_index (model->threads, id - 1);
+  if (!thread->task || !thread->alive || g_strcmp0 (thread->name, name)) {
+    g_free (thread->name);
+    thread->name = g_strdup (name);
+    thread->task = TRUE;
+    thread->alive = TRUE;
+    changed (model);
+  }
+  g_mutex_unlock (&model->lock);
+}
+
+void
+pm_model_thread_ended (PmModel * model)
+{
+  gint id = pm_model_current_thread (model);
+  PmThread *thread;
+
+  g_mutex_lock (&model->lock);
+  thread = g_ptr_array_index (model->threads, id - 1);
+  if (thread->alive) {
+    thread->alive = FALSE;
+    changed (model);
+  }
+  g_mutex_unlock (&model->lock);
+}
+
+void
+pm_model_set_pad_thread (PmModel * model, PmPushTiming * t, gint thread)
+{
+  g_atomic_int_set (&t->thread, thread);
+  g_mutex_lock (&model->lock);
+  changed (model);
+  g_mutex_unlock (&model->lock);
 }

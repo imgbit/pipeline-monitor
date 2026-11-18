@@ -457,6 +457,28 @@ do_element_post_message_pre (GstTracer * tracer, GstClockTime ts,
         g_free (detail);
       }
       break;
+    case GST_MESSAGE_STREAM_STATUS:{
+      /* Posted by a pad's task from inside its thread when it starts and
+       * stops; bins post it again, so only the pad's own element. */
+      GstObject *src = GST_MESSAGE_SRC (message);
+      GstStreamStatusType type;
+      GstElement *owner;
+
+      if (!GST_IS_PAD (src) || GST_OBJECT_PARENT (src) !=
+          GST_OBJECT_CAST (element))
+        break;
+      gst_message_parse_stream_status (message, &type, &owner);
+      if (type == GST_STREAM_STATUS_TYPE_ENTER) {
+        const GValue *task = gst_message_get_stream_status_object (message);
+
+        if (task != NULL && G_VALUE_HOLDS (task, GST_TYPE_TASK))
+          pm_model_thread_task (self->model,
+              GST_OBJECT_NAME (g_value_get_object (task)));
+      } else if (type == GST_STREAM_STATUS_TYPE_LEAVE) {
+        pm_model_thread_ended (self->model);
+      }
+      break;
+    }
     case GST_MESSAGE_ASYNC_START:
     case GST_MESSAGE_ASYNC_DONE:
       if (GST_MESSAGE_SRC (message) == GST_OBJECT_CAST (element) &&
@@ -565,11 +587,15 @@ static void
 do_pad_push_pre (GstTracer * tracer, GstClockTime ts, GstPad * pad,
     gpointer data)
 {
+  PmModel *model = GST_PIPELINE_MONITOR_TRACER (tracer)->model;
   PmPushTiming *t = pm_push_timing (pad);
+  gint thread = pm_model_current_thread (model);
 
   g_atomic_int_set (&t->start_ms, (gint) (ts / GST_MSECOND) + 1);
   if (G_UNLIKELY (!g_atomic_int_get (&t->moved)))
     g_atomic_int_set (&t->moved, 1);
+  if (G_UNLIKELY (g_atomic_int_get (&t->thread) != thread))
+    pm_model_set_pad_thread (model, t, thread);
 }
 
 static void
@@ -590,8 +616,13 @@ do_pad_pull_range_post (GstTracer * tracer, GstClockTime ts, GstPad * pad,
   /* Pulled pads get no caps: remember on the pad pulled from that data
    * came out of it. */
   if (res == GST_FLOW_OK) {
+    PmModel *model = GST_PIPELINE_MONITOR_TRACER (tracer)->model;
     PmPushTiming *t = pm_push_timing (pad);
+    gint thread = pm_model_current_thread (model);
 
+    /* The pulling pad's thread carries the data over the link. */
+    if (G_UNLIKELY (g_atomic_int_get (&t->thread) != thread))
+      pm_model_set_pad_thread (model, t, thread);
     if (G_UNLIKELY (!g_atomic_int_get (&t->moved))) {
       GstPad *peer = gst_pad_get_peer (pad);
 

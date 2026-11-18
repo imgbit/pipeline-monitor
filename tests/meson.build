@@ -33,7 +33,8 @@ if get_option('b_sanitize') != 'none'
 endif
 
 test_core = executable('test_core',
-  'test_core.c', '../src/core/pmjson.c', '../src/core/pmmodel.c', '../src/core/pmmonitor.c',
+  'test_core.c', '../src/core/pmjson.c', '../src/core/pmmodel.c', '../src/core/pmthread.c',
+  '../src/core/pmmonitor.c',
   '../src/core/pmlevels.c', '../src/core/pmprops.c', '../src/core/pmlatency.c',
   '../src/core/pmfindings.c',
   c_args : core_args,
@@ -43,7 +44,8 @@ test_core = executable('test_core',
 test('core', test_core, timeout : 60)
 
 test_server = executable('test_server',
-  'test_server.c', '../src/core/pmjson.c', '../src/core/pmmodel.c', '../src/core/pmmonitor.c',
+  'test_server.c', '../src/core/pmjson.c', '../src/core/pmmodel.c', '../src/core/pmthread.c',
+  '../src/core/pmmonitor.c',
   '../src/core/pmlevels.c', '../src/core/pmprops.c', '../src/core/pmlatency.c',
   '../src/core/pmfindings.c',
   '../src/server/pmrecorder.c',
@@ -84,7 +86,8 @@ fuzz_main = get_option('fuzz') ? [] : ['fuzz/standalone.c']
 
 fuzz_command = executable('fuzz_command',
   'fuzz/fuzz_command.c', fuzz_main,
-  '../src/core/pmjson.c', '../src/core/pmmodel.c', '../src/core/pmmonitor.c',
+  '../src/core/pmjson.c', '../src/core/pmmodel.c', '../src/core/pmthread.c',
+  '../src/core/pmmonitor.c',
   '../src/core/pmlevels.c', '../src/core/pmprops.c', '../src/core/pmlatency.c',
   '../src/core/pmfindings.c', '../src/server/pmrecorder.c',
   ui_resources,

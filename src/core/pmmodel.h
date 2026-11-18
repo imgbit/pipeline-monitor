@@ -126,11 +126,14 @@ void pm_link_failure_free (PmLinkFailure * f);
 
 /* A push in progress on a pad: start in ms since the tracer started, plus
  * one (0 = none). Written by the pad's streaming thread only. moved: data
- * has been pushed or pulled through the pad. */
+ * has been pushed or pulled through the pad. thread: the model's id of the
+ * thread that last pushed out of it (src) or pulled through it (sink), 0
+ * if none yet. */
 typedef struct
 {
   gint start_ms;
   gint moved;
+  gint thread;
 } PmPushTiming;
 
 typedef struct
@@ -144,6 +147,18 @@ typedef struct
 } PmBlocked;
 
 PmPushTiming *pm_push_timing (GstPad * pad);
+
+/* Threads that moved data or ran a task, numbered from 1 by the model.
+ * pm_model_current_thread is called on every push: the calling thread's id,
+ * known after its first call. */
+gint pm_model_current_thread (PmModel * model);
+/* The calling thread runs a GStreamer task (its name, "element:pad"). */
+void pm_model_thread_task (PmModel * model, const gchar * name);
+/* The calling thread's task has ended. */
+void pm_model_thread_ended (PmModel * model);
+/* t's pad is now served by thread (from pm_model_current_thread). */
+void pm_model_set_pad_thread (PmModel * model, PmPushTiming * t,
+    gint thread);
 GPtrArray *pm_model_blocked_pushes (PmModel * model, gint now_ms,
     gint min_ms);
 void pm_blocked_free (PmBlocked * b);

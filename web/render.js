@@ -42,6 +42,8 @@ export class GraphView {
     this.autoFit = true;
 
     const defs = el("defs", {}, svg);
+    // Split fills for elements where one thread ends and another starts.
+    this.threadDefs = el("g", {}, defs);
     // The same size on every line, thin or thick; coloured ones for links
     // with a problem.
     for (const id of ["arrow", "arrow-warning", "arrow-error"]) {
@@ -243,6 +245,43 @@ export class GraphView {
     }
   }
 
+  // The "threads" view: each link in the colour of the thread that carries
+  // its data, each element in its thread's colour, or the input thread's
+  // on the left blending into the output thread's on the right where a
+  // thread ends (a queue). threads: {colours: Map id -> {line, fill}, edges: Map
+  // "pSRC pSINK" -> id, elements: Map element id -> {in, out}}; null: off.
+  setThreads(threads) {
+    this.threadView = threads;
+    this.threadDefs.replaceChildren();
+    for (const [key, paths] of this.edgePaths || []) {
+      const id = threads?.edges.get(key);
+      for (const p of paths)
+        p.style.stroke = id ? threads.colours.get(id).line : "";
+    }
+    for (const [id, { g }] of this.boxes || []) {
+      const box = g.querySelector(":scope > rect.box");
+      const t = threads?.elements.get(id);
+      if (!box || g.classList.contains("bin"))
+        continue;
+      if (!t) {
+        box.style.fill = "";
+        continue;
+      }
+      const left = threads.colours.get(t.in || t.out).fill;
+      const right = threads.colours.get(t.out || t.in).fill;
+      if (left === right) {
+        box.style.fill = left;
+        continue;
+      }
+      const grad = el("linearGradient", { id: `thread-split-${id}` },
+        this.threadDefs);
+      // A short blend in the middle, not a hard edge behind the level.
+      el("stop", { offset: "45%", "stop-color": left }, grad);
+      el("stop", { offset: "55%", "stop-color": right }, grad);
+      box.style.fill = `url(#thread-split-${id})`;
+    }
+  }
+
   // Latency labels under measured elements; labels: Map element id ->
   // {text, cls, title}. Redrawn on every "latency" message.
   setLatency(labels) {
@@ -327,6 +366,7 @@ export class GraphView {
   // layout: ELK output with root coordinates; info: maps from layout.js.
   render(layout, info, view) {
     this.boxes = new Map();
+    this.edgePaths = new Map();
     const bins = el("g");
     const edges = el("g");
     const nodes = el("g");
@@ -351,6 +391,8 @@ export class GraphView {
     this.bounds = { width: layout.width, height: layout.height };
     if (this.problems)
       this.setProblems(this.problems.pads, this.problems.elements);
+    if (this.threadView)
+      this.setThreads(this.threadView);
     if (this.highlighted)
       this.highlight(this.highlighted);
     if (this.autoFit)
@@ -470,8 +512,10 @@ export class GraphView {
     for (const s of edge.sections || []) {
       const pts = [s.startPoint, ...(s.bendPoints || []), s.endPoint];
       const d = pts.map((p, i) => `${i ? "L" : "M"}${p.x},${p.y}`).join(" ");
-      el("path", { d, class: selected ? "edge selected" : "edge",
+      const key = `${edge.sources[0]} ${edge.targets[0]}`;
+      const path = el("path", { d, class: selected ? "edge selected" : "edge",
         "marker-end": "url(#arrow)" }, parent);
+      this.edgePaths.set(key, [...this.edgePaths.get(key) || [], path]);
       // Wider and invisible, so the thin line is easy to hover.
       el("path", { d, class: "edge-hit",
         "data-edge": `${edge.sources[0]} ${edge.targets[0]}` }, parent);
@@ -487,6 +531,14 @@ export class GraphView {
       text(g, placed.x + 4, placed.y + 10.5, "", placed.text);
     }
   }
+}
+
+// Colours for threads in order of appearance, readable in both themes.
+const THREAD_HUES = [210, 30, 140, 280, 0, 50, 180, 320];
+
+export function threadColours(index) {
+  const hue = THREAD_HUES[index % THREAD_HUES.length];
+  return { line: `hsl(${hue} 65% 45%)`, fill: `hsl(${hue} 70% 55% / 0.22)` };
 }
 
 export function countElements(element) {
