@@ -1473,6 +1473,17 @@ def check_threads_view(browser, serve):
             "no threads in the queue's tooltip: " + str(browser.eval(
                 f"{tip}.textContent"))
         browser.call("Input.dispatchMouseEvent", type="mouseMoved", x=2, y=2)
+        # The header's buttons keep their whole label in a narrow window;
+        # the times line gives way instead.
+        browser.call("Emulation.setDeviceMetricsOverride", width=1000,
+                     height=700, deviceScaleFactor=1, mobile=False)
+        cut = ("['performance-counter', 'recordings-counter', "
+               "'problems-counter'].filter(id => { const b = "
+               "document.getElementById(id); return b.scrollWidth > "
+               "b.clientWidth + 1; })")
+        assert browser.wait(f"{cut}.length === 0"), \
+            "header buttons cut off: " + str(browser.eval(cut))
+        browser.call("Emulation.clearDeviceMetricsOverride")
         # The Performance panel: the streaming threads with the elements
         # each runs; a click on one selects it; other threads summed, or
         # one by one.
