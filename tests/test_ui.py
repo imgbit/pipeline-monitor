@@ -8,9 +8,11 @@ With PM_JS_COVERAGE=FILE, writes which lines of the page code ran to FILE.
 """
 
 import base64
+import colorsys
 import functools
 import http.server
 import json
+import math
 import os
 import random
 import re
@@ -1354,10 +1356,54 @@ def check_pull_mode(browser, serve):
 
 
 # The "threads" view: links and elements in their thread's colour, a queue
-# split where its input thread ends and its own starts, a legend; off again
-# clears it.
-THREADS_PIPELINE = ("videotestsrc is-live=true name=tsrc ! queue name=tq ! "
+# split where its input thread ends and its own starts, a legend, the
+# threads named in tooltips; off again clears it. Nine queues: ten threads,
+# more than the eight first colours, and still no two alike.
+THREADS_PIPELINE = ("videotestsrc is-live=true name=tsrc ! queue name=tq ! " +
+                    "".join(f"queue name=tq{i} ! " for i in range(2, 10)) +
                     "fakesink name=tsink")
+
+
+# How different two "hsl(h s% l% / a)" fills look over the light page
+# background: CIEDE2000 of the blended colours (about 10: clearly apart).
+def fill_difference(a, b):
+    def lab(colour):
+        h, sat, light, alpha = map(float, re.findall(r"[\d.]+", colour))
+        rgb = colorsys.hls_to_rgb(h / 360, light / 100, sat / 100)
+        bg = (0xf6 / 255, 0xf7 / 255, 0xf9 / 255)
+        rgb = [alpha * c + (1 - alpha) * k for c, k in zip(rgb, bg)]
+        lin = [v / 12.92 if v <= 0.04045 else ((v + 0.055) / 1.055) ** 2.4
+               for v in rgb]
+        x = (0.4124 * lin[0] + 0.3576 * lin[1] + 0.1805 * lin[2]) / 0.95047
+        y = 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
+        z = (0.0193 * lin[0] + 0.1192 * lin[1] + 0.9505 * lin[2]) / 1.08883
+        f = [t ** (1 / 3) if t > 0.008856 else 7.787 * t + 16 / 116
+             for t in (x, y, z)]
+        return (116 * f[1] - 16, 500 * (f[0] - f[1]), 200 * (f[1] - f[2]))
+
+    (l1, a1, b1), (l2, a2, b2) = lab(a), lab(b)
+    cb = (math.hypot(a1, b1) + math.hypot(a2, b2)) / 2
+    g = 0.5 * (1 - math.sqrt(cb ** 7 / (cb ** 7 + 25 ** 7)))
+    a1, a2 = (1 + g) * a1, (1 + g) * a2
+    c1, c2 = math.hypot(a1, b1), math.hypot(a2, b2)
+    h1 = math.degrees(math.atan2(b1, a1)) % 360
+    h2 = math.degrees(math.atan2(b2, a2)) % 360
+    dh = 0 if c1 * c2 == 0 else (h2 - h1 + 180) % 360 - 180
+    dl, dc = l2 - l1, c2 - c1
+    dhh = 2 * math.sqrt(c1 * c2) * math.sin(math.radians(dh / 2))
+    lm, cm = (l1 + l2) / 2, (c1 + c2) / 2
+    hm = h1 + h2 if c1 * c2 == 0 else (h1 + h2) / 2 if abs(h1 - h2) <= 180 \
+        else (h1 + h2 + 360) / 2 if h1 + h2 < 360 else (h1 + h2 - 360) / 2
+    t = (1 - 0.17 * math.cos(math.radians(hm - 30)) +
+         0.24 * math.cos(math.radians(2 * hm)) +
+         0.32 * math.cos(math.radians(3 * hm + 6)) -
+         0.20 * math.cos(math.radians(4 * hm - 63)))
+    rc = 2 * math.sqrt(cm ** 7 / (cm ** 7 + 25 ** 7))
+    rt = -math.sin(math.radians(60 * math.exp(-((hm - 275) / 25) ** 2))) * rc
+    sl = 1 + 0.015 * (lm - 50) ** 2 / math.sqrt(20 + (lm - 50) ** 2)
+    sc, sh = 1 + 0.045 * cm, 1 + 0.015 * cm * t
+    return math.sqrt((dl / sl) ** 2 + (dc / sc) ** 2 + (dhh / sh) ** 2 +
+                     rt * (dc / sc) * (dhh / sh))
 
 
 def check_threads_view(browser, serve):
@@ -1380,13 +1426,22 @@ def check_threads_view(browser, serve):
                 f"'threads').getAttribute('aria-pressed')}})"))
         strokes = ("[...document.querySelectorAll('#graph path.edge')]"
                    ".map(p => p.style.stroke)")
-        assert browser.wait(f"(s => s.length === 2 && s.every(Boolean) && "
-                            f"s[0] !== s[1])({strokes})"), \
-            "links not in two thread colours: " + str(browser.eval(strokes))
+        assert browser.wait(f"(s => s.length === 10 && s.every(Boolean) && "
+                            f"new Set(s).size === 10)({strokes})"), \
+            "links not in ten thread colours: " + str(browser.eval(strokes))
+        # Both halves of every queue look clearly different as pale fills.
+        halves = browser.eval(
+            "[...document.querySelectorAll('#graph linearGradient')]"
+            ".map(g => [...g.querySelectorAll('stop')].map(s => "
+            "s.getAttribute('stop-color')))")
+        assert len(halves) == 9, f"queues not split: {halves}"
+        for left, right in halves:
+            assert fill_difference(left, right) >= 9.5, \
+                f"a queue's two threads look alike: {left} / {right}"
         # CPU per thread from the "performance" message, once a second.
         cpu = (f"[...{legend}.querySelectorAll('.cpu')].map(c => "
                "c.textContent)")
-        assert browser.wait(f"(c => c.length === 3 && c.every(t => "
+        assert browser.wait(f"(c => c.length === 11 && c.every(t => "
                             f"/^\\d+ %$/.test(t)))({cpu})", timeout=10), \
             "no CPU in the legend: " + str(browser.eval(cpu))
         box = "(n => n?.querySelector(':scope > rect.box').style.fill)"
@@ -1395,6 +1450,23 @@ def check_threads_view(browser, serve):
         fill = browser.eval(f"{box}({element_selector('tsink')})")
         assert fill and "thread-split-" not in fill, \
             f"the sink has no thread colour: {fill!r}"
+        # The threads by name: the sink's own tooltip, the queue's.
+        assert browser.eval(f"{element_selector('tsink')}.querySelector("
+                            "':scope > title').textContent.endsWith("
+                            "'thread: tq9:src')"), "no thread in the tooltip"
+        tip = "document.querySelector('.tooltip')"
+        browser.hover(f"{element_selector('tq')}?.querySelector('rect.box')")
+        assert browser.wait(f"!{tip}.hidden && {tip}.textContent.includes("
+                            "'tsrc:src → tq:src')"), \
+            "no threads in the queue's tooltip: " + str(browser.eval(
+                f"{tip}.textContent"))
+        browser.call("Input.dispatchMouseEvent", type="mouseMoved", x=2, y=2)
+        # A new element shows by its border, not over its thread's colour.
+        assert browser.eval(f"(n => {{ n.classList.add('appeared'); "
+                            "return getComputedStyle(n.querySelector(':scope "
+                            "> rect.box')).animationName; })("
+                            f"{element_selector('tq')})") == \
+            "appeared-border", "a new element hides its thread colour"
         browser.click("#threads")
         assert browser.wait(f"{legend}.hidden && ({strokes}).every(s => !s)"), \
             "the threads view did not turn off"

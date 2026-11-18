@@ -248,11 +248,14 @@ export class GraphView {
   // The "threads" view: each link in the colour of the thread that carries
   // its data, each element in its thread's colour, or the input thread's
   // on the left blending into the output thread's on the right where a
-  // thread ends (a queue). threads: {colours: Map id -> {line, fill}, edges: Map
-  // "pSRC pSINK" -> id, elements: Map element id -> {in, out}}; null: off.
+  // thread ends (a queue). threads: {colours: Map id -> {line, fill},
+  // edges: Map "pSRC pSINK" -> id, elements: Map element id -> {in, out},
+  // names: Map id -> name}; null: off. Names go into elements' tooltips.
   setThreads(threads) {
     this.threadView = threads;
     this.threadDefs.replaceChildren();
+    // A new element's fill would hide its thread: it shows by its border.
+    this.svg.classList.toggle("threads", !!threads);
     for (const [key, paths] of this.edgePaths || []) {
       const id = threads?.edges.get(key);
       for (const p of paths)
@@ -263,6 +266,12 @@ export class GraphView {
       const t = threads?.elements.get(id);
       if (!box || g.classList.contains("bin"))
         continue;
+      const tip = g.querySelector(":scope > title");
+      if (tip) {
+        tip.dataset.base ??= tip.textContent;
+        tip.textContent = tip.dataset.base + (t ? `\n${threadText(t,
+          threads.names)}` : "");
+      }
       if (!t) {
         box.style.fill = "";
         continue;
@@ -533,12 +542,49 @@ export class GraphView {
   }
 }
 
-// Colours for threads in order of appearance, readable in both themes.
-const THREAD_HUES = [210, 30, 140, 280, 0, 50, 180, 320];
+// Colours for threads in order of appearance: [hue, saturation, lightness],
+// each chosen so its pale fill looks as different as possible from those
+// before it, in the light and the dark theme (CIEDE2000; the closest of the
+// first ten differ by 10, of all 24 by 6). Beyond them, the middle of the
+// widest gap in hue; the tooltips name the threads anyway.
+const THREAD_COLOURS = [
+  [212, 70, 45], [60, 85, 52], [0, 85, 52], [168, 85, 52], [292, 85, 52],
+  [28, 55, 60], [120, 85, 45], [256, 55, 38], [188, 55, 60], [328, 55, 60],
+  [84, 55, 38], [8, 55, 38], [40, 85, 52], [240, 85, 52], [152, 55, 38],
+  [20, 85, 52], [336, 85, 52], [48, 55, 38], [136, 70, 60], [88, 85, 60],
+  [200, 85, 45], [308, 70, 38], [264, 85, 60], [60, 55, 60]
+];
+
+function threadColour(index) {
+  while (THREAD_COLOURS.length <= index) {
+    const sorted = THREAD_COLOURS.map(([h]) => h).sort((a, b) => a - b);
+    let best = 0;
+    let gap = 0;
+    sorted.forEach((h, i) => {
+      const next = i + 1 < sorted.length ? sorted[i + 1] : sorted[0] + 360;
+      if (next - h > gap) {
+        gap = next - h;
+        best = h + gap / 2;
+      }
+    });
+    THREAD_COLOURS.push([Math.round(best % 360), 70, 50]);
+  }
+  return THREAD_COLOURS[index];
+}
 
 export function threadColours(index) {
-  const hue = THREAD_HUES[index % THREAD_HUES.length];
-  return { line: `hsl(${hue} 65% 45%)`, fill: `hsl(${hue} 70% 55% / 0.22)` };
+  const [h, s, l] = threadColour(index);
+  return { line: `hsl(${h} ${s}% ${l}%)`,
+    fill: `hsl(${h} ${s}% ${l}% / 0.3)` };
+}
+
+// "thread: a" or "threads: a → b" for an element's input and output.
+export function threadText(t, names) {
+  const name = (id) => names.get(id) ?? `thread ${id}`;
+  const into = t.in || t.out;
+  const out = t.out || t.in;
+  return into === out ? `thread: ${name(into)}`
+    : `threads: ${name(into)} → ${name(out)}`;
 }
 
 export function countElements(element) {

@@ -283,6 +283,15 @@ main {
 }
 .bin.selected > rect.box { stroke: var(--accent); stroke-width: 2; }
 .bin.appeared > rect.box { animation: none; }
+#graph.threads .node.appeared rect.box {
+  animation: appeared-border 2s ease-out;
+}
+#graph.threads .bin.appeared > rect.box { animation: none; }
+
+@keyframes appeared-border {
+  from { stroke: var(--appeared); stroke-width: 3; }
+  to { stroke: var(--node-border); stroke-width: 1; }
+}
 
 .node .name { font-weight: 600; font-size: 13px; fill: var(--fg); }
 .node .factory { font-size: 11px; fill: var(--muted); }

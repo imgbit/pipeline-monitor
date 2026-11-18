@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 import { buildElkGraph, keepPlaces } from "./layout.js";
-import { GraphView, countElements, threadColours } from "./render.js";
+import { GraphView, countElements, threadColours, threadText }
+  from "./render.js";
 import { isTimeProperty, propertyText, showDetails, updateLatencyDetails,
   updateProblemsDetails, updateProperties, updateQueueDetails, valueText }
   from "./panel.js";
@@ -104,8 +105,11 @@ function showTooltip(target, x, y) {
     const element = index.elements.get(target.level)?.element;
     if (!queue || !element)
       return tooltip.hide();
+    const t = state.threadView?.elements.get(element.id);
     tooltip.show(x, y, `${element.name} (${queue.kind})`,
-      queueRows(queue, pins.unit, (id) => index.padName(id).split(":").pop()));
+      [...queueRows(queue, pins.unit,
+        (id) => index.padName(id).split(":").pop()),
+      ...t ? [threadText(t, state.threadView.names).split(": ")] : []]);
   } else if (target.port) {
     const p = info.ports.get(target.port);
     if (!p)
@@ -120,6 +124,9 @@ function showTooltip(target, x, y) {
     // A problem where data leaves the src pad is a problem of the link.
     const rows = (findings.byPlace().pads.get(Number(target.src.slice(1))) ||
       []).map((f) => [f.severity, f.text]);
+    const thread = state.threadView?.edges.get(`${target.src} ${target.sink}`);
+    if (thread)
+      rows.push(["thread", state.threadView.names.get(thread)]);
     tooltip.show(x, y, `${src.element.name}:${src.pad.name} → ` +
       `${sink.element.name}:${sink.pad.name}`, rows,
     linkCaps(info, target.src, target.sink), src.pad.mode === "pull");
@@ -378,6 +385,7 @@ function currentPipeline() {
 function showThreads(pipeline) {
   const legend = $("threads-legend");
   if (!state.threads || !pipeline) {
+    state.threadView = null;
     view.setThreads(null);
     legend.hidden = true;
     return;
@@ -406,9 +414,12 @@ function showThreads(pipeline) {
     entry(a.element.id).out ??= id;
   }
   const colours = new Map(order.map((id, i) => [id, threadColours(i)]));
-  view.setThreads({ colours, edges, elements });
-
   const known = new Map((state.graph.threads || []).map((t) => [t.id, t]));
+  const names = new Map(order.map((id) => [id, known.get(id)?.name ||
+    `thread ${known.get(id)?.os ?? id}`]));
+  state.threadView = { colours, edges, elements, names };
+  view.setThreads(state.threadView);
+
   legend.replaceChildren(...order.map((id) => {
     const t = known.get(id);
     const row = document.createElement("div");
