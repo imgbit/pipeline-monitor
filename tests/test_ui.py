@@ -2179,6 +2179,13 @@ def check_stream_levels(browser, good):
         f"multiqueue rows: {rows}"
     assert "ok" in mq[0]["cls"] and "full" in mq[1]["cls"], \
         f"multiqueue colours: {rows}"
+    # The limit in the number's colour ("102 % time" all red).
+    colours = browser.eval(
+        "[...document.querySelectorAll('#graph .level-text.full')].map(t => "
+        "[getComputedStyle(t).fill, getComputedStyle(t.querySelector("
+        "'.level-limit')).fill])")
+    assert colours and all(a == b for a, b in colours), \
+        f"the limit is not in the number's colour: {colours}"
     queue = [r for r in rows if not r["inMq"]]
     assert [(r["text"], r["sink"], r["between"], r["bars"]) for r in queue] \
         == [("50 % buffers", "sink", True, 1)], f"the queue's row: {rows}"
