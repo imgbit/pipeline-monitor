@@ -2588,6 +2588,8 @@ def record_with_pins(browser, serve):
 # The published site: the page with no pipeline-monitor server behind it,
 # served as static files with the site's <meta> line and demo recordings.
 def check_site(browser, serve):
+    # The site's visit counter is not loaded here: no visits from tests.
+    browser.call("Network.setBlockedURLs", urls=["*gc.zgo.at*"])
     server, _ = start_server(serve, RESTART_PIPELINE, extra="record=on")
     time.sleep(3)
     server.terminate()
@@ -2650,10 +2652,23 @@ def check_site(browser, serve):
         assert 'href="../#file=demos/tee-without-queues.jsonl"' in page
     with open(os.path.join(out, "llms.txt"), encoding="utf-8") as f:
         assert f.readline() == "# pipeline-monitor\n"
-    # The package's own page stays as it is: no site tags.
+    # Visits counted, without cookies, and said so in the About box.
+    assert "imaginarybit.goatcounter.com/count" in head, "no visit counter"
+    with open(os.path.join(out, "index.html"), encoding="utf-8") as f:
+        assert "counted without cookies (GoatCounter)" in \
+            f.read().split('id="about"')[1].split("</div>")[1], \
+            "no privacy note in the About box"
+    if guide:
+        with open(os.path.join(out, "guide", "tour.html"),
+                  encoding="utf-8") as f:
+            page = f.read()
+        assert "goatcounter" in page and "without cookies" in page
+    # The package's own page stays as it is: no site tags, no counter.
     with open(os.path.join(here, "..", "web", "index.html"),
               encoding="utf-8") as f:
-        assert "og:image" not in f.read(), "site tags in the package's page"
+        packaged = f.read()
+    assert "og:image" not in packaged, "site tags in the package's page"
+    assert "goatcounter" not in packaged, "a visit counter in the package"
 
     handler = functools.partial(http.server.SimpleHTTPRequestHandler,
                                 directory=site)

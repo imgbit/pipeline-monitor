@@ -36,6 +36,15 @@ SITE_DESCRIPTION = (
     "recordings, no install needed.")
 
 
+# Visits counted without cookies (GoatCounter; it does not count localhost).
+# Only on the published site: the packages' page loads nothing from outside.
+COUNTER = ('<script data-goatcounter="https://imaginarybit.goatcounter.com/'
+           'count" async src="https://gc.zgo.at/count.js"></script>')
+PRIVACY = ("Visits to this site are counted without cookies (GoatCounter). "
+           "Recordings you open stay in your browser and are never sent "
+           "anywhere.")
+
+
 def social(title, description, url):
     """Description, canonical address and link-preview tags for a page."""
     t = html.escape(title, quote=True)
@@ -98,6 +107,7 @@ PAGE = """<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title} - pipeline-monitor guide</title>
 {social}
+{counter}
 <link rel="icon" href="../icon.svg">
 <link rel="stylesheet" href="guide.css">
 </head>
@@ -112,6 +122,7 @@ PAGE = """<!doctype html>
 </main>
 <footer>pipeline-monitor {version} &middot;
 <a href="https://github.com/imgbit/pipeline-monitor">source on GitHub</a>
+<br>{privacy}
 </footer>
 </body>
 </html>
@@ -169,7 +180,8 @@ def build_guide(out, require):
                 title=html.escape(title), nav=nav, body=body,
                 version=html.escape(version()),
                 social=social(f"{title} - pipeline-monitor guide",
-                              description, f"{SITE}guide/{name}.html")))
+                              description, f"{SITE}guide/{name}.html"),
+                counter=COUNTER, privacy=html.escape(PRIVACY)))
     return True
 
 
@@ -244,7 +256,13 @@ def main():
                         f'<meta charset="utf-8">\n{META}\n'
                         f'{social(SITE_TITLE, SITE_DESCRIPTION, SITE)}', 1)
     page = page.replace("<title>pipeline-monitor</title>",
-                        f"<title>{html.escape(SITE_TITLE)}</title>", 1)
+                        f"<title>{html.escape(SITE_TITLE)}</title>\n{COUNTER}",
+                        1)
+    license = '<p class="muted">LGPL-2.1-or-later</p>'
+    if license not in page:
+        sys.exit("index.html: no license line to put the privacy note before")
+    page = page.replace(license, f'<p class="muted">{html.escape(PRIVACY)}'
+                        f"</p>\n  {license}", 1)
     with open(index, "w", encoding="utf-8") as f:
         f.write(page)
     shutil.copy(os.path.join(ROOT, ".github", "social-preview.png"),
