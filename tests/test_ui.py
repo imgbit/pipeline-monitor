@@ -2771,10 +2771,10 @@ def check_command(browser, serve, tool):
         browser.eval(f"{rows}[0].querySelector('.rec-open').click()")
         assert browser.wait(f"!{banner}.hidden"), \
             "recording not opened in the command's viewer"
-        # It may start before its pipeline: go there.
-        browser.eval("document.querySelector('#empty-moment:not([hidden]) "
-                     "button')?.click()")
-        assert browser.wait(f"!!{element_selector('q-r')}"), \
+        # It may start before its pipeline: go there, once the button shows.
+        assert browser.wait("(document.querySelector('#empty-moment:not("
+                            "[hidden]) button')?.click(), "
+                            f"!!{element_selector('q-r')})"), \
             "no pipeline in the command's viewer"
 
         # Delete, with the mouse (a second click within 3 s).
