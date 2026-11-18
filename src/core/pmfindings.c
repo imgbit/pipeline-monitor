@@ -851,9 +851,9 @@ add_leftovers (PmFindings * self, GPtrArray * findings)
           n, n == 1 ? "element" : "elements", first->pipeline_path,
           n == 1 ? "is" : "are", names->str);
     f->hint = g_strdup_printf ("Something still holds a reference to them: "
-        "the application, a signal handler, a pad probe (%s still has %d). "
-        "If they are kept to be used again, this is expected.", first->name,
-        first->refs);
+        "the application, a signal handler, a pad probe, or messages from "
+        "them waiting on a bus nobody reads (%s still has %d). If they are "
+        "kept to be used again, this is expected.", first->name, first->refs);
     g_ptr_array_add (findings, f);
     g_string_free (names, TRUE);
     g_free (window);
