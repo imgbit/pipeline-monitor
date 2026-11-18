@@ -867,3 +867,31 @@ a.button {
 a.button:hover { border-color: var(--accent); }
 /* Nothing to zoom while the welcome is shown. */
 body.welcoming .toolbar { display: none; }
+
+/* Performance panel */
+.perf-body { padding: 8px 16px; }
+.perf-note { padding: 8px 0; }
+.perf-top { display: flex; gap: 32px; margin-bottom: 10px; }
+.perf-card { min-width: 200px; }
+.perf-label { font-size: 12px; }
+.perf-value { font-size: 18px; font-weight: 600;
+  font-variant-numeric: tabular-nums; }
+.perf-card .spark { display: block; margin-top: 4px; }
+.perf-table { border-collapse: collapse; width: 100%; }
+.perf-table th { text-align: left; font-weight: 500; color: var(--muted);
+  font-size: 12px; padding: 4px 8px; border-bottom: 1px solid var(--border); }
+.perf-table td { padding: 4px 8px; border-bottom: 1px solid var(--border);
+  vertical-align: middle; }
+.perf-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.perf-table .num.busy { color: var(--error); font-weight: 600; }
+.perf-table .swatch { display: inline-block; width: 14px; height: 3px;
+  border-radius: 1.5px; margin-right: 6px; vertical-align: middle; }
+.perf-table .spark { vertical-align: middle; }
+.perf-bar { display: inline-block; width: 80px; height: 6px; margin-left: 8px;
+  border-radius: 3px; background: var(--border); vertical-align: middle; }
+.perf-bar i { display: block; height: 6px; border-radius: 3px;
+  background: var(--playing); }
+.perf-bar i.busy { background: var(--error); }
+.perf-element { border: none; background: none; padding: 0;
+  color: var(--accent); cursor: pointer; font: inherit; }
+.perf-others td:first-child { color: var(--muted); }

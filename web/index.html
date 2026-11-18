@@ -23,6 +23,9 @@
   <span id="pipeline-times" class="muted times" hidden></span>
   <span id="process-perf" class="muted times" hidden></span>
   <span class="spacer"></span>
+  <button id="performance-counter" class="performance-counter"
+    aria-controls="performance-panel" aria-expanded="false"
+    aria-pressed="false">Performance</button>
   <button id="recordings-counter" class="recordings-counter"
     aria-controls="recordings-panel" aria-expanded="false"
     aria-pressed="false">Recordings</button>
@@ -122,6 +125,17 @@
     <button id="findings-close" class="close" title="Close">×</button>
   </div>
   <div id="findings-rows" class="log-rows"></div>
+</section>
+<section id="performance-panel" class="log-panel" aria-label="Performance"
+  hidden>
+  <div class="log-head">
+    <strong>Performance</strong>
+    <span class="muted">the whole program and each thread, once a second; CPU as a share of one core</span>
+    <span class="spacer"></span>
+    <label class="muted"><input id="performance-others" type="checkbox"> list other threads one by one</label>
+    <button id="performance-close" class="close" title="Close">×</button>
+  </div>
+  <div id="performance-body" class="log-rows perf-body"></div>
 </section>
 <section id="recordings-panel" class="log-panel" aria-label="Recordings"
   hidden>

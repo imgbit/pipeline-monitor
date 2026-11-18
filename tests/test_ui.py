@@ -666,7 +666,8 @@ def close_details(browser):
         f"the details panel did not close\n{browser.history()}"
 
 
-PANELS = {"log": "log", "problems": "findings", "recordings": "recordings"}
+PANELS = {"log": "log", "problems": "findings", "recordings": "recordings",
+          "performance": "performance"}
 
 
 # Opens a bottom panel, also if it is open already (the page keeps the open
@@ -1467,6 +1468,29 @@ def check_threads_view(browser, serve):
             "no threads in the queue's tooltip: " + str(browser.eval(
                 f"{tip}.textContent"))
         browser.call("Input.dispatchMouseEvent", type="mouseMoved", x=2, y=2)
+        # The Performance panel: the streaming threads with the elements
+        # each runs; a click on one selects it; other threads summed, or
+        # one by one.
+        open_panel(browser, "performance")
+        body = "document.getElementById('performance-body')"
+        assert browser.wait(f"{body}.textContent.includes('tsrc:src') && "
+                            f"{body}.textContent.includes('tq9:src') && "
+                            f"{body}.textContent.includes('other threads')"), \
+            "performance: " + str(browser.eval(f"{body}.textContent"))
+        rows = f"{body}.querySelectorAll('tr').length"
+        summed = browser.eval(rows)
+        browser.click("#performance-others")
+        assert browser.wait(f"{rows} > {summed}"), \
+            "the other threads not listed one by one"
+        browser.click("#performance-others")
+        link = (f"[...{body}.querySelectorAll('.perf-element')].find(b => "
+                "b.textContent === 'tsink')")
+        browser.eval(f"{link}.click()")
+        assert browser.wait("document.querySelector('#details h2')"
+                            "?.textContent === 'tsink'"), \
+            "a click on an element in the panel did not select it"
+        close_details(browser)
+        close_panel(browser, "performance")
         # A new element shows by its border, not over its thread's colour.
         assert browser.eval(f"(n => {{ n.classList.add('appeared'); "
                             "return getComputedStyle(n.querySelector(':scope "
@@ -1741,6 +1765,7 @@ def check_viewer(browser, rows, url):
     check_stream_levels(browser, os.path.join(RECORDINGS, name))
     check_snapshot(browser, os.path.join(RECORDINGS, name))
     check_finding_age(browser, os.path.join(RECORDINGS, name))
+    check_performance_recording(browser, os.path.join(RECORDINGS, name))
 
     # Back to the live page for the rest.
     browser.call("Page.navigate", url="about:blank")
@@ -2244,6 +2269,16 @@ def check_finding_age(browser, good):
          "findings": [finding]},
         {"type": "end", "protocol": 1, "time": then + 200000,
          "reason": "stopped"}], "old.jsonl")
+    # Made before 0.12: the Performance panel says it has no data.
+    body = "document.getElementById('performance-body')"
+    assert browser.wait("document.getElementById('play-time').textContent"
+                        ".endsWith('/ 0:00.100')"), "old recording not opened"
+    open_panel(browser, "performance")
+    assert browser.wait(f"{body}.textContent.includes('No performance data "
+                        "in this recording')"), \
+        "performance in an old recording: " + str(browser.eval(
+            f"{body}.textContent"))
+    close_panel(browser, "performance")
     count = "document.querySelector('#findings-rows .finding-count')"
     assert browser.wait("document.getElementById('play-time').textContent"
                         ".endsWith('/ 0:00.100')"), "old recording not opened"
@@ -2264,6 +2299,52 @@ def check_finding_age(browser, good):
         "a recording's problem age: " + str(browser.eval(
             "document.getElementById('findings-rows').innerText"))
     close_panel(browser, "problems")
+    browser.click("#viewing-close")
+    os.remove(path)
+
+
+# In a recording, the Performance panel shows the moment on the slider and
+# the minute before it; before the first sample, it says so.
+def check_performance_recording(browser, good):
+    with open(good) as f:
+        lines = [json.loads(line) for line in f.read().splitlines()]
+    header = lines[0]
+    graph = next(m for m in lines if m.get("type") == "graph"
+                 and m["pipelines"])
+    then = graph["time"]
+    thread = graph["threads"][0] if graph.get("threads") else None
+
+    def sample(at, cpu, memory):
+        threads = [{"os": 7, "name": "", "cpu": 0.1}]
+        if thread:
+            threads.insert(0, {"os": thread["os"], "id": thread["id"],
+                               "task": thread["task"], "name": thread["name"],
+                               "cpu": cpu})
+        return {"type": "performance", "protocol": 1, "time": at, "cores": 4,
+                "process": {"cpu": cpu + 0.1, "memory": memory,
+                            "threads": len(threads)}, "threads": threads}
+    path = open_messages(browser, header, [
+        {**graph, "time": then},
+        sample(then + 100000, 0.4, 100 * 1024 * 1024),
+        sample(then + 200000, 0.9, 120 * 1024 * 1024),
+        {"type": "end", "protocol": 1, "time": then + 300000,
+         "reason": "stopped"}], "perf.jsonl")
+    body = "document.getElementById('performance-body')"
+    assert browser.wait("document.getElementById('play-time').textContent"
+                        ".endsWith('/ 0:00.200')"), "recording not opened"
+    open_panel(browser, "performance")
+    move_slider(browser, 0)
+    assert browser.wait(f"{body}.textContent.includes('No performance data "
+                        "at this moment')"), "before the first sample: " + \
+        str(browser.eval(f"{body}.textContent"))
+    move_slider(browser, 1000)
+    assert browser.wait(f"{body}.textContent.includes('100 %') && "
+                        f"{body}.textContent.includes('120.0 MiB')"), \
+        "the last sample: " + str(browser.eval(f"{body}.textContent"))
+    if thread:
+        assert browser.eval(f"{body}.textContent.includes('90 %')"), \
+            "the thread's CPU: " + str(browser.eval(f"{body}.textContent"))
+    close_panel(browser, "performance")
     browser.click("#viewing-close")
     os.remove(path)
 

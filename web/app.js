@@ -12,6 +12,7 @@ import { Tooltip } from "./tooltip.js";
 import { linkCaps } from "./caps.js";
 import { ElementPins, Pins } from "./pins.js";
 import { TIME_UNITS, formatBytes, formatSpan } from "./units.js";
+import { PerformanceView } from "./performance.js";
 import { pipelineTimes, queueRows } from "./levels.js";
 import { cannotMeasure, latencyRows } from "./latency.js";
 import { Measuring } from "./measure.js";
@@ -296,7 +297,37 @@ const dock = new Dock({
     close: $("log-close") },
   recordings: { button: $("recordings-counter"),
     panel: $("recordings-panel"), close: $("recordings-close") },
+  performance: { button: $("performance-counter"),
+    panel: $("performance-panel"), close: $("performance-close") },
 }, viewerMode ? "pipeline-monitor.viewer-panel" : "pipeline-monitor.panel");
+
+// The last minute of "performance" messages, live.
+const PERF_WINDOW = 60 * 1000000;
+const perfView = new PerformanceView({
+  body: $("performance-body"), others: $("performance-others"),
+}, { select: (id) => view.handlers.select(id) });
+
+$("performance-counter").addEventListener("click", () => {
+  if (dock.current === "performance")
+    showPerformance();
+});
+
+// The panel's data: live, or in a recording the minute before the moment
+// shown.
+function showPerformance() {
+  const pipeline = state.graph.pipelines.length ? currentPipeline() : null;
+  const threads = pipeline ? threadMap(pipeline) : null;
+  const v = state.viewing;
+  if (v) {
+    const history = v.performance.filter((m) => m.time <= v.at &&
+      m.time > v.at - PERF_WINDOW);
+    perfView.show(history, threads, v.performance.length
+      ? "No performance data at this moment"
+      : "No performance data in this recording (made before 0.12)");
+  } else {
+    perfView.show(state.perfHistory, threads);
+  }
+}
 dock.open(dock.saved());
 
 // The worst severity per place, for the graph.
@@ -379,17 +410,10 @@ function currentPipeline() {
   return pipelines.find((p) => p.id === state.pipelineId) || pipelines[0];
 }
 
-// The "threads" view of the pipeline shown: which thread carries each link
-// (the pushing pad's, or the pulling pad's), each element's first input
-// and output thread, and a legend in order of appearance.
-function showThreads(pipeline) {
-  const legend = $("threads-legend");
-  if (!state.threads || !pipeline) {
-    state.threadView = null;
-    view.setThreads(null);
-    legend.hidden = true;
-    return;
-  }
+// The threads of a pipeline: which thread carries each link (the pushing
+// pad's, or the pulling pad's), each element's first input and output
+// thread, the elements each thread runs, colours in order of appearance.
+function threadMap(pipeline) {
   const pads = new Map();
   const visit = (e) => {
     for (const pad of e.pads)
@@ -417,6 +441,53 @@ function showThreads(pipeline) {
   const known = new Map((state.graph.threads || []).map((t) => [t.id, t]));
   const names = new Map(order.map((id) => [id, known.get(id)?.name ||
     `thread ${known.get(id)?.os ?? id}`]));
+  // The elements each thread runs, in the order data passes through them:
+  // each one after the elements that feed it.
+  const feeds = new Map();
+  const byId = new Map();
+  for (const { src, sink } of state.graph.links) {
+    const a = pads.get(src);
+    const b = pads.get(sink);
+    if (!a || !b)
+      continue;
+    byId.set(a.element.id, a.element);
+    byId.set(b.element.id, b.element);
+    feeds.set(b.element.id, [...feeds.get(b.element.id) || [],
+      a.element.id]);
+  }
+  const flow = [];
+  const placed = new Set();
+  const place = (id, seen = new Set()) => {
+    if (placed.has(id) || seen.has(id))
+      return;
+    seen.add(id);
+    for (const before of feeds.get(id) || [])
+      place(before, seen);
+    placed.add(id);
+    flow.push(id);
+  };
+  [...byId.keys()].forEach((id) => place(id));
+  const runs = new Map();
+  for (const id of flow) {
+    const t = elements.get(id);
+    for (const thread of new Set([t?.in, t?.out].filter(Boolean)))
+      runs.set(thread, [...runs.get(thread) || [],
+        { id, name: byId.get(id).name }]);
+  }
+  return { order, colours, edges, elements, names, runs, known };
+}
+
+// The "threads" view of the pipeline shown, and its legend.
+function showThreads(pipeline) {
+  const legend = $("threads-legend");
+  if (!state.threads || !pipeline) {
+    state.threadView = null;
+    view.setThreads(null);
+    legend.hidden = true;
+    return;
+  }
+  const { order, colours, edges, elements, names, known } =
+    threadMap(pipeline);
   state.threadView = { colours, edges, elements, names };
   view.setThreads(state.threadView);
 
@@ -671,6 +742,8 @@ async function layoutAndRender() {
   }
   view.setLevels(state.queues);
   showThreads(pipeline);
+  if (dock.current === "performance")
+    showPerformance();
   showLatencyLabels();
   // A click being made on the panel: rebuilding it now would remove the
   // pressed button and lose the click. It is rebuilt once released.
@@ -981,15 +1054,20 @@ function showRecording(text, name, title = null) {
   // rather than when the slider reaches it.
   if (byType.graph.some((g) => !Array.isArray(g.pipelines)))
     throw new Error("damaged graph");
+  // Sampled once a second: not a moment (step) of its own, so not in
+  // byType; but the slider reaches every sample.
+  const performance = messages.filter((m) => m?.type === "performance" &&
+    Number.isFinite(m.time));
   // From its first message shown: the header's time is a moment before it.
-  const times = Object.values(byType).flat().map((m) => m.time);
+  const times = [...Object.values(byType).flat(), ...performance]
+    .map((m) => m.time);
   const start = times.length
     ? times.reduce((first, t) => Math.min(first, t)) : header.started;
   const end = times.reduce((latest, t) => Math.max(latest, t), start);
   stopPlaying();
   state.viewing = { name, header, properties: new Map(), byType, start, end,
     at: start, shownGraph: undefined, speed: 1, timer: null,
-    steps: recordedSteps(byType), emptyKey: null };
+    steps: recordedSteps(byType), emptyKey: null, performance };
   clearState();
   const recorded = header.view ?? {};
   state.collapsed = new Set(Array.isArray(recorded.collapsed)
@@ -1156,6 +1234,8 @@ function seekTo(t) {
   pins.showStats(latestAt(v.byType.pads, at));
   elementPins.showStats({ time: at, elements: [...v.properties.values()] });
   refreshProperties();
+  if (dock.current === "performance")
+    showPerformance();
   const span = v.end - v.start;
   $("seek").value = span > 0 ? String(Math.round((at - v.start) / span *
     1000)) : "1000";
@@ -1570,8 +1650,12 @@ function handleMessage(message) {
     showProblems();
   } else if (message.type === "performance") {
     state.performance = message;
+    state.perfHistory = [...state.perfHistory || [], message]
+      .filter((m) => m.time > message.time - PERF_WINDOW);
     showThreadCpu();
     showProcess();
+    if (dock.current === "performance")
+      showPerformance();
   } else if (message.type === "latency") {
     applyLatency(message);
   } else if (message.type === "levels") {
