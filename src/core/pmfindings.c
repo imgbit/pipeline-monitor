@@ -839,6 +839,12 @@ add_leftovers (PmFindings * self, GPtrArray * findings)
           ", " : "", left->name, when);
       g_free (when);
     }
+    /* Counted from all, so never: for the analyzer. */
+    if (first == NULL) {
+      g_string_free (names, TRUE);
+      g_free (window);
+      continue;
+    }
     f = finding_new ("leftovers", growing ? PM_WARNING : PM_INFO, pipeline,
         first->pipeline_path, 0, NULL);
     if (growing)
