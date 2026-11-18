@@ -2973,6 +2973,54 @@ def check_site(browser, serve):
                 browser.click("#viewing-close")
             assert not browser.errors, \
                 f"{name}: errors in the page: {browser.errors}\n{text[:2000]}"
+        # Performance data of the wrong kind: the panel and the legend
+        # show what they can and never fail.
+        with open(recorded, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+        assert any('"type":"performance"' in l for l in lines), \
+            "no performance data recorded"
+        odd = {"threads": [{}, "x", 5, [1, None, {"os": "x"}], None],
+               "process": ["x", [], {"cpu": "x", "memory": {}}],
+               "cores": ["x", -1]}
+        n = 0
+        for key, values in odd.items():
+            for value in values:
+                out = []
+                for line in lines:
+                    m = json.loads(line)
+                    if m.get("type") == "performance":
+                        m[key] = value
+                    out.append(json.dumps(m))
+                name = f"odd-performance-{n}.jsonl"
+                n += 1
+                browser.eval(f"{error}.hidden = true")
+                browser.eval("(() => { const d = new DataTransfer(); "
+                             f"d.items.add(new File([{json.dumps(chr(10).join(out))}],"
+                             f" {json.dumps(name)})); window.dispatchEvent("
+                             "new DragEvent('drop', {dataTransfer: d, "
+                             "cancelable: true})); })()")
+                assert browser.wait(f"!!{added_row(name)}"), f"{name}: refused"
+                open_panel(browser, "recordings")
+                browser.click_point(f"{added_row(name)}.querySelector("
+                                    "'.rec-open')")
+                assert browser.wait(f"!{banner}.hidden"), f"{name}: not shown"
+                open_panel(browser, "performance")
+                if browser.eval("document.getElementById('threads')"
+                                ".getAttribute('aria-pressed') !== 'true'"):
+                    browser.click("#threads")
+                browser.eval("document.getElementById('performance-others')"
+                             ".click()")
+                browser.eval(seek.format(1000))
+                body = ("document.getElementById('performance-body')"
+                        ".innerText")
+                assert browser.wait(f"{body}.includes('Threads') && "
+                                    f"!{body}.includes('NaN')"), \
+                    f"{name} ({key}={value!r}): the panel shows " + \
+                    repr(browser.eval(body))
+                browser.click("#viewing-close")
+                assert not browser.errors, \
+                    f"{name} ({key}={value!r}): errors in the page: " \
+                    f"{browser.errors}"
         # Still usable: the good recording opens (its row is below the 40
         # added ones: scrolled to first).
         open_panel(browser, "recordings")

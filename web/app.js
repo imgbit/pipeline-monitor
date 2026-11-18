@@ -12,7 +12,7 @@ import { Tooltip } from "./tooltip.js";
 import { linkCaps } from "./caps.js";
 import { ElementPins, Pins } from "./pins.js";
 import { TIME_UNITS, formatBytes, formatSpan } from "./units.js";
-import { PerformanceView } from "./performance.js";
+import { PerformanceView, cleanPerformance } from "./performance.js";
 import { pipelineTimes, queueRows } from "./levels.js";
 import { cannotMeasure, latencyRows } from "./latency.js";
 import { Measuring } from "./measure.js";
@@ -1092,8 +1092,8 @@ function showRecording(text, name, title = null) {
     throw new Error("damaged graph");
   // Sampled once a second: not a moment (step) of its own, so not in
   // byType; but the slider reaches every sample.
-  const performance = messages.filter((m) => m?.type === "performance" &&
-    Number.isFinite(m.time));
+  const performance = messages.filter((m) => m?.type === "performance")
+    .map(cleanPerformance).filter(Boolean);
   // From its first message shown: the header's time is a moment before it.
   const times = [...Object.values(byType).flat(), ...performance]
     .map((m) => m.time);
@@ -1685,6 +1685,9 @@ function handleMessage(message) {
       lastAlive.findings = message;
     showProblems();
   } else if (message.type === "performance") {
+    message = cleanPerformance(message);
+    if (!message)
+      return;
     state.performance = message;
     state.perfHistory = [...state.perfHistory || [], message]
       .filter((m) => m.time > message.time - PERF_WINDOW);

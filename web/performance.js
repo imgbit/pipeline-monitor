@@ -43,6 +43,31 @@ function sparkline(values, max, colour, width, height) {
   return svg;
 }
 
+// A "performance" message with only values of the right kind (a recording
+// may be damaged or edited), or null if it has no time.
+export function cleanPerformance(m) {
+  if (!m || typeof m !== "object" || !Number.isFinite(m.time))
+    return null;
+  const number = (v) => Number.isFinite(v) && v >= 0 ? v : null;
+  const p = m.process && typeof m.process === "object" ? m.process : null;
+  const threads = Array.isArray(m.threads) ? m.threads.filter((t) =>
+    t && typeof t === "object" && Number.isFinite(t.os)).map((t) => ({
+    os: t.os,
+    ...Number.isInteger(t.id) && t.id > 0 ? { id: t.id } : {},
+    task: t.task === true,
+    name: typeof t.name === "string" ? t.name : "",
+    cpu: number(t.cpu)
+  })) : null;
+  return {
+    type: "performance", time: m.time,
+    cores: Number.isInteger(m.cores) && m.cores > 0 ? m.cores : null,
+    process: p && {
+      cpu: number(p.cpu), memory: number(p.memory), threads: number(p.threads)
+    },
+    threads
+  };
+}
+
 export class PerformanceView {
   // nodes: {body, others}; handlers: {select(element id)}.
   constructor(nodes, handlers) {
