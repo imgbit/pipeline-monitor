@@ -905,6 +905,8 @@ function latencyDetails(selection) {
     // Only with data going in and out is there a time in between.
     measurable: selection.element.pads.some((p) => p.direction === "sink") &&
       selection.element.pads.some((p) => p.direction === "src"),
+    // "latency" under the graph measures every element already.
+    all: measure.all,
   };
 }
 
@@ -1860,6 +1862,8 @@ document.addEventListener("pointerdown", (e) => {
 $("measure-all").addEventListener("click", () => {
   measure.toggleAll();
   showMeasureAll();
+  updateLatencyDetails($("details"), latencyDetails(
+    buildIndex(state.graph).elements.get(state.selected)));
 });
 $("time-unit").textContent = `time: ${pins.unit}`;
 $("time-unit").addEventListener("click", () => {

@@ -1051,15 +1051,21 @@ def check_latency(browser):
         f"{section}?.textContent.includes('measured')"), "no latency section"
     assert browser.wait(f"/[0-9.]+ (ns|µs|ms) avg/.test({section}.textContent)"),\
         "no measured latency in the panel"
-    browser.eval(f"{section}.querySelector('.measure-toggle').click()")
-    assert browser.wait(f"{section}.textContent.includes('Stop measuring')")
+    # Every element measured: the element's own switch is greyed out.
+    toggle = f"{section}.querySelector('.measure-toggle')"
+    assert browser.eval(f"{toggle}.disabled && {toggle}.textContent === "
+                        "'Measure'"), "the element's Measure is not greyed out"
 
-    # Stopping "measure all" keeps the element measured by this page.
     browser.click("#measure-all")
     assert browser.wait(f"{button}.textContent === 'latency'")
-    assert browser.wait(f"{labels} === 1", timeout=4), \
+    assert browser.wait(f"{labels} === 0", timeout=4), \
         "measure all labels did not go away"
-    browser.eval(f"{section}.querySelector('.measure-toggle').click()")
+    assert browser.wait(f"!{toggle}.disabled"), "Measure stays greyed out"
+    # The element alone, then not.
+    browser.eval(f"{toggle}.click()")
+    assert browser.wait(f"{section}.textContent.includes('Stop measuring')")
+    assert browser.wait(f"{labels} === 1", timeout=4)
+    browser.eval(f"{toggle}.click()")
     assert browser.wait(f"{labels} === 0", timeout=4)
     close_details(browser)
 

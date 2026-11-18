@@ -89,7 +89,8 @@ function onPress(button, fn) {
 }
 
 // The latency section: a measure switch and the rows of latencyRows.
-// latency: {on, toggle(), rows, measurable} for the element shown. The
+// latency: {on, toggle(), rows, measurable, all} for the element shown;
+// with all (every element measured) the switch is off and greyed. The
 // button is kept between updates (4 per second) and only changes its text.
 export function updateLatencyDetails(aside, latency) {
   const section = aside.querySelector(".latency-section");
@@ -104,10 +105,14 @@ export function updateLatencyDetails(aside, latency) {
   }
   button.toggle = latency.toggle;
   button.hidden = !latency.measurable;
-  button.textContent = latency.on ? "Stop measuring" : "Measure";
-  button.title = latency.on ? "Remove the probes again"
-    : "Time how long data takes through this element (adds pad probes)";
-  button.setAttribute("aria-pressed", String(latency.on));
+  button.disabled = Boolean(latency.all);
+  const on = latency.on && !latency.all;
+  button.textContent = on ? "Stop measuring" : "Measure";
+  button.title = latency.all ? "Every element is measured: latency under " +
+    "the graph is on"
+    : on ? "Remove the probes again"
+      : "Time how long data takes through this element (adds pad probes)";
+  button.setAttribute("aria-pressed", String(on));
   const dl = document.createElement("dl");
   for (const [k, v] of latency.rows) {
     if (k === null) {
