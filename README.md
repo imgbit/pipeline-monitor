@@ -2,7 +2,7 @@
 
 See a running GStreamer pipeline live in your browser.
 
-![pipeline-monitor recording a pipeline: latency under every element, a pinned pad's live values, and the audio queue's level, latency and properties](.github/screenshot.png)
+![pipeline-monitor recording a pipeline in the threads view: each element in the colour of the thread that runs it, latency under every element, a pinned pad's live values, and the audio queue's level, latency and properties](.github/screenshot.png)
 
 Short videos: [Fix your GStreamer pipeline](https://www.youtube.com/playlist?list=PLHYOr70akpmI)
 on YouTube, one problem per episode.
@@ -26,10 +26,14 @@ variable, without changing your application, and open http://127.0.0.1:8765/.
   video), bytes/s, gaps between buffers, delay against the clock, timestamps,
   flags and segment; cards follow their pad or can be dragged off and kept
   on screen. Probes run only on pinned pads
-- Queue fill: a bar on every queue and queue2, and on each stream of a
-  multiqueue, shows how full it is against its most blocking limit; hover
-  for buffers, bytes and time against their limits, overruns, underruns
-  and buffering
+- Queue fill: on every queue and queue2, and on each stream of a
+  multiqueue, a bar and a number show how full it is and the limit it is
+  nearest (buffers, bytes or time); hover for all three against their
+  limits, overruns, underruns and buffering
+- Threads: one button colours every element and link by the thread that
+  runs it, so you see where a queue hands over to a new thread; CPU per
+  thread, the program's CPU and memory in the header, and a Performance
+  panel with the last minute of each
 - Pipeline clock and times in the header: clock and its provider, running
   time, position and duration, latency
 - Element properties in the details panel, with values changed from the
@@ -43,7 +47,10 @@ variable, without changing your application, and open http://127.0.0.1:8765/.
 - Pipeline issue detection: data stopped or blocked, failed format
   negotiation and links, a pipeline stuck in a state (with sinks that have
   not prerolled), missing decoders, full or dropping queues, sinks dropping
-  late buffers and sources sending nothing
+  late buffers, sources sending nothing, a thread using a whole core where
+  the pipeline must keep up, and elements still alive after leaving their
+  pipeline
+- GStreamer's own `.dot` file of a running pipeline, saved from the page
 - Element details, collapsible bins, light and dark theme
 - Local only: listens on 127.0.0.1 and loads nothing from the internet
 
@@ -156,8 +163,10 @@ Then open the address it prints, by default http://127.0.0.1:8765/.
   `GST_TRACERS="pipeline-monitor(log=false)"` turns that off (your application
   still receives them as usual). Options can be combined, e.g.
   `pipeline-monitor(port=9000,log=false)`.
-- Data flow tracking for issue detection costs about 60 ns per buffer push;
-  `pipeline-monitor(flow=false)` turns it off.
+- Data flow tracking (where data stopped, which thread runs each element)
+  costs about 10 ns per push, on top of about 90 ns that GStreamer's
+  tracing adds once any tracer is on; `pipeline-monitor(flow=false)` turns
+  it off.
 - For a program that fails or ends at once, `pipeline-monitor(wait=true)`
   holds it at start until the page is open. When the program ends, the page
   keeps its last state (graph, problems, errors and warnings) and connects

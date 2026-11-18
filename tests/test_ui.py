@@ -3390,10 +3390,20 @@ def screenshot(browser, url, path):
                         f"/ms avg/.test({section}?.textContent)")
     # Smaller and to the left, so the queue is not under the panel.
     browser.click("#zoom-out")
-    for kind, x in (("mousePressed", 700), ("mouseMoved", 620),
-                    ("mouseMoved", 590), ("mouseReleased", 590)):
-        browser.call("Input.dispatchMouseEvent", type=kind, x=x, y=120,
+    for kind, x, y in (("mousePressed", 700, 120), ("mouseMoved", 620, 110),
+                       ("mouseMoved", 590, 95), ("mouseReleased", 590, 95)):
+        browser.call("Input.dispatchMouseEvent", type=kind, x=x, y=y,
                      button="left", buttons=1, clickCount=1)
+    # The card moved down off the bins, still at its pad (under 100 px).
+    x, y = browser.eval("(r => [r.left + 30, r.top + r.height / 2])("
+                        "document.querySelector('.pin-card .pin-title')"
+                        ".getBoundingClientRect())")
+    for kind, dy in (("mousePressed", 0), ("mouseMoved", 40),
+                     ("mouseMoved", 80), ("mouseReleased", 80)):
+        browser.call("Input.dispatchMouseEvent", type=kind, x=x, y=y + dy,
+                     button="left", buttons=1, clickCount=1)
+    # The threads view, its legend below the audio branch.
+    browser.click("#threads")
     time.sleep(4)
     browser.screenshot(path)
 

@@ -201,7 +201,11 @@ the task has ended.
 - `severity`: `error`, `warning`, `info`. Most severe first.
 - `id`: the kind and the place, the same in every run. Kinds: `flow`,
   `blocked`, `stuck`, `starved`, `link`, `missing`, `silent`, `full`,
-  `dropping`, `late`.
+  `dropping`, `late`; since 0.12 `busy` (a streaming thread at 90 % of a
+  core or more for 5 s, where the pipeline keeps time; at the first element
+  it runs) and `leftovers` (elements taken out of a pipeline and still
+  alive after 30 s, at that pipeline; a warning when their number keeps
+  growing).
 - `text` says what was found, `hint` what it means; both state only what
   was observed.
 - `count`, `first`, `last` when the problem repeats.
@@ -429,6 +433,7 @@ Sent over the WebSocket as JSON text, at most 64 KiB:
 | `GET /api/recordings` | `recordings` |
 | `GET /api/recordings/<name>` | the recording file (JSON Lines), as an attachment; 404 if there is none |
 | `GET /api/opened` | the file given to `pipeline-monitor open`; 404 if there is none |
+| `GET /api/dot?pipeline=ID` | GStreamer's own `.dot` of that pipeline (or any bin), as an attachment named `<name>_<STATE>_<YYYYMMDD-HHMMSS>.dot`; 404 if there is none (since 0.12) |
 | `/ws` | the WebSocket |
 
 JSON answers are sent with `Cache-Control: no-store`.
