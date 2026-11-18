@@ -3107,6 +3107,12 @@ pad_thread (const gchar * element, const gchar * pad, gchar ** name,
   for (i = 0; i < json_array_get_length (list); i++) {
     JsonObject *t = json_array_get_object_element (list, i);
 
+    /* Each as docs/protocol.md has it; a task listed is still running. */
+    g_assert_cmpint (json_object_get_int_member (t, "id"), >, 0);
+    g_assert_cmpint (json_object_get_int_member (t, "os"), >, 0);
+    g_assert_nonnull (json_object_get_string_member (t, "name"));
+    if (json_object_get_boolean_member (t, "task"))
+      g_assert_true (json_object_get_boolean_member (t, "alive"));
     if (json_object_get_int_member (t, "id") == id) {
       *name = g_strdup (json_object_get_string_member (t, "name"));
       *task = json_object_get_boolean_member (t, "task");
@@ -3172,6 +3178,57 @@ test_threads (void)
   stop_pipeline (pipeline);
 }
 
+/* A number, or null where the protocol allows it. */
+static void
+assert_number (JsonObject * o, const gchar * name, gboolean nullable)
+{
+  JsonNode *n = json_object_get_member (o, name);
+
+  g_assert_nonnull (n);
+  if (nullable && json_node_is_null (n))
+    return;
+  g_assert_true (JSON_NODE_HOLDS_VALUE (n));
+  g_assert_true (json_node_get_value_type (n) == G_TYPE_INT64 ||
+      json_node_get_value_type (n) == G_TYPE_DOUBLE);
+  g_assert_cmpfloat (json_node_get_double (n), >=, 0);
+}
+
+/* "performance" as docs/protocol.md has it: cores, process {cpu, memory,
+ * threads}, threads [{os, name, cpu, id and task together}]. */
+static void
+check_performance_shape (JsonObject * m)
+{
+  JsonObject *process = json_object_get_object_member (m, "process");
+  JsonArray *threads = json_object_get_array_member (m, "threads");
+  guint i;
+
+  g_assert_cmpint (json_object_get_int_member (m, "cores"), >=, 1);
+  g_assert_nonnull (process);
+  assert_number (process, "cpu", TRUE);
+  assert_number (process, "memory", FALSE);
+  g_assert_cmpint (json_object_get_int_member (process, "threads"), ==,
+      json_array_get_length (threads));
+  for (i = 0; i < json_array_get_length (threads); i++) {
+    JsonObject *t = json_array_get_object_element (threads, i);
+
+    g_assert_cmpint (json_object_get_int_member (t, "os"), >, 0);
+    g_assert_nonnull (json_object_get_string_member (t, "name"));
+    assert_number (t, "cpu", TRUE);
+    g_assert_cmpint (json_object_has_member (t, "id"), ==,
+        json_object_has_member (t, "task"));
+    if (json_object_has_member (t, "id"))
+      g_assert_cmpint (json_object_get_int_member (t, "id"), >, 0);
+    /* Busiest first, those without a value yet last. */
+    if (i > 0) {
+      JsonObject *before = json_array_get_object_element (threads, i - 1);
+
+      if (!json_object_get_null_member (t, "cpu"))
+        g_assert_cmpfloat (json_object_get_double_member (before, "cpu"),
+            >=, json_object_get_double_member (t, "cpu"));
+    }
+  }
+}
+
 /* "performance" once a second: every thread with its share of a core; a
  * streaming thread the graph knows with its id and task name. A source
  * making noise as fast as it can keeps its thread busy. */
@@ -3194,7 +3251,7 @@ test_performance (void)
     JsonArray *threads = json_object_get_array_member (m, "threads");
     guint i;
 
-    g_assert_cmpint (json_object_get_int_member (m, "cores"), >=, 1);
+    check_performance_shape (m);
     g_assert_cmpuint (json_array_get_length (threads), >=, 2);
     g_assert_cmpint (json_object_get_int_member (json_object_get_object_member
             (m, "process"), "memory"), >, 1000000);

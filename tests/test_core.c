@@ -1163,6 +1163,17 @@ test_findings_leftovers (Fixture * f, gconstpointer data)
   g_assert_nonnull (strstr (json, " and "));
   g_free (json);
 
+  /* No more for two windows: kept, but no longer growing. */
+  for (i = 0; i < 12; i++) {
+    g_usleep (110000);
+    g_free (pm_findings_tick (findings, PM_STUCK_AFTER_US));
+  }
+  json = pm_findings_tick (findings, PM_STUCK_AFTER_US);
+  g_assert_nonnull (strstr (json, "\"id\":\"leftovers:core-pipeline\""));
+  g_assert_null (strstr (json, "keep piling up"));
+  g_assert_nonnull (strstr (json, "\"severity\":\"info\""));
+  g_free (json);
+
   /* Freed: the finding goes. */
   g_ptr_array_set_size (kept, 0);
   json = pm_findings_tick (findings, PM_STUCK_AFTER_US);
