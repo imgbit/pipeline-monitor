@@ -153,6 +153,38 @@ jobs:
           name: testlog-macos
           path: build/meson-logs/
 
+  # ThreadSanitizer: on macOS GLib's mutexes are pthread ones, which it
+  # sees (on Linux they are futexes it cannot see). The plugin scanner
+  # cannot load a TSan plugin: no fork, and a fresh registry per build.
+  # Not blocking until it has run clean.
+  macos-tsan:
+    name: macOS (ThreadSanitizer)
+    runs-on: macos-latest
+    timeout-minutes: 40
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        timeout-minutes: 15
+        run: brew install meson ninja pkgconf gstreamer libsoup json-glib
+      - name: Build
+        run: |
+          meson setup build -Db_sanitize=thread -Db_lundef=false
+          meson compile -C build
+      - name: Test
+        env:
+          GST_REGISTRY_FORK: "no"
+          TSAN_OPTIONS: second_deadlock_stack=1
+        run: >
+          meson test -C build --print-errorlogs --verbose
+          --timeout-multiplier 3
+          core model server options load fuzz-command fuzz-recording
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: testlog-macos-tsan
+          path: build/meson-logs/
+
 
   windows:
     name: Windows (MSVC, official GStreamer)
