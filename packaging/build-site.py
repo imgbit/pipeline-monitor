@@ -76,7 +76,8 @@ GUIDE = [
      "macOS, Windows), turn it on with GST_TRACERS=pipeline-monitor and open "
      "a running GStreamer pipeline in your browser."),
     ("tour", "Tour", "What every part of pipeline-monitor's page shows: the "
-     "graph, problems, queue levels, pinned pads, latency and recordings."),
+     "graph, threads, problems, queue levels, pinned pads, latency, "
+     "performance and recordings."),
     ("options", "Options", "pipeline-monitor's options: port, recordings, "
      "recording from the start, waiting for the page, and more."),
     ("troubleshooting", "Troubleshooting", "When pipeline-monitor shows no "

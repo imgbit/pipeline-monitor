@@ -1,9 +1,9 @@
 # Get started
 
 pipeline-monitor shows a running GStreamer pipeline live in your browser:
-its graph, problems, errors and warnings, queue levels, latency, the
-values flowing through pads and the elements' properties. It is a
-GStreamer tracer: your program needs no changes.
+its graph, problems, errors and warnings, queue levels, latency, its
+threads and their CPU, the values flowing through pads and the elements'
+properties. It is a GStreamer tracer: your program needs no changes.
 
 **Try it first, without installing:** open a demo recording in the
 [viewer](../) on this site.

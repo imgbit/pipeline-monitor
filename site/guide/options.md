@@ -10,7 +10,7 @@ GST_TRACERS="pipeline-monitor(port=9000,record=on)" ./my-program
 |---|---|---|
 | `port=N` | `8765` | the page's port; if taken, the next free one is used |
 | `log=false` | on | do not collect errors and warnings (the program still gets them) |
-| `flow=false` | on | no data flow tracking (finding where data stopped; about 60 ns per buffer) |
+| `flow=false` | on | no data flow tracking: where data stopped, which thread runs each element (saves about 10 ns per push; any GStreamer tracer costs about 90 ns per push on its own) |
 | `wait=true` | off | hold the program at start until a page is open |
 | `record=on` | off | record from the start, also without a page, until the program ends |
 | `recordings=PATH` | `~/.local/share/pipeline-monitor/recordings` (Windows: `%LOCALAPPDATA%\pipeline-monitor\recordings`) | where recordings go (on Windows write the path with `/`) |
