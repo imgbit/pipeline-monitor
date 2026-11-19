@@ -162,6 +162,8 @@ main {
   cursor: grab;
   -webkit-user-select: none;
   user-select: none;
+  /* Drags and pinches are the graph's, not the page's. */
+  touch-action: none;
 }
 #graph.panning { cursor: grabbing; }
 
@@ -256,9 +258,27 @@ main {
   color: var(--muted);
 }
 
+/* Narrow screens (phones): the header in two rows, the pipeline and the
+   connection on the first, the buttons on the second; the logo without its
+   name; times, CPU and the element count left out. */
 @media (max-width: 600px) {
-  .brand, #element-count { display: none; }
-  header { gap: 8px; padding: 8px 12px; }
+  header { flex-wrap: wrap; row-gap: 6px; gap: 8px; padding: 6px 12px;
+    overflow: visible; }
+  .brand { font-size: 0; gap: 0; }
+  #element-count, #pipeline-times, #process-perf { display: none; }
+  #pipeline-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .connection { order: 1; margin-left: auto; }
+  .spacer { order: 2; flex-basis: 100%; height: 0; }
+  header > button, header > a { order: 3; }
+  header > .brand { order: 0; }
+  header > .guide-link { order: 1; margin-left: auto; }
+  header > .guide-link:not([hidden]) + .connection { margin-left: 0; }
+  header > button:not(.brand), header > a { margin: 0; }
+  header { column-gap: 6px; }
+  header > button:not(.brand) { padding: 2px 6px; }
+  /* Panels: their name and the close button; the description left out. */
+  .log-head > .muted { display: none; }
+  header > button:not(.brand) { padding: 2px 8px; }
 }
 
 /* Graph */
@@ -735,6 +755,14 @@ main {
   border-radius: 3px;
 }
 .rec-error { color: var(--error); }
+/* Narrow screens: each recording on two lines, the title first, then its
+   kind, length, size and buttons. */
+@media (max-width: 600px) {
+  .rec-row { grid-template-columns: auto auto auto 1fr; row-gap: 2px;
+    padding: 4px 12px; }
+  .rec-row .rec-time { grid-column: 1 / -1; grid-row: 1; }
+  .rec-actions { grid-column: 1 / -1; }
+}
 .rec-note { padding: 4px 16px; font-size: 11px; border-top: 1px solid var(--border); }
 
 /* A recording shown read-only: nothing that acts on the program. */
@@ -782,9 +810,46 @@ body.viewing .pin-card .pin-close, body.viewing .pin-card .pin-prop-close {
   z-index: 5;
 }
 .rec-offline { padding: 6px 16px; color: var(--muted); border-bottom: 1px solid var(--border); }
-.playback { display: inline-flex; align-items: center; gap: 6px; margin-left: 8px; }
+.playback { display: inline-flex; flex-wrap: wrap; align-items: center;
+  gap: 6px; margin-left: 8px; }
 .playback[hidden] { display: none; }
 .playback input[type="range"] { width: 180px; }
+
+/* The slider drawn the same in every browser (Safari's own is a thick
+   dark bar with a large knob). */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 16px;
+  background: transparent;
+  cursor: pointer;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px; border-radius: 2px; background: var(--border);
+}
+input[type="range"]::-moz-range-track {
+  height: 4px; border-radius: 2px; background: var(--border);
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px; height: 14px; margin-top: -5px; border: none;
+  border-radius: 50%; background: var(--accent);
+}
+input[type="range"]::-moz-range-thumb {
+  width: 14px; height: 14px; border: none; border-radius: 50%;
+  background: var(--accent);
+}
+input[type="range"]:focus-visible { outline: 2px solid var(--accent);
+  outline-offset: 2px; }
+
+/* Narrow screens: the bar across the view, the slider on a row of its own. */
+@media (max-width: 600px) {
+  .ended-banner { left: 8px; right: 8px; max-width: none; top: 8px; }
+  .playback { display: flex; margin: 6px 0 0; }
+  .playback[hidden] { display: none; }
+  .playback input[type="range"] { flex: 1 1 100%; width: auto; order: -1; }
+  .viewing-banner #viewing-close { margin: 6px 0 0; }
+}
 .play-time { font-variant-numeric: tabular-nums; color: var(--muted); }
 
 /* Time and step: text until clicked, then a field to type in. */

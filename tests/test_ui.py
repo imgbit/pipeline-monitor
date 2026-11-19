@@ -1418,6 +1418,65 @@ def fill_difference(a, b):
                      rt * (dc / sc) * (dhh / sh))
 
 
+# A phone: the page as wide as the screen, the header in two rows; a pinch
+# zooms the graph, a tap on an element shows its details.
+def check_phone(browser, serve):
+    server, url = start_server(serve, "videotestsrc is-live=true ! "
+                               "queue name=ph-q ! fakesink name=ph-sink")
+    browser.call("Emulation.setDeviceMetricsOverride", width=393, height=852,
+                 deviceScaleFactor=1, mobile=True)
+    browser.call("Emulation.setTouchEmulationEnabled", enabled=True,
+                 maxTouchPoints=5)
+    try:
+        browser.call("Page.navigate", url=url)
+        assert browser.wait(f"!!{element_selector('ph-q')}", timeout=15)
+        time.sleep(1)
+        wide = ("[...document.querySelectorAll('header > *:not([hidden]), "
+                ".toolbar > *')].filter(e => e.getBoundingClientRect().right "
+                "> innerWidth + 1).map(e => e.id || e.className)")
+        assert browser.eval(f"document.documentElement.scrollWidth <= "
+                            f"innerWidth && {wide}.length === 0"), \
+            "wider than the screen: " + str(browser.eval(wide))
+        scale = ("(t => t ? Number(t.match(/scale\\(([\\d.]+)\\)/)"
+                 f"?.[1] ?? 1) : 1)({TRANSFORM})")
+        before = browser.eval(scale)
+        r = browser.eval("(r => [r.left + r.width / 2, r.top + r.height / 2])"
+                         "(document.getElementById('graph')"
+                         ".getBoundingClientRect())")
+        cx, cy = r
+
+        def touch(kind, d):
+            points = [] if kind == "touchEnd" else [
+                {"x": cx - d, "y": cy, "id": 1}, {"x": cx + d, "y": cy,
+                                                   "id": 2}]
+            browser.call("Input.dispatchTouchEvent", type=kind,
+                         touchPoints=points)
+        touch("touchStart", 30)
+        for d in (45, 60, 75, 90):
+            touch("touchMove", d)
+        touch("touchEnd", 0)
+        after = browser.eval(scale)
+        assert after > before * 2.5, \
+            f"a pinch did not zoom: {before} -> {after}"
+        # A tap on the queue: its details.
+        box = browser.eval(f"(r => [r.left + r.width / 2, r.top + 8])("
+                           f"{element_selector('ph-q')}.querySelector("
+                           "':scope > rect.box').getBoundingClientRect())")
+        for kind in ("touchStart", "touchEnd"):
+            browser.call("Input.dispatchTouchEvent", type=kind, touchPoints=[]
+                         if kind == "touchEnd" else [{"x": box[0],
+                                                      "y": box[1]}])
+        assert browser.wait("document.querySelector('#details h2')"
+                            "?.textContent === 'ph-q'"), \
+            "a tap did not show the element's details"
+        close_details(browser)
+    finally:
+        browser.call("Emulation.setTouchEmulationEnabled", enabled=False)
+        browser.call("Emulation.clearDeviceMetricsOverride")
+        server.terminate()
+        server.wait()
+
+
 # Two pads close together, both pinned: the second card goes where it
 # does not cover the first.
 def check_pin_cards_apart(browser, serve):
@@ -3569,6 +3628,7 @@ def main():
             check_threads_view(browser, serve)
             check_funnel_threads(browser, serve)
             check_pin_cards_apart(browser, serve)
+            check_phone(browser, serve)
     finally:
         if browser:
             browser.close()

@@ -60,17 +60,47 @@ export class GraphView {
 
   setupPanZoom() {
     let drag = null;
+    // Fingers on the graph; two of them pinch to zoom.
+    const fingers = new Map();
+    let pinch = null;
+    const spread = () => {
+      const [a, b] = [...fingers.values()];
+      const r = this.svg.getBoundingClientRect();
+      return { d: Math.hypot(a.x - b.x, a.y - b.y),
+        x: (a.x + b.x) / 2 - r.left, y: (a.y + b.y) / 2 - r.top };
+    };
 
     this.svg.addEventListener("pointerdown", (e) => {
       if (e.button !== 0)
         return;
+      if (e.pointerType === "touch")
+        fingers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      this.svg.setPointerCapture(e.pointerId);
+      if (fingers.size === 2) {
+        // A second finger: a pinch, not a drag or a tap.
+        drag = null;
+        pinch = spread();
+        this.handlers.hover(null);
+        return;
+      }
       drag = { x: e.clientX, y: e.clientY, tx: this.transform.x,
         ty: this.transform.y, moved: false, target: e.target };
-      this.svg.setPointerCapture(e.pointerId);
     });
     this.svg.addEventListener("pointermove", (e) => {
+      if (fingers.has(e.pointerId))
+        fingers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pinch && fingers.size === 2) {
+        const now = spread();
+        // Moved with the fingers' middle, scaled by their spread.
+        this.transform.x += now.x - pinch.x;
+        this.transform.y += now.y - pinch.y;
+        this.zoomAt(pinch.d ? now.d / pinch.d : 1, now.x, now.y);
+        pinch = now;
+        return;
+      }
       if (!drag) {
-        this.hover(e);
+        if (e.pointerType !== "touch")
+          this.hover(e);
         return;
       }
       const dx = e.clientX - drag.x;
@@ -85,10 +115,21 @@ export class GraphView {
       this.setAutoFit(false);
       this.apply();
     });
-    this.svg.addEventListener("pointerup", () => {
-      if (drag && !drag.moved)
+    const end = (e) => {
+      fingers.delete(e.pointerId);
+      if (fingers.size < 2)
+        pinch = null;
+    };
+    this.svg.addEventListener("pointerup", (e) => {
+      if (drag && !drag.moved && !pinch)
         this.click(drag.target);
       drag = null;
+      end(e);
+      this.svg.classList.remove("panning");
+    });
+    this.svg.addEventListener("pointercancel", (e) => {
+      drag = null;
+      end(e);
       this.svg.classList.remove("panning");
     });
     this.svg.addEventListener("pointerleave", () => this.handlers.hover(null));

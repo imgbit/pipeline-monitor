@@ -1932,6 +1932,13 @@ function startViewer() {
   const link = location.hash.match(/^#file=(.+)$/)?.[1];
   if (link)
     openLink(decodeURIComponent(link));
+  // A #file= link followed while this page is open: the page does not load
+  // again, so it is opened here.
+  window.addEventListener("hashchange", () => {
+    const next = location.hash.match(/^#file=(.+)$/)?.[1];
+    if (next)
+      openLink(decodeURIComponent(next));
+  });
   // A file added in the live tab that opened this one: asked for.
   if (location.hash === "#viewer-file") {
     if (window.opener)

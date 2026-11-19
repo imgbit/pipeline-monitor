@@ -520,6 +520,10 @@ export class Pins {
         // Kept on screen when the window gets smaller.
         left = Math.max(0, Math.min(left, width - card.offsetWidth));
         top = Math.max(0, Math.min(top, height - card.offsetHeight));
+      } else {
+        // Inside the view across (a narrow screen), the line still to its
+        // pad.
+        left = Math.max(0, Math.min(left, width - card.offsetWidth));
       }
       card.style.left = `${left}px`;
       card.style.top = `${top}px`;
