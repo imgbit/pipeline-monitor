@@ -98,6 +98,11 @@ PROBLEMS = [
     ("tee-without-queues", "Stuck in PAUSED: a tee without queues",
      "A GStreamer pipeline with a tee hangs in PAUSED with no error: why "
      "each branch needs a queue, how to see it, and the fix."),
+    ("internal-data-stream-error",
+     "\"Internal data stream error\" after decodebin: formats that don't fit",
+     "A GStreamer pipeline ends at once with \"Delayed linking failed\" and "
+     "\"Internal data stream error\": why the link fails, how to see it, "
+     "and the fix."),
 ]
 
 PAGE = """<!doctype html>
