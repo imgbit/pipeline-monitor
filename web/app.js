@@ -553,6 +553,19 @@ function showThreads(pipeline) {
       row.append(swatch, label);
       legend.append(row);
     }
+    // The program's main thread, when the graph does not show it already.
+    const main = document.createElement("div");
+    main.className = "row others main-thread";
+    main.hidden = true;
+    const mainLabel = document.createElement("span");
+    mainLabel.textContent = "main thread";
+    mainLabel.title = "The program's main thread: its own work (a user " +
+      "interface, an event loop); it moves no data through a pad";
+    const mainCpu = document.createElement("span");
+    mainCpu.className = "cpu";
+    mainCpu.dataset.thread = "main";
+    main.append(mainLabel, mainCpu);
+    legend.append(main);
     const others = document.createElement("div");
     others.className = "row others";
     const label = document.createElement("span");
@@ -581,9 +594,13 @@ function showThreadCpu() {
     const id = cell.dataset.thread;
     if (!threads) {
       cell.textContent = "";
+    } else if (id === "main") {
+      const main = threads.find((t) => t.main && !used.has(String(t.id)));
+      cell.parentElement.hidden = !main;
+      cell.textContent = main ? percent(main.cpu) : "";
     } else if (id === "other") {
       const rest = threads.filter((t) => !used.has(String(t.id)) &&
-        t.cpu !== null);
+        !t.main && t.cpu !== null);
       cell.textContent = rest.length
         ? percent(rest.reduce((sum, t) => sum + t.cpu, 0)) : "";
     } else {

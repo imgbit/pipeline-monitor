@@ -54,6 +54,7 @@ export function cleanPerformance(m) {
     t && typeof t === "object" && Number.isFinite(t.os)).map((t) => ({
     os: t.os,
     ...Number.isInteger(t.id) && t.id > 0 ? { id: t.id } : {},
+    ...t.main === true ? { main: true } : {},
     task: t.task === true,
     name: typeof t.name === "string" ? t.name : "",
     cpu: number(t.cpu)
@@ -120,9 +121,10 @@ export class PerformanceView {
         1.1, "var(--paused)", 200, 32)));
     const threads = last.threads || [];
     const tasks = threads.filter((t) => t.task).length;
+    const main = threads.some((t) => t.main && !t.task) ? 1 : 0;
     const count = card("Threads", String(process?.threads ?? threads.length));
     count.append(el("div", "muted", `${tasks} GStreamer streaming, ${
-      threads.length - tasks} other`));
+      main ? "the main thread, " : ""}${threads.length - tasks - main} other`));
     top.append(count);
     return top;
   }
@@ -137,11 +139,15 @@ export class PerformanceView {
 
     const all = last.threads || [];
     const known = all.filter((t) => t.id !== undefined);
-    const others = all.filter((t) => t.id === undefined);
+    // The main thread on its own row, unless it moves data (then known).
+    const main = all.find((t) => t.main && t.id === undefined);
+    const others = all.filter((t) => t.id === undefined && !t.main);
     const history = (os) => this.history.map((m) =>
       m.threads?.find((t) => t.os === os)?.cpu ?? null);
     for (const t of known)
       table.append(this.row(t, history(t.os)));
+    if (main)
+      table.append(this.row(main, history(main.os)));
     if (others.length) {
       // Added up; unknown (no sample before) only if none is known.
       const sum = (threads) => {
@@ -150,7 +156,8 @@ export class PerformanceView {
           ? known.reduce((total, t) => total + t.cpu, 0) : null;
       };
       const sums = this.history.map((m) =>
-        sum((m.threads || []).filter((t) => t.id === undefined)));
+        sum((m.threads || []).filter((t) => t.id === undefined &&
+          !t.main)));
       const tr = el("tr", "perf-others");
       const name = el("td");
       const toggle = el("button", "perf-toggle", this.othersOpen ? "−" : "+");
@@ -188,9 +195,12 @@ export class PerformanceView {
     const swatch = el("span", "swatch");
     if (colour)
       swatch.style.background = colour;
-    name.append(swatch, document.createTextNode(t.name || `thread ${t.os}`));
-    const kind = t.task ? "streaming" : t.id !== undefined
-      ? "pushes data, not a task" : "other";
+    name.append(swatch, document.createTextNode(t.name ||
+      (t.main ? "main" : `thread ${t.os}`)));
+    const kind = t.task ? "streaming"
+      : t.id !== undefined ? t.main ? "main thread, pushes data"
+        : "pushes data, not a task"
+        : t.main ? "main thread" : "other";
     const graph = el("td");
     graph.append(sparkline(cpus, Math.max(1, ...cpus.filter((v) =>
       v !== null)), colour || "var(--muted)", 110, 18));

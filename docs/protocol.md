@@ -332,6 +332,10 @@ Since 0.12.
 - `cpu`: the share of one core it used since the previous message (1 = a
   whole core), `null` in the first message it appears in.
 - `id`, `task`: for a thread in the graph's `threads`.
+- `main`: `true` on the program's main thread (since 0.13): on Linux the
+  thread whose id is the process id, on macOS the system's main thread, on
+  Windows the thread that began at the program's entry point. Absent where
+  it cannot be told.
 - `name`: the task's name for a GStreamer task, otherwise the name the
   operating system has for the thread (often `""`).
 - `process`: the whole program; `null` where it cannot be read. `cpu`: as

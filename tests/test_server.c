@@ -3282,7 +3282,7 @@ check_performance_shape (JsonObject * m)
 {
   JsonObject *process = json_object_get_object_member (m, "process");
   JsonArray *threads = json_object_get_array_member (m, "threads");
-  guint i;
+  guint i, mains = 0;
 
   g_assert_cmpint (json_object_get_int_member (m, "cores"), >=, 1);
   g_assert_nonnull (process);
@@ -3300,6 +3300,10 @@ check_performance_shape (JsonObject * m)
         json_object_has_member (t, "task"));
     if (json_object_has_member (t, "id"))
       g_assert_cmpint (json_object_get_int_member (t, "id"), >, 0);
+    if (json_object_has_member (t, "main")) {
+      g_assert_true (json_object_get_boolean_member (t, "main"));
+      mains++;
+    }
     /* Busiest first, those without a value yet last. */
     if (i > 0) {
       JsonObject *before = json_array_get_object_element (threads, i - 1);
@@ -3309,6 +3313,8 @@ check_performance_shape (JsonObject * m)
             >=, json_object_get_double_member (t, "cpu"));
     }
   }
+  /* The program's main thread, exactly once. */
+  g_assert_cmpuint (mains, ==, 1);
 }
 
 /* "performance" once a second: every thread with its share of a core; a

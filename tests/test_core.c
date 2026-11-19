@@ -930,6 +930,41 @@ test_pad_threads (void)
 }
 
 static gpointer
+os_id_of (gpointer data)
+{
+  *(guint64 *) data = pm_thread_os_id ();
+  return NULL;
+}
+
+/* The main thread is found exactly: this test's own (GLib runs tests on
+ * the main thread), not another; and the performance message marks it. */
+static void
+test_main_thread (void)
+{
+  PmModel *model = pm_model_new ();
+  PmPerf *perf = pm_perf_new (model);
+  guint64 other = 0;
+  gchar *json, *mark;
+
+  g_assert_cmpuint (pm_thread_main_os_id (), !=, 0);
+  g_assert_cmpuint (pm_thread_main_os_id (), ==, pm_thread_os_id ());
+  g_thread_join (g_thread_new ("other", os_id_of, &other));
+  g_assert_cmpuint (other, !=, pm_thread_main_os_id ());
+
+  json = pm_perf_sample (perf);
+  mark = g_strdup_printf ("{\"os\":%" G_GUINT64_FORMAT ",\"main\":true",
+      pm_thread_os_id ());
+  g_assert_nonnull (strstr (json, mark));
+  /* Only one. */
+  g_assert_null (strstr (strstr (json, "\"main\":true") + 1,
+          "\"main\":true"));
+  g_free (mark);
+  g_free (json);
+  pm_perf_free (perf);
+  pm_model_free (model);
+}
+
+static gpointer
 make_known (gpointer model)
 {
   pm_model_current_thread (model);
@@ -1347,6 +1382,7 @@ main (int argc, char **argv)
   g_test_add_func ("/core/json-string", test_json_string);
   g_test_add_func ("/core/pad-threads", test_pad_threads);
   g_test_add_func ("/core/forget-threads", test_forget_threads);
+  g_test_add_func ("/core/main-thread", test_main_thread);
   g_test_add_func ("/core/thread-sample", test_thread_sample);
   g_test_add_func ("/core/perf-sample", test_perf_sample);
   g_test_add_func ("/core/perf-busy", test_perf_busy);

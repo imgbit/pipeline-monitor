@@ -57,6 +57,72 @@ pm_thread_os_name (void)
 #endif
 }
 
+#if defined(G_OS_WIN32)
+/* ThreadQuerySetWin32StartAddress: where a thread began. */
+#define THREAD_START_ADDRESS 9
+typedef LONG (WINAPI * QueryThread) (HANDLE, int, PVOID, ULONG, PULONG);
+#elif defined(__APPLE__)
+/* In libSystem and stable for years, but not in the SDK's headers. */
+extern pthread_t pthread_main_thread_np (void);
+#endif
+
+guint64
+pm_thread_main_os_id (void)
+{
+#if defined(G_OS_WIN32)
+  /* The main thread is the one that began at the program's entry point. */
+  QueryThread query = (QueryThread) (void (*)(void))
+      GetProcAddress (GetModuleHandleW (L"ntdll.dll"),
+      "NtQueryInformationThread");
+  HMODULE program = GetModuleHandleW (NULL);
+  IMAGE_DOS_HEADER *dos = (IMAGE_DOS_HEADER *) program;
+  IMAGE_NT_HEADERS *nt;
+  gpointer entry_point;
+  HANDLE snapshot;
+  DWORD self = GetCurrentProcessId ();
+  THREADENTRY32 entry;
+  guint64 found = 0;
+
+  if (query == NULL || program == NULL)
+    return 0;
+  nt = (IMAGE_NT_HEADERS *) ((guint8 *) program + dos->e_lfanew);
+  entry_point = (guint8 *) program + nt->OptionalHeader.AddressOfEntryPoint;
+  snapshot = CreateToolhelp32Snapshot (TH32CS_SNAPTHREAD, 0);
+  if (snapshot == INVALID_HANDLE_VALUE)
+    return 0;
+  entry.dwSize = sizeof (entry);
+  if (Thread32First (snapshot, &entry)) {
+    do {
+      HANDLE thread;
+      gpointer start = NULL;
+
+      if (entry.th32OwnerProcessID != self)
+        continue;
+      thread = OpenThread (THREAD_QUERY_INFORMATION, FALSE,
+          entry.th32ThreadID);
+      if (thread == NULL)
+        continue;
+      if (query (thread, THREAD_START_ADDRESS, &start, sizeof (start),
+              NULL) == 0 && start == entry_point)
+        found = entry.th32ThreadID;
+      CloseHandle (thread);
+    } while (found == 0 && Thread32Next (snapshot, &entry));
+  }
+  CloseHandle (snapshot);
+  return found;
+#elif defined(__APPLE__)
+  guint64 id = 0;
+
+  if (pthread_threadid_np (pthread_main_thread_np (), &id) != 0)
+    return 0;
+  return id;
+#elif defined(__linux__)
+  return (guint64) getpid ();
+#else
+  return 0;
+#endif
+}
+
 static void
 sample_clear (PmThreadSample * sample)
 {

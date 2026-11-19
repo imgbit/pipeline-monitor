@@ -1540,9 +1540,12 @@ def check_threads_view(browser, serve):
         # CPU per thread from the "performance" message, once a second.
         cpu = (f"[...{legend}.querySelectorAll('.cpu')].map(c => "
                "c.textContent)")
-        assert browser.wait(f"(c => c.length === 11 && c.every(t => "
+        assert browser.wait(f"(c => c.length === 12 && c.every(t => "
                             f"/^\\d+ %$/.test(t)))({cpu})", timeout=10), \
             "no CPU in the legend: " + str(browser.eval(cpu))
+        # The program's main thread on its own row.
+        assert browser.eval(f"!{legend}.querySelector('.main-thread')"
+                            ".hidden"), "no main thread in the legend"
         box = "(n => n?.querySelector(':scope > rect.box').style.fill)"
         assert browser.eval(f"{box}({element_selector('tq')})")\
             .find("thread-split-") >= 0, "the queue is not split"
@@ -2149,7 +2152,8 @@ def check_unknown_cpu(browser, good):
     perf = {"type": "performance", "protocol": 1, "time": started + 1000,
             "cores": 4, "process": {"cpu": None, "memory": 20000000,
                                     "threads": 2},
-            "threads": [{"os": 11, "name": "one", "cpu": None},
+            "threads": [{"os": 10, "name": "", "cpu": None, "main": True},
+                        {"os": 11, "name": "one", "cpu": None},
                         {"os": 12, "name": "two", "cpu": None}]}
     open_messages(browser, header, [graph, perf, {
         "type": "end", "protocol": 1, "time": started + 2000,
@@ -2165,6 +2169,13 @@ def check_unknown_cpu(browser, good):
     assert browser.eval(f"{cells}[0].includes('other threads (2)') && "
                         f"{cells}[2] === '–'"), \
         "unknown CPU shown as: " + str(browser.eval(cells))
+    # The main thread on its own row, not among the other threads.
+    main = ("[...document.querySelectorAll('#performance-body tr')].find("
+            "r => r.cells[1]?.textContent === 'main thread')")
+    assert browser.eval(f"!!{main} && {main}.cells[0].textContent.trim() "
+                        "=== 'main'"), "no main thread row: " + str(
+        browser.eval("document.getElementById('performance-body')"
+                     ".innerText"))
     browser.eval(f"{row}.querySelector('.perf-toggle').click()")
     others = "document.querySelectorAll('#performance-body .perf-other')"
     assert browser.wait(f"{others}.length === 2"), "not listed one by one"

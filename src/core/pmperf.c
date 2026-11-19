@@ -84,7 +84,7 @@ pm_perf_sample (PmPerf * perf)
   GString *json = g_string_new (NULL);
   GPtrArray *busy = g_ptr_array_new_with_free_func ((GDestroyNotify)
       busy_free);
-  guint64 cpu_ns, memory;
+  guint64 cpu_ns, memory, main_os;
   guint i;
 
   g_string_append_printf (json, "{\"cores\":%u,\"process\":",
@@ -126,6 +126,7 @@ pm_perf_sample (PmPerf * perf)
         g_memdup2 (&s->cpu_ns, sizeof (guint64)));
   }
   g_array_sort (rows, compare_rows);
+  main_os = pm_thread_main_os_id ();
 
   g_string_append_c (json, '[');
   for (i = 0; i < rows->len; i++) {
@@ -139,6 +140,8 @@ pm_perf_sample (PmPerf * perf)
       g_string_append_c (json, ',');
     g_string_append_printf (json, "{\"os\":%" G_GUINT64_FORMAT,
         row->sample->os_id);
+    if (main_os != 0 && row->sample->os_id == main_os)
+      g_string_append (json, ",\"main\":true");
     /* A thread the graph knows: its id there, and its task's name. */
     if (pm_model_thread_info (perf->model, row->sample->os_id, &id, &name,
             &task)) {
