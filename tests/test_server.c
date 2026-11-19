@@ -1608,6 +1608,8 @@ test_recordings (void)
   g_assert_cmpuint (get_status (path, "GET", NULL, &body, NULL), ==,
       SOUP_STATUS_OK);
   g_assert_nonnull (strstr (body, "\"kind\":\"snapshot\""));
+  /* With the last CPU and memory sample: its Performance panel. */
+  g_assert_nonnull (strstr (body, "\"type\":\"performance\""));
   queue_path = graph_path ("rc-queue", NULL);
   member = g_strdup_printf ("\"path\":\"%s\"", queue_path);
   g_assert_nonnull (strstr (body, member));

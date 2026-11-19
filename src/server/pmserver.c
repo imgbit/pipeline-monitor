@@ -62,6 +62,8 @@ struct _PmServer
   /* Queue levels and pipeline times, sampled every TICK_US even without
    * clients. */
   gchar *last_levels;
+  /* The body of the last "performance" message, NULL before the first. */
+  gchar *last_perf;
   /* The findings last sent, to send them again only when they change. */
   gchar *last_findings;
   /* Until then the findings are not updated (monotonic µs). */
@@ -1083,6 +1085,12 @@ start_recording (PmServer * self, const gchar * kind, const gchar * view,
     g_free (text);
     g_free (parts[i]);
   }
+  /* The last CPU and memory sample, so a snapshot has it too. */
+  if (self->last_perf != NULL) {
+    text = pm_json_message ("performance", self->last_perf);
+    pm_recorder_write (self->recorder, text);
+    g_free (text);
+  }
   self->tapping = g_strcmp0 (kind, "recording") == 0;
   g_hash_table_remove_all (self->recorded);
   read_new_elements (self, !self->tapping);
@@ -1300,14 +1308,15 @@ update (PmServer * self, gboolean sample, gboolean force)
    * once per second while one is running, and once when it ends. */
   if (self->ticks++ % 4 == 0) {
     gboolean running = pm_recorder_running (self->recorder);
-    gchar *perf = pm_perf_sample (self->perf);
-    gchar *text = pm_json_message ("performance", perf);
+    gchar *text;
 
+    g_free (self->last_perf);
+    self->last_perf = pm_perf_sample (self->perf);
+    text = pm_json_message ("performance", self->last_perf);
     /* CPU per thread: to every page, and recorded. */
     send_to_all (self, text);
     record (self, text);
     g_free (text);
-    g_free (perf);
     send_findings (self);
     if (running || self->was_running)
       send_recordings (self, NULL);
@@ -1797,6 +1806,7 @@ pm_server_free (PmServer * self)
   g_free (self->opened);
   g_free (self->ui_dir);
   g_free (self->last_levels);
+  g_free (self->last_perf);
   g_free (self->last_findings);
   g_free (self->url);
   g_free (self);
