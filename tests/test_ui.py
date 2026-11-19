@@ -676,7 +676,14 @@ def open_panel(browser, name):
     panel = f"document.getElementById('{PANELS[name]}-panel')"
     if browser.eval(f"{panel}.hidden"):
         browser.click(f"#{name}-counter")
-    assert browser.wait(f"!{panel}.hidden"), f"{name} panel did not open"
+    # What was where, if it does not open.
+    state = (f"JSON.stringify({{button: (b => b && [b.getBoundingClientRect()"
+             f".toJSON(), getComputedStyle(b).display, b.ariaPressed])("
+             f"document.getElementById('{name}-counter')), window: "
+             f"[innerWidth, innerHeight], hidden: {panel}?.hidden}})")
+    assert browser.wait(f"!{panel}.hidden"), \
+        f"{name} panel did not open: {browser.eval(state)}\n" \
+        f"{browser.history()}"
 
 
 def close_panel(browser, name):
@@ -1764,6 +1771,9 @@ def check_threads_view(browser, serve):
         assert browser.wait(f"{cut}.length === 0"), \
             "header buttons cut off: " + str(browser.eval(cut))
         browser.call("Emulation.clearDeviceMetricsOverride")
+        # Back to its own size before the next click lands.
+        assert browser.wait("innerWidth !== 1000"), "the window kept 1000 px"
+        time.sleep(0.3)
         # The Performance panel: the streaming threads with the elements
         # each runs; a click on one selects it; other threads summed, or
         # one by one.
