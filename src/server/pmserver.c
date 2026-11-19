@@ -171,6 +171,8 @@ content_type_for (const gchar * path)
     return "text/css; charset=utf-8";
   if (g_str_has_suffix (path, ".svg"))
     return "image/svg+xml";
+  if (g_str_has_suffix (path, ".json"))
+    return "application/json";
   return NULL;
 }
 
@@ -339,6 +341,20 @@ handle_opened (SoupServer * soup, SoupServerMessage * msg, const char *path,
   }
   bytes = g_mapped_file_get_bytes (mapped);
   set_response (msg, "application/jsonl", bytes);
+  {
+    /* Its name for the page (a .dot file is shown by it); safe characters
+     * only. */
+    gchar *base = g_path_get_basename (self->opened), *c, *value;
+
+    for (c = base; *c != '\0'; c++)
+      if (!g_ascii_isalnum (*c) && !strchr ("._-", *c))
+        *c = '_';
+    value = g_strdup_printf ("inline; filename=\"%s\"", base);
+    soup_message_headers_replace (soup_server_message_get_response_headers
+        (msg), "Content-Disposition", value);
+    g_free (value);
+    g_free (base);
+  }
   g_bytes_unref (bytes);
   g_mapped_file_unref (mapped);
 }

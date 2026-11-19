@@ -985,3 +985,8 @@ body.welcoming .toolbar { display: none; }
   .perf-table td:nth-child(4) .perf-bar { display: none; }
   .perf-other td:first-child { padding-left: 24px; }
 }
+
+/* A .dot file: one moment of the graph, nothing measured. */
+body.viewing-dot #performance-counter, body.viewing-dot #problems-counter,
+body.viewing-dot #log-counter, body.viewing-dot #threads,
+body.viewing-dot #process-perf { display: none; }

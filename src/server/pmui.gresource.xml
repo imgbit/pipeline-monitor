@@ -20,6 +20,8 @@
     <file>dock.js</file>
     <file>findings.js</file>
     <file>performance.js</file>
+    <file>dot.js</file>
+    <file>factories.json</file>
     <file>vendor/elkjs/elk-api.js</file>
     <file compressed="true">vendor/elkjs/elk-worker.min.js</file>
   </gresource>

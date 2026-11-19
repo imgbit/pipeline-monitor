@@ -150,7 +150,9 @@ export function showDetails(aside, selection, index, onClose, log, queue) {
     add(dl, "dt", k);
     add(dl, "dd", v);
   };
-  row("factory", element.factory || "—");
+  row("factory", element.factory ? element.factory_looked_up
+    ? `${element.factory} (looked up from the type)` : element.factory
+    : "—");
   row("type", element.type);
   row("state", element.pending ? `${element.state} → ${element.pending}`
     : element.state);

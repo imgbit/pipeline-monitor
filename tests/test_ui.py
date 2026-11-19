@@ -1418,6 +1418,137 @@ def fill_difference(a, b):
                      rt * (dc / sc) * (dhh / sh))
 
 
+DOT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data",
+                       "dot")
+
+# Reads a .dot in the page (dot.js): {elements, pads, links, caps,
+# accepts}, or {error}.
+DOT_COUNT = """async (text) => { const m = await import('/dot.js');
+  try { const g = m.dotToGraph(m.parseDot(text));
+    let elements = 0, pads = 0, caps = 0, accepts = 0;
+    const v = (e) => { elements++; for (const p of e.pads) { pads++;
+      if (p.caps) caps++; if (p.accepts) accepts++; }
+      e.children.forEach(v); };
+    g.pipelines.forEach(v);
+    return {elements, pads, links: g.links.length, caps, accepts};
+  } catch (e) { return {error: String(e)}; } }"""
+
+
+# GStreamer's .dot of a running pipeline (GET /api/dot) read by the page
+# gives the same elements, bins, pads and links as the tracer's own graph
+# of that moment; the sample files are read whole, at every detail level.
+def check_dot_reading(browser, serve):
+    pipelines = [
+        "videotestsrc is-live=true ! tee name=t t. ! queue ! fakesink "
+        "t. ! queue ! fakesink",
+        "videotestsrc is-live=true ! jpegenc ! decodebin3 ! videoconvert ! "
+        "queue ! fakesink sync=true",
+        "audiotestsrc is-live=true ! audioconvert ! audioresample ! queue ! "
+        "fakesink sync=true",
+    ]
+    compare = """async () => {
+      const m = await import('/dot.js');
+      const graph = await (await fetch('/api/graph')).json();
+      const dot = await (await fetch('/api/dot?pipeline=' +
+        graph.pipelines[0].id)).text();
+      const real = await (await fetch('/api/graph')).json();
+      const read = m.dotToGraph(m.parseDot(dot));
+      const flat = (g) => { const els = {}, pads = {}, byId = {};
+        const v = (e) => { els[e.path] = e.bin;
+          for (const p of e.pads) { byId[p.id] = p.path;
+            pads[p.path] = [p.direction, !!p.ghost, p.presence ?? null]; }
+          e.children.forEach(v); };
+        g.pipelines.forEach(v);
+        const links = g.links.filter(l => byId[l.src] && byId[l.sink])
+          .map(l => byId[l.src] + ' > ' + byId[l.sink]).sort();
+        return {els, pads, links}; };
+      const a = flat(real), b = flat(read), out = [];
+      const keys = (x) => Object.keys(x).sort().join('|');
+      if (keys(a.els) !== keys(b.els)) out.push('elements');
+      for (const k in a.els) if (a.els[k] !== b.els[k]) out.push('bin ' + k);
+      if (keys(a.pads) !== keys(b.pads)) out.push('pads');
+      for (const k in b.pads) { const [d, g, p] = b.pads[k];
+        if (a.pads[k] && (a.pads[k][0] !== d || a.pads[k][1] !== g ||
+            (p !== null && a.pads[k][2] !== p))) out.push('pad ' + k); }
+      if (a.links.join() !== b.links.join()) out.push('links');
+      return {elements: Object.keys(b.els).length, differences: out};
+    }"""
+    for description in pipelines:
+        server, url = start_server(serve, description)
+        try:
+            browser.call("Page.navigate", url=url)
+            assert browser.wait(f"{NODES} > 2", timeout=15)
+            time.sleep(1.5)
+            result = browser.eval(f"({compare})()")
+            assert not result["differences"] and result["elements"] > 2, \
+                f"{description}: the .dot reads differently: {result}"
+        finally:
+            server.terminate()
+            server.wait()
+    # The samples (tests/make-dot-fixtures.py): whole, at every level; read
+    # before negotiation, links say what each side accepts.
+    server, url = start_server(serve, "videotestsrc ! fakesink")
+    try:
+        browser.call("Page.navigate", url=url)
+        assert browser.wait(f"{NODES} > 0", timeout=15)
+        expected = {"tee": (7, 10, 5), "names": (4, 4, 2), "mux": (10, 16, 8)}
+        for name in sorted(os.listdir(DOT_DIR)):
+            with open(os.path.join(DOT_DIR, name), encoding="utf-8") as f:
+                got = browser.eval(f"({DOT_COUNT})({json.dumps(f.read())})")
+            assert "error" not in got, f"{name}: {got}"
+            pipeline, level = name.split(".")[:2]
+            if pipeline in expected:
+                assert (got["elements"], got["pads"], got["links"]) == \
+                    expected[pipeline], f"{name}: {got}"
+            if level == "ready":
+                assert got["accepts"] > 0, f"{name}: nothing accepted: {got}"
+            if level == "states":
+                assert got["caps"] == 0, f"{name}: caps without the flag"
+        # Not a GStreamer graph, or damaged: refused, never a page error.
+        for text in ("", "graph g { a -- b }", "digraph g {", "digraph",
+                     "digraph g { subgraph cluster_x { ", "{" * 300,
+                     "digraph g { a -> }", "\x00digraph"):
+            got = browser.eval(f"({DOT_COUNT})({json.dumps(text)})")
+            assert "error" in got, f"{text!r} was read: {got}"
+        assert not browser.errors, f"errors in the page: {browser.errors}"
+    finally:
+        server.terminate()
+        server.wait()
+
+
+# A .dot added to the viewer: one moment, named by its file; the factory
+# looked up; what does not apply (performance, problems, log) hidden.
+def check_dot_viewer(browser):
+    banner = "document.getElementById('viewing')"
+    path = os.path.join(DOT_DIR, "names.all.dot")
+    browser.set_file("#file-input", path)
+    open_added(browser, "names.all.dot")
+    assert browser.wait(f"!{banner}.hidden && document.getElementById("
+                        "'viewing-text').textContent.startsWith("
+                        "'names.all.dot')"), "the .dot did not open"
+    assert browser.eval("['performance-counter', 'problems-counter', "
+                        "'log-counter'].every(id => getComputedStyle("
+                        "document.getElementById(id)).display === 'none')"), \
+        "panels that do not apply are shown"
+    odd = 'a b "c" ł'
+    assert browser.wait(f"!!{element_selector(odd)}"), "no element by name"
+    node = browser.eval(f"{element_selector(odd)}?.dataset.id")
+    assert browser.click_until(
+        f'#graph .node[data-id="{node}"] > rect.box',
+        f"document.querySelector('#details h2')?.textContent === "
+        f"{json.dumps(odd)}"), "could not select it"
+    factory = ("[...document.querySelectorAll('#details dl dt')].find(d => "
+               "d.textContent === 'factory')?.nextElementSibling.textContent")
+    assert browser.eval(factory) == "identity (looked up from the type)", \
+        browser.eval(factory)
+    close_details(browser)
+    browser.click("#viewing-close")
+    assert browser.wait(f"{banner}.hidden")
+    assert browser.eval("getComputedStyle(document.getElementById("
+                        "'problems-counter')).display !== 'none'"), \
+        "the panels stay hidden after the .dot is closed"
+
+
 # A phone: the page as wide as the screen, the header in two rows; a pinch
 # zooms the graph, a tap on an element shows its details.
 def check_phone(browser, serve):
@@ -1935,6 +2066,7 @@ def check_viewer(browser, rows, url):
     check_moments(browser, os.path.join(RECORDINGS, name))
     check_stream_levels(browser, os.path.join(RECORDINGS, name))
     check_unknown_cpu(browser, os.path.join(RECORDINGS, name))
+    check_dot_viewer(browser)
     check_snapshot(browser, os.path.join(RECORDINGS, name))
     check_finding_age(browser, os.path.join(RECORDINGS, name))
     check_performance_recording(browser, os.path.join(RECORDINGS, name))
@@ -3099,6 +3231,16 @@ def check_site(browser, serve):
                                 f"demo')].some(r => r.textContent.includes("
                                 f"{json.dumps(name)}))"), \
                 f"the episode recording {name} is in the demo list"
+        # A GStreamer .dot from a link: opened like a snapshot.
+        shutil.copy(os.path.join(DOT_DIR, "tee.all.dot"),
+                    os.path.join(site, "pipeline-monitor", "graph.dot"))
+        browser.call("Page.navigate", url="about:blank")
+        browser.call("Page.navigate", url=f"{base}/pipeline-monitor/#file="
+                     "graph.dot")
+        assert browser.wait(f"!{banner}.hidden && document.getElementById("
+                            "'viewing-text').textContent.startsWith("
+                            "'graph.dot') && !!" + element_selector("t")), \
+            "a .dot from a link did not open"
         # A link that cannot be read: said so.
         browser.call("Page.navigate", url="about:blank")
         browser.call("Page.navigate", url=f"{base}/pipeline-monitor/#file="
@@ -3318,6 +3460,19 @@ def check_command(browser, serve, tool):
                      "button')?.click()")
         assert browser.wait(f"!!{element_selector('q-r')}"), \
             "no pipeline in the file opened by the command"
+    finally:
+        tool_proc.terminate()
+        tool_proc.wait()
+    # A GStreamer .dot, shown by its name.
+    tool_proc, url = run("open", os.path.join(DOT_DIR, "tee.all.dot"))
+    try:
+        browser.call("Page.navigate", url="about:blank")
+        browser.call("Page.navigate", url=url)
+        assert browser.wait(f"!{banner}.hidden && document.getElementById("
+                            "'viewing-text').textContent.startsWith("
+                            "'tee.all.dot')", timeout=10), \
+            "open FILE.dot did not show it"
+        assert browser.wait(f"!!{element_selector('t')}"), "no tee"
     finally:
         tool_proc.terminate()
         tool_proc.wait()
@@ -3629,6 +3784,7 @@ def main():
             check_funnel_threads(browser, serve)
             check_pin_cards_apart(browser, serve)
             check_phone(browser, serve)
+            check_dot_reading(browser, serve)
     finally:
         if browser:
             browser.close()

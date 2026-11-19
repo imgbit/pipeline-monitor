@@ -19,6 +19,7 @@ import { Measuring } from "./measure.js";
 import { FindingsView } from "./findings.js";
 import { RecordingsView } from "./recordings.js";
 import { Dock } from "./dock.js";
+import { dotToRecording, factories, looksLikeDot } from "./dot.js";
 
 const $ = (id) => document.getElementById(id);
 const COLLAPSED_KEY = "pipeline-monitor.collapsed";
@@ -78,6 +79,9 @@ function padRows(p, index) {
     rows.push(["presence", pad.presence]);
   if (pad.ghost)
     rows.push(["ghost", "yes"]);
+  // From a .dot: a link not negotiated, what this side accepts.
+  if (typeof pad.accepts === "string" && pad.accepts)
+    rows.push(["accepts", pad.accepts]);
   const peers = index.peers.get(pad.id) || [];
   rows.push(["linked to", peers.length
     ? peers.map((id) => index.padName(id)).join(", ") : "—"]);
@@ -1144,8 +1148,12 @@ function showRecording(text, name, title = null) {
   document.body.classList.add("viewing");
   const program = header.hello?.program ?? "a program";
   const when = new Date(header.started / 1000).toLocaleString();
-  $("viewing-text").textContent = title ?? (header.kind === "snapshot"
-    ? `Snapshot of ${program}, ${when}` : `Recording of ${program}, ${when}`);
+  const dot = header.source === "dot";
+  document.body.classList.toggle("viewing-dot", dot);
+  $("viewing-text").textContent = dot
+    ? `${header.name ?? "A .dot file"}: GStreamer's graph of one moment`
+    : title ?? (header.kind === "snapshot"
+      ? `Snapshot of ${program}, ${when}` : `Recording of ${program}, ${when}`);
   $("playback").hidden = header.kind === "snapshot";
   $("speed").textContent = "1×";
   $("viewing").hidden = false;
@@ -1512,6 +1520,7 @@ function closeRecording() {
   closeEdit();
   $("play").classList.remove("glow");
   state.viewing = null;
+  document.body.classList.remove("viewing-dot");
   recordings.setShown(null);
   pins.replaceAll([]);
   elementPins.replaceAll([]);
@@ -1534,7 +1543,14 @@ async function openStored(name) {
     const r = await fetch(url);
     if (!r.ok)
       throw new Error(r.statusText);
-    openRecording(await r.text(), name, { name });
+    let text = await r.text();
+    // pipeline-monitor open FILE.dot, shown by its name.
+    if (looksLikeDot(text)) {
+      const file = /filename="([^"]*)"/.exec(
+        r.headers.get("Content-Disposition") || "")?.[1] || name;
+      text = dotToRecording(text, file, await factories(), Date.now() * 1000);
+    }
+    openRecording(text, name, { name });
     history.replaceState(null, "", `#viewer=${encodeURIComponent(name)}`);
   } catch {
     recordings.showError(`Cannot read ${name}.`);
@@ -1586,9 +1602,9 @@ async function openLink(url) {
   const name = decodeURIComponent(new URL(url, location.href).pathname
     .split("/").pop() || "recording.jsonl");
   const file = new File([text], name);
-  await recordings.addFile(file, url);
-  if (recordings.files.some((f) => f.file === file))
-    openFile(file);
+  const added = await recordings.addFile(file, url);
+  if (added && recordings.files.some((f) => f.file === added))
+    openFile(added);
 }
 
 // The site's demo recordings: [{title, file, kind, started, last, size}].
@@ -1628,8 +1644,9 @@ $("welcome-file").addEventListener("change", async () => {
   $("welcome-file").value = "";
   if (!file)
     return;
-  if (await recordings.addFile(file))
-    openFile(file);
+  const added = await recordings.addFile(file);
+  if (added)
+    openFile(added);
   else
     dock.open("recordings");
 });

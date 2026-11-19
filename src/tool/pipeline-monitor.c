@@ -19,7 +19,8 @@ static const gchar *usage =
     "[open [FILE]]\n\n"
     "Shows pipeline-monitor recordings in the browser, without a program:\n"
     "  pipeline-monitor              the recordings in the folder\n"
-    "  pipeline-monitor open FILE    that recording, opened\n\n"
+    "  pipeline-monitor open FILE    that recording, or a GStreamer .dot "
+    "file\n\n"
     "To watch a running program, use the tracer instead:\n"
     "  GST_TRACERS=pipeline-monitor your-program";
 

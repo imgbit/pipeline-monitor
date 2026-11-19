@@ -1,0 +1,72 @@
+digraph pipeline {
+  rankdir=LR;
+  fontname="sans";
+  fontsize="10";
+  labelloc=t;
+  nodesep=.1;
+  ranksep=.2;
+  label="<GstPipeline>\npipeline3";
+  node [style="filled,rounded", shape=box, fontsize="9", fontname="sans", margin="0.0,0.0"];
+  edge [labelfontsize="6", fontsize="9", fontname="monospace"];
+  
+  legend [
+    pos="0,0!",
+    margin="0.05,0.05",
+    style="filled",
+    label="Legend\lElement-States: [~] void-pending, [0] null, [-] ready, [=] paused, [>] playing\lPad-Activation: [-] none, [>] push, [<] pull\lPad-Flags: [b]locked, [f]lushing, [b]locking, [E]OS; upper-case is set\lPad-Task: [T] has started task, [t] has paused task\l",
+  ];
+  subgraph cluster_node_fakesink4_0x980d21490 {
+    fontname="Bitstream Vera Sans";
+    fontsize="8";
+    style="filled,rounded";
+    color=black;
+    label="GstFakeSink\nfakesink4";
+    subgraph cluster_node_fakesink4_0x980d21490_sink {
+      label="";
+      style="invis";
+      node_fakesink4_0x980d21490_node_sink_0x980834cc0 [color=black, fillcolor="#aaaaff", label="sink", height="0.2", style="filled,solid"];
+    }
+
+    fillcolor="#aaaaff";
+  }
+
+  subgraph cluster_node_a_b__c_____0x980e20fd0 {
+    fontname="Bitstream Vera Sans";
+    fontsize="8";
+    style="filled,rounded";
+    color=black;
+    label="GstIdentity\na b "c" ł";
+    subgraph cluster_node_a_b__c_____0x980e20fd0_sink {
+      label="";
+      style="invis";
+      node_a_b__c_____0x980e20fd0_node_sink_0x980e739c0 [color=black, fillcolor="#aaaaff", label="sink", height="0.2", style="filled,solid"];
+    }
+
+    subgraph cluster_node_a_b__c_____0x980e20fd0_src {
+      label="";
+      style="invis";
+      node_a_b__c_____0x980e20fd0_node_src_0x980836340 [color=black, fillcolor="#ffaaaa", label="src", height="0.2", style="filled,solid"];
+    }
+
+    node_a_b__c_____0x980e20fd0_node_sink_0x980e739c0 -> node_a_b__c_____0x980e20fd0_node_src_0x980836340 [style="invis"];
+    fillcolor="#aaffaa";
+  }
+
+  node_a_b__c_____0x980e20fd0_node_src_0x980836340 -> node_fakesink4_0x980d21490_node_sink_0x980834cc0 [label="video/x-raw"]
+  subgraph cluster_node_videotestsrc3_0x980da5ee0 {
+    fontname="Bitstream Vera Sans";
+    fontsize="8";
+    style="filled,rounded";
+    color=black;
+    label="GstVideoTestSrc\nvideotestsrc3";
+    subgraph cluster_node_videotestsrc3_0x980da5ee0_src {
+      label="";
+      style="invis";
+      node_videotestsrc3_0x980da5ee0_node_src_0x980e73c40 [color=black, fillcolor="#ffaaaa", label="src", height="0.2", style="filled,solid"];
+    }
+
+    fillcolor="#ffaaaa";
+  }
+
+  node_videotestsrc3_0x980da5ee0_node_src_0x980e73c40 -> node_a_b__c_____0x980e20fd0_node_sink_0x980e739c0 [label="video/x-raw"]
+}

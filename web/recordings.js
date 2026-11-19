@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 import { setCounter } from "./dock.js";
+import { DotError, dotToRecording, factories, looksLikeDot } from "./dot.js";
 
 const COMMANDS = ["record-start", "record-stop", "snapshot", "record-delete"];
 
@@ -96,19 +97,23 @@ export class RecordingsView {
   }
 
   // Adds a file to the top of the list (once): from this computer, or
-  // from a link (its URL). False if it is not a recording.
+  // from a link (its URL). The file as listed (a .dot read as a
+  // recording), or false if it is not one this page can open.
   async addFile(file, link = null) {
     this.showError(null);
     if (!this.filesUsable()) {
       this.showError("Files can be added when the program runs.");
       return false;
     }
-    if (!(await this.add(file, link))) {
-      this.showError(`${file.name} is not a recording this page can open.`);
+    this.dotRefused = null;
+    const added = await this.add(file, link);
+    if (!added) {
+      this.showError(this.dotRefused ??
+        `${file.name} is not a recording this page can open.`);
       return false;
     }
     this.render();
-    return true;
+    return added;
   }
 
   // Several files (chosen or dropped together): the first on top; the
@@ -132,13 +137,30 @@ export class RecordingsView {
   }
 
   async add(file, link) {
+    // A GStreamer .dot file: read as a snapshot of one moment.
+    const head = await file.slice(0, 256).text().catch(() => "");
+    let dot = false;
+    if (/\.dot$/i.test(file.name) || looksLikeDot(head)) {
+      try {
+        const text = await file.text();
+        file = new File([dotToRecording(text, file.name, await factories(),
+          file.lastModified * 1000)], file.name,
+        { lastModified: file.lastModified });
+        dot = true;
+      } catch (e) {
+        if (e instanceof DotError)
+          this.dotRefused = `${file.name} is not a GStreamer pipeline ` +
+            `graph (${e.message}).`;
+        return false;
+      }
+    }
     const summary = await readSummary(file).catch(() => null);
     if (!summary)
       return false;
     this.files = this.files.filter((f) => f.file.name !== file.name ||
       f.file.size !== file.size || f.file.lastModified !== file.lastModified);
-    this.files.unshift({ file, link, ...summary });
-    return true;
+    this.files.unshift({ file, link, ...summary, dot });
+    return file;
   }
 
   setDemos(demos) {
@@ -211,7 +233,7 @@ export class RecordingsView {
     row.title = f.link ? `${f.file.name}, opened from ${f.link}`
       : `${f.file.name}, added from this computer (not uploaded)`;
     add(add(row, "span", undefined, "rec-source"), "span", "file", "rec-tag");
-    add(row, "span", f.kind ?? "?", "rec-kind");
+    add(row, "span", f.dot ? ".dot" : f.kind ?? "?", "rec-kind");
     add(row, "span", new Date(f.started / 1000).toLocaleString(), "rec-time");
     add(row, "span", f.kind === "snapshot" ? "–"
       : duration(f.last - f.started), "rec-duration");

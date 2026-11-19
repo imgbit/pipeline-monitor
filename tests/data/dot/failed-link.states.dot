@@ -1,0 +1,168 @@
+digraph pipeline {
+  rankdir=LR;
+  fontname="sans";
+  fontsize="10";
+  labelloc=t;
+  nodesep=.1;
+  ranksep=.2;
+  label="<GstPipeline>\npipeline1\n[-] -> [>]";
+  node [style="filled,rounded", shape=box, fontsize="9", fontname="sans", margin="0.0,0.0"];
+  edge [labelfontsize="6", fontsize="9", fontname="monospace"];
+  
+  legend [
+    pos="0,0!",
+    margin="0.05,0.05",
+    style="filled",
+    label="Legend\lElement-States: [~] void-pending, [0] null, [-] ready, [=] paused, [>] playing\lPad-Activation: [-] none, [>] push, [<] pull\lPad-Flags: [b]locked, [f]lushing, [b]locking, [E]OS; upper-case is set\lPad-Task: [T] has started task, [t] has paused task\l",
+  ];
+  subgraph cluster_node_fakesink2_0x980da6090 {
+    fontname="Bitstream Vera Sans";
+    fontsize="8";
+    style="filled,rounded";
+    color=black;
+    label="GstFakeSink\nfakesink2\n[-] -> [=]";
+    subgraph cluster_node_fakesink2_0x980da6090_sink {
+      label="";
+      style="invis";
+      node_fakesink2_0x980da6090_node_sink_0x9808360c0 [color=black, fillcolor="#aaaaff", label="sink\n[>][bfb]", height="0.2", style="filled,solid"];
+    }
+
+    fillcolor="#aaaaff";
+  }
+
+  subgraph cluster_node_decodebin0_0x981295b20 {
+    fontname="Bitstream Vera Sans";
+    fontsize="8";
+    style="filled,rounded";
+    color=black;
+    label="GstDecodeBin\ndecodebin0\n[=]";
+    subgraph cluster_node_decodebin0_0x981295b20_sink {
+      label="";
+      style="invis";
+      _node_proxypad0_0x980835e50 [color=black, fillcolor="#ddddff", label="proxypad0\n[>][bfbE]", height="0.2", style="filled,solid"];
+    node_decodebin0_0x981295b20_node_sink_0x980835bd0 -> _node_proxypad0_0x980835e50 [style=dashed, minlen=0]
+      node_decodebin0_0x981295b20_node_sink_0x980835bd0 [color=black, fillcolor="#ddddff", label="sink\n[>][bfb]", height="0.2", style="filled,solid"];
+    }
+
+    subgraph cluster_node_decodebin0_0x981295b20_src {
+      label="";
+      style="invis";
+      _node_proxypad1_0x980834550 [color=black, fillcolor="#ffdddd", label="proxypad1\n[>][bfb]", height="0.2", style="filled,solid"];
+    _node_proxypad1_0x980834550 -> node_decodebin0_0x981295b20_node_src_0_0x981294f50 [style=dashed, minlen=0]
+      node_decodebin0_0x981295b20_node_src_0_0x981294f50 [color=black, fillcolor="#ffdddd", label="src_0\n[>][bfbE]", height="0.2", style="filled,dotted"];
+    }
+
+    node_decodebin0_0x981295b20_node_sink_0x980835bd0 -> node_decodebin0_0x981295b20_node_src_0_0x981294f50 [style="invis"];
+    fillcolor="#ffffff";
+    subgraph cluster_node_vtdechw0_0x980dcac00 {
+      fontname="Bitstream Vera Sans";
+      fontsize="8";
+      style="filled,rounded";
+      color=black;
+      label="GstVtdecHw\nvtdechw0\n[=]";
+      subgraph cluster_node_vtdechw0_0x980dcac00_sink {
+        label="";
+        style="invis";
+        node_vtdechw0_0x980dcac00_node_sink_0x9808342c0 [color=black, fillcolor="#aaaaff", label="sink\n[>][bfb]", height="0.2", style="filled,solid"];
+      }
+
+      subgraph cluster_node_vtdechw0_0x980dcac00_src {
+        label="";
+        style="invis";
+        node_vtdechw0_0x980dcac00_node_src_0x980836840 [color=black, fillcolor="#ffaaaa", label="src\n[>][bfbE][t]", height="0.2", style="filled,solid"];
+      }
+
+      node_vtdechw0_0x980dcac00_node_sink_0x9808342c0 -> node_vtdechw0_0x980dcac00_node_src_0x980836840 [style="invis"];
+      fillcolor="#aaffaa";
+    }
+
+    node_vtdechw0_0x980dcac00_node_src_0x980836840 -> _node_proxypad1_0x980834550
+    subgraph cluster_node_jpegparse0_0x980da4e70 {
+      fontname="Bitstream Vera Sans";
+      fontsize="8";
+      style="filled,rounded";
+      color=black;
+      label="GstJpegParse\njpegparse0\n[=]";
+      subgraph cluster_node_jpegparse0_0x980da4e70_sink {
+        label="";
+        style="invis";
+        node_jpegparse0_0x980da4e70_node_sink_0x9808347c0 [color=black, fillcolor="#aaaaff", label="sink\n[>][bfb]", height="0.2", style="filled,solid"];
+      }
+
+      subgraph cluster_node_jpegparse0_0x980da4e70_src {
+        label="";
+        style="invis";
+        node_jpegparse0_0x980da4e70_node_src_0x980834040 [color=black, fillcolor="#ffaaaa", label="src\n[>][bfbE]", height="0.2", style="filled,solid"];
+      }
+
+      node_jpegparse0_0x980da4e70_node_sink_0x9808347c0 -> node_jpegparse0_0x980da4e70_node_src_0x980834040 [style="invis"];
+      fillcolor="#aaffaa";
+    }
+
+    node_jpegparse0_0x980da4e70_node_src_0x980834040 -> node_vtdechw0_0x980dcac00_node_sink_0x9808342c0
+    subgraph cluster_node_typefind_0x981338600 {
+      fontname="Bitstream Vera Sans";
+      fontsize="8";
+      style="filled,rounded";
+      color=black;
+      label="GstTypeFindElement\ntypefind\n[=]";
+      subgraph cluster_node_typefind_0x981338600_sink {
+        label="";
+        style="invis";
+        node_typefind_0x981338600_node_sink_0x9808356c0 [color=black, fillcolor="#aaaaff", label="sink\n[>][bfb]", height="0.2", style="filled,solid"];
+      }
+
+      subgraph cluster_node_typefind_0x981338600_src {
+        label="";
+        style="invis";
+        node_typefind_0x981338600_node_src_0x980835940 [color=black, fillcolor="#ffaaaa", label="src\n[>][bfbE]", height="0.2", style="filled,solid"];
+      }
+
+      node_typefind_0x981338600_node_sink_0x9808356c0 -> node_typefind_0x981338600_node_src_0x980835940 [style="invis"];
+      fillcolor="#aaffaa";
+    }
+
+    _node_proxypad0_0x980835e50 -> node_typefind_0x981338600_node_sink_0x9808356c0
+    node_typefind_0x981338600_node_src_0x980835940 -> node_jpegparse0_0x980da4e70_node_sink_0x9808347c0
+  }
+
+  subgraph cluster_node_jpegenc0_0x9818c0160 {
+    fontname="Bitstream Vera Sans";
+    fontsize="8";
+    style="filled,rounded";
+    color=black;
+    label="GstJpegEnc\njpegenc0\n[=]";
+    subgraph cluster_node_jpegenc0_0x9818c0160_sink {
+      label="";
+      style="invis";
+      node_jpegenc0_0x9818c0160_node_sink_0x980834f40 [color=black, fillcolor="#aaaaff", label="sink\n[>][bfb]", height="0.2", style="filled,solid"];
+    }
+
+    subgraph cluster_node_jpegenc0_0x9818c0160_src {
+      label="";
+      style="invis";
+      node_jpegenc0_0x9818c0160_node_src_0x9808351c0 [color=black, fillcolor="#ffaaaa", label="src\n[>][bfbE]", height="0.2", style="filled,solid"];
+    }
+
+    node_jpegenc0_0x9818c0160_node_sink_0x980834f40 -> node_jpegenc0_0x9818c0160_node_src_0x9808351c0 [style="invis"];
+    fillcolor="#aaffaa";
+  }
+
+  node_jpegenc0_0x9818c0160_node_src_0x9808351c0 -> node_decodebin0_0x981295b20_node_sink_0x980835bd0
+  subgraph cluster_node_videotestsrc1_0x980d212e0 {
+    fontname="Bitstream Vera Sans";
+    fontsize="8";
+    style="filled,rounded";
+    color=black;
+    label="GstVideoTestSrc\nvideotestsrc1\n[=]";
+    subgraph cluster_node_videotestsrc1_0x980d212e0_src {
+      label="";
+      style="invis";
+      node_videotestsrc1_0x980d212e0_node_src_0x980834cc0 [color=black, fillcolor="#ffaaaa", label="src\n[>][bfbE][t]", height="0.2", style="filled,solid"];
+    }
+
+    fillcolor="#ffaaaa";
+  }
+
+  node_videotestsrc1_0x980d212e0_node_src_0x980834cc0 -> node_jpegenc0_0x9818c0160_node_sink_0x980834f40
+}
