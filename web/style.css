@@ -963,3 +963,25 @@ body.welcoming .toolbar { display: none; }
 .perf-toggle { width: 20px; height: 20px; padding: 0; line-height: 1;
   font-variant-numeric: tabular-nums; }
 .perf-other td:first-child { padding-left: 32px; }
+
+/* Narrow screens: the cards wrap; each thread a short block: name and CPU,
+   then its kind and last minute, then what it runs. */
+@media (max-width: 600px) {
+  .perf-body { padding: 8px 12px; }
+  .perf-top { flex-wrap: wrap; gap: 12px 20px; }
+  .perf-card { min-width: 0; flex: 1 1 140px; }
+  .perf-card .spark { width: 100%; }
+  .perf-table, .perf-table tbody { display: block; }
+  .perf-table tr:first-child { display: none; }
+  .perf-table tr { display: grid; grid-template-columns: 1fr auto;
+    column-gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+  .perf-table td { display: block; padding: 0; border: none; }
+  .perf-table td:nth-child(1) { grid-column: 1; grid-row: 1; }
+  .perf-table td:nth-child(3) { grid-column: 2; grid-row: 1; }
+  .perf-table td:nth-child(2) { grid-column: 1; grid-row: 2;
+    font-size: 12px; }
+  .perf-table td:nth-child(4) { grid-column: 2; grid-row: 2; }
+  .perf-table td:nth-child(5) { grid-column: 1 / -1; grid-row: 3; }
+  .perf-table td:nth-child(4) .perf-bar { display: none; }
+  .perf-other td:first-child { padding-left: 24px; }
+}

@@ -192,9 +192,9 @@ export class PerformanceView {
     const tr = el("tr");
     const name = el("td");
     const colour = this.threads?.colours.get(t.id)?.line;
+    // Grey where the graph gives the thread no colour: names line up.
     const swatch = el("span", "swatch");
-    if (colour)
-      swatch.style.background = colour;
+    swatch.style.background = colour || "var(--border)";
     name.append(swatch, document.createTextNode(t.name ||
       (t.main ? "main" : `thread ${t.os}`)));
     const kind = t.task ? "streaming"
