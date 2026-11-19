@@ -8,7 +8,7 @@ properties. It is a GStreamer tracer: your program needs no changes.
 **Try it first, without installing:** open a demo recording in the
 [viewer](../) on this site.
 
-![pipeline-monitor measuring a pipeline: latency under every element, a pinned pad, the audio queue's details](images/overview.png)
+![pipeline-monitor measuring a pipeline in the threads view: each element in the colour of its thread, latency under every element, a pinned pad, the audio queue's details](images/overview.png)
 
 ### Install
 
