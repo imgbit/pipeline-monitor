@@ -1545,10 +1545,16 @@ def check_threads_view(browser, serve):
             "performance: " + str(browser.eval(f"{body}.textContent"))
         rows = f"{body}.querySelectorAll('tr').length"
         summed = browser.eval(rows)
-        browser.eval("document.getElementById('performance-others').click()")
-        assert browser.wait(f"{rows} > {summed}"), \
+        toggle = f"{body}.querySelector('.perf-toggle')"
+        assert browser.eval(f"{toggle}.textContent") == "+"
+        browser.eval(f"{toggle}.click()")
+        assert browser.wait(f"{rows} > {summed} && {toggle}.textContent === "
+                            f"'−' && {toggle}.getAttribute('aria-expanded') "
+                            "=== 'true'"), \
             "the other threads not listed one by one"
-        browser.eval("document.getElementById('performance-others').click()")
+        browser.eval(f"{toggle}.click()")
+        assert browser.wait(f"{rows} === {summed}"), \
+            "the other threads not added up again"
         link = (f"[...{body}.querySelectorAll('.perf-element')].find(b => "
                 "b.textContent === 'tsink')")
         browser.eval(f"{link}.click()")
@@ -1829,6 +1835,7 @@ def check_viewer(browser, rows, url):
     check_bad_recordings(browser, os.path.join(RECORDINGS, name))
     check_moments(browser, os.path.join(RECORDINGS, name))
     check_stream_levels(browser, os.path.join(RECORDINGS, name))
+    check_unknown_cpu(browser, os.path.join(RECORDINGS, name))
     check_snapshot(browser, os.path.join(RECORDINGS, name))
     check_finding_age(browser, os.path.join(RECORDINGS, name))
     check_performance_recording(browser, os.path.join(RECORDINGS, name))
@@ -2091,6 +2098,46 @@ def check_moments(browser, good):
 # A multiqueue shows a bar and a number per stream, on the stream's row
 # between its pad names, and no level for the whole element; a queue keeps
 # its one label with the limit.
+# Other threads whose CPU is not known yet (the first sample): "–", not
+# "0 %"; the + lists them one by one, and the choice is kept.
+def check_unknown_cpu(browser, good):
+    with open(good) as f:
+        header = json.loads(f.readline())
+    started = header["started"]
+    graph = {"type": "graph", "protocol": 1, "time": started, "links": [],
+             "threads": [], "pipelines": [{
+                 "id": 1, "name": "p", "path": "p", "factory": "pipeline",
+                 "type": "GstPipeline", "bin": True, "state": "PLAYING",
+                 "pads": [], "children": []}]}
+    perf = {"type": "performance", "protocol": 1, "time": started + 1000,
+            "cores": 4, "process": {"cpu": None, "memory": 20000000,
+                                    "threads": 2},
+            "threads": [{"os": 11, "name": "one", "cpu": None},
+                        {"os": 12, "name": "two", "cpu": None}]}
+    open_messages(browser, header, [graph, perf, {
+        "type": "end", "protocol": 1, "time": started + 2000,
+        "reason": "stopped"}], "unknown-cpu.jsonl")
+    assert browser.wait("!document.getElementById('viewing').hidden"), \
+        "the recording did not open"
+    browser.eval("(s => { s.value = s.max; s.dispatchEvent(new Event("
+                 "'input')); })(document.getElementById('seek'))")
+    open_panel(browser, "performance")
+    row = "document.querySelector('#performance-body .perf-others')"
+    assert browser.wait(f"!!{row}"), "no other threads row"
+    cells = f"[...{row}.cells].map(c => c.textContent)"
+    assert browser.eval(f"{cells}[0].includes('other threads (2)') && "
+                        f"{cells}[2] === '–'"), \
+        "unknown CPU shown as: " + str(browser.eval(cells))
+    browser.eval(f"{row}.querySelector('.perf-toggle').click()")
+    others = "document.querySelectorAll('#performance-body .perf-other')"
+    assert browser.wait(f"{others}.length === 2"), "not listed one by one"
+    close_panel(browser, "performance")
+    open_panel(browser, "performance")
+    assert browser.wait(f"{others}.length === 2"), "the choice was not kept"
+    browser.eval(f"{row}.querySelector('.perf-toggle').click()")
+    close_panel(browser, "performance")
+
+
 def check_stream_levels(browser, good):
     with open(good) as f:
         header = json.loads(f.readline())
@@ -3022,8 +3069,8 @@ def check_site(browser, serve):
                 if browser.eval("document.getElementById('threads')"
                                 ".getAttribute('aria-pressed') !== 'true'"):
                     browser.click("#threads")
-                browser.eval("document.getElementById('performance-others')"
-                             ".click()")
+                browser.eval("document.querySelector('#performance-body "
+                             ".perf-toggle')?.click()")
                 browser.eval(seek.format(1000))
                 body = ("document.getElementById('performance-body')"
                         ".innerText")

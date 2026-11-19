@@ -304,9 +304,12 @@ const dock = new Dock({
 
 // The last minute of "performance" messages, live.
 const PERF_WINDOW = 60 * 1000000;
-const perfView = new PerformanceView({
-  body: $("performance-body"), others: $("performance-others"),
-}, { select: (id) => view.handlers.select(id) });
+const PERF_OTHERS_KEY = "pipeline-monitor.perf-others";
+const perfView = new PerformanceView({ body: $("performance-body") }, {
+  select: (id) => view.handlers.select(id),
+  othersOpen: loadFlag(PERF_OTHERS_KEY),
+  setOthersOpen: (open) => saveFlag(PERF_OTHERS_KEY, open),
+});
 
 $("performance-counter").addEventListener("click", () => {
   if (dock.current === "performance")

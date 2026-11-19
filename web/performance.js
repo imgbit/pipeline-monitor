@@ -69,11 +69,12 @@ export function cleanPerformance(m) {
 }
 
 export class PerformanceView {
-  // nodes: {body, others}; handlers: {select(element id)}.
+  // nodes: {body}; handlers: {select(element id), othersOpen (whether the
+  // other threads start listed one by one), setOthersOpen(open)}.
   constructor(nodes, handlers) {
     this.nodes = nodes;
     this.handlers = handlers;
-    nodes.others.addEventListener("change", () => this.render());
+    this.othersOpen = Boolean(handlers.othersOpen);
   }
 
   // history: "performance" messages, oldest first, the last minute;
@@ -141,23 +142,41 @@ export class PerformanceView {
       m.threads?.find((t) => t.os === os)?.cpu ?? null);
     for (const t of known)
       table.append(this.row(t, history(t.os)));
-    if (this.nodes.others.checked) {
-      for (const t of others)
-        table.append(this.row(t, history(t.os)));
-    } else if (others.length) {
-      const cpu = others.reduce((sum, t) => sum + (t.cpu ?? 0), 0);
-      const sums = this.history.map((m) => (m.threads || [])
-        .filter((t) => t.id === undefined)
-        .reduce((sum, t) => sum + (t.cpu ?? 0), 0));
+    if (others.length) {
+      // Added up; unknown (no sample before) only if none is known.
+      const sum = (threads) => {
+        const known = threads.filter((t) => t.cpu !== null);
+        return known.length
+          ? known.reduce((total, t) => total + t.cpu, 0) : null;
+      };
+      const sums = this.history.map((m) =>
+        sum((m.threads || []).filter((t) => t.id === undefined)));
       const tr = el("tr", "perf-others");
-      tr.append(el("td", null, `other threads (${others.length})`),
-        el("td", "muted", "move no data through pads"),
-        el("td", "num", percent(cpu)));
+      const name = el("td");
+      const toggle = el("button", "perf-toggle", this.othersOpen ? "−" : "+");
+      toggle.setAttribute("aria-expanded", String(this.othersOpen));
+      toggle.title = this.othersOpen ? "Add them up again"
+        : "List them one by one";
+      toggle.addEventListener("click", () => {
+        this.othersOpen = !this.othersOpen;
+        this.handlers.setOthersOpen?.(this.othersOpen);
+        this.render();
+      });
+      name.append(toggle, document.createTextNode(
+        ` other threads (${others.length})`));
+      tr.append(name, el("td", "muted", "move no data through pads"),
+        el("td", "num", percent(sum(others))));
       const spark = el("td");
-      spark.append(sparkline(sums, Math.max(1, ...sums), "var(--muted)", 110,
-        18));
+      spark.append(sparkline(sums, Math.max(1, ...sums.filter((v) =>
+        v !== null)), "var(--muted)", 110, 18));
       tr.append(spark, el("td", "muted", "–"));
       table.append(tr);
+      if (this.othersOpen)
+        for (const t of others) {
+          const row = this.row(t, history(t.os));
+          row.classList.add("perf-other");
+          table.append(row);
+        }
     }
     return table;
   }

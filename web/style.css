@@ -895,3 +895,6 @@ body.welcoming .toolbar { display: none; }
 .perf-element { border: none; background: none; padding: 0;
   color: var(--accent); cursor: pointer; font: inherit; }
 .perf-others td:first-child { color: var(--muted); }
+.perf-toggle { width: 20px; height: 20px; padding: 0; line-height: 1;
+  font-variant-numeric: tabular-nums; }
+.perf-other td:first-child { padding-left: 32px; }
