@@ -156,6 +156,9 @@ export class Pins {
     const pin = {
       ...OFFSET, detached: false, x: 0, y: 0, folded: false, ...saved,
       id: null, sent: false, gone: false, stats: null, video: false,
+      // A new card gets a place free of other cards when first drawn; a
+      // remembered one keeps its own.
+      fresh: !(saved && "dx" in saved),
     };
     this.buildCard(pin);
     this.pins.set(pin.path, pin);
@@ -505,6 +508,12 @@ export class Pins {
         continue;
       }
       card.hidden = false;
+      // Placed once it has its values: a pad's card grows when they come.
+      if (pin.fresh && !pin.detached && (pin.props || pin.stats)) {
+        this.findPlace(pin, at, width, height);
+        pin.fresh = false;
+        this.save();
+      }
       let left = pin.detached ? pin.x : at.x + pin.dx;
       let top = pin.detached ? pin.y : at.y + pin.dy;
       if (pin.detached) {
@@ -517,6 +526,36 @@ export class Pins {
       if (point && (!pin.detached || this.hovered === pin))
         this.line(point, left, top, card, pin.detached);
     }
+  }
+
+  // Where a new card covers no placed card: the usual place next to its
+  // pad, or beside, above or below a card in the way, whichever is nearest
+  // the usual place; inside the view across, its title row visible.
+  findPlace(pin, at, width, height) {
+    const w = pin.card.offsetWidth;
+    const h = pin.card.offsetHeight;
+    const gap = 8;
+    const others = [...this.pins.values()].filter((p) => p !== pin &&
+      !p.fresh && !p.card.hidden).map((p) => ({ left: p.card.offsetLeft,
+      top: p.card.offsetTop, right: p.card.offsetLeft + p.card.offsetWidth,
+      bottom: p.card.offsetTop + p.card.offsetHeight }));
+    const usual = { left: at.x + OFFSET.dx, top: at.y + OFFSET.dy };
+    const candidates = [usual];
+    for (const o of others)
+      candidates.push({ left: o.right + gap, top: usual.top },
+        { left: o.left - gap - w, top: usual.top },
+        { left: usual.left, top: o.bottom + gap },
+        { left: usual.left, top: o.top - gap - h });
+    const fits = ({ left, top }) => left >= 0 && left + w <= width &&
+      top >= 0 && top + 40 <= height && others.every((o) =>
+      left + w + gap <= o.left || left >= o.right + gap ||
+        top + h + gap <= o.top || top >= o.bottom + gap);
+    const distance = (c) => Math.hypot(c.left - usual.left,
+      c.top - usual.top);
+    const best = candidates.filter(fits).sort((a, b) =>
+      distance(a) - distance(b))[0] || usual;
+    pin.dx = best.left - at.x;
+    pin.dy = best.top - at.y;
   }
 
   // From the pad to the nearest point of the card.

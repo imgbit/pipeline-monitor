@@ -1418,6 +1418,43 @@ def fill_difference(a, b):
                      rt * (dc / sc) * (dhh / sh))
 
 
+# Two pads close together, both pinned: the second card goes where it
+# does not cover the first.
+def check_pin_cards_apart(browser, serve):
+    server, url = start_server(serve, "videotestsrc is-live=true ! "
+                               "identity name=pc ! fakesink")
+    cards = "document.querySelectorAll('.pin-card')"
+    try:
+        browser.call("Page.navigate", url=url)
+        assert browser.wait(f"!!{element_selector('pc')}", timeout=15)
+        browser.eval(f"{cards}.forEach(c => c.querySelector('.pin-close')"
+                     "?.click())")
+        for pad in ("sink", "src"):
+            port = browser.eval(pad_id_expression("pc", pad))
+            browser.click_point(f"document.querySelector('#graph "
+                                f"[data-port=\"p{port}\"]')")
+        assert browser.wait(f"{cards}.length === 2 && [...{cards}].every("
+                            "c => /[0-9]/.test(c.textContent))"), "no cards"
+        time.sleep(1)
+        rects = browser.eval(f"[...{cards}].map(c => (r => [r.left, r.top, "
+                             "r.right, r.bottom])(c.getBoundingClientRect()))")
+        a, b = rects
+        assert a[2] <= b[0] or b[2] <= a[0] or a[3] <= b[1] or b[3] <= a[1], \
+            f"the pin cards cover each other: {rects}"
+        # Both in view: at least their title rows.
+        view = browser.eval("(r => [r.left, r.top, r.right, r.bottom])("
+                            "document.getElementById('graph')"
+                            ".getBoundingClientRect())")
+        assert all(r[0] >= view[0] and r[2] <= view[2] and r[1] >= view[1]
+                   and r[1] + 40 <= view[3] for r in rects), \
+            f"a pin card is out of view: {rects} in {view}"
+        browser.eval(f"{cards}.forEach(c => c.querySelector('.pin-close')"
+                     "?.click())")
+    finally:
+        server.terminate()
+        server.wait()
+
+
 # A funnel fed by two threads at once: its output in grey, both threads
 # named, and the graph not sent again on every buffer. (A syncing sink
 # would let one queue wait for the funnel's lock for seconds on Linux.)
@@ -3520,6 +3557,7 @@ def main():
             check_pull_mode(browser, serve)
             check_threads_view(browser, serve)
             check_funnel_threads(browser, serve)
+            check_pin_cards_apart(browser, serve)
     finally:
         if browser:
             browser.close()
