@@ -244,7 +244,11 @@ the task has ended.
   `signals` (appsrc: only `enough-data`, it keeps queueing). A limit 0 is
   no limit; a limit, a count or a level this GStreamer cannot read is
   `null` (counts and appsink's level since 1.28), and `levels` is empty
-  without a level. No `overruns`, `underruns` or `buffering`.
+  without a level. No `overruns`, `underruns` or `buffering`. `segment`:
+  the segment appsrc last sent or appsink last received
+  (`{"format","start","base","rate"}`, or `null` before one); appsink
+  also has `last_pts`, its last buffer's PTS (`null` without one, or when
+  the program turned `enable-last-sample` off).
 - `clock_provider`: the path of the element that gives the clock, or
   `null`.
 

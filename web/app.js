@@ -6,7 +6,7 @@ import { GraphView, countElements, threadColours, threadText }
   from "./render.js";
 import { isTimeProperty, propertyText, showDetails, updateLatencyDetails,
   updateProblemsDetails, updateProperties, updateQueueDetails, valueText,
-  updateAppPairs }
+  updateAppStream }
   from "./panel.js";
 import { LogView } from "./log.js";
 import { Tooltip } from "./tooltip.js";
@@ -823,8 +823,7 @@ async function layoutAndRender() {
   updateLatencyDetails($("details"), latencyDetails(selection));
   if (selection) {
     updateProblemsDetails($("details"), problemsOf(selection.element));
-    updateAppPairs($("details"), state.queues.get(selection.element.id),
-      state.queues);
+    updateAppStream($("details"), state.queues.get(selection.element.id));
   }
   // The panel was rebuilt: refill it from the last answer, or ask now for a
   // newly selected element.
@@ -1043,8 +1042,7 @@ function applyLevels(levels) {
   const index = buildIndex(state.graph);
   updateQueueDetails($("details"), queueDetails(
     index.elements.get(state.selected), index));
-  updateAppPairs($("details"), state.queues.get(state.selected),
-    state.queues);
+  updateAppStream($("details"), state.queues.get(state.selected));
 }
 
 // Recordings shown read-only: the program's state is set aside meanwhile.

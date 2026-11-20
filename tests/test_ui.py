@@ -2415,6 +2415,8 @@ def check_app_details(browser, good):
                              [pad(3, "src", "src", "src")]),
                      element(4, "sink", "appsink", "GstAppSink",
                              [pad(5, "sink", "sink", "sink")])]}]}
+    def segment(start):
+        return {"format": "time", "start": start, "base": 0, "rate": 1}
     levels = {"type": "levels", "protocol": 1, "time": started + 1000000,
               "pipelines": [], "queues": [
                   {"element": 2, "path": "p/src", "kind": "appsrc",
@@ -2422,12 +2424,14 @@ def check_app_details(browser, good):
                    "limits": {"buffers": 0, "bytes": 200000, "time": 0},
                    "counts": {"in": 105, "out": 1, "dropped": 0},
                    "levels": [{"buffers": 104, "bytes": 11980800,
-                               "time": 3466666667}]},
+                               "time": 3466666667}],
+                   "segment": segment(0)},
                   {"element": 4, "path": "p/sink", "kind": "appsink",
                    "at_limit": "blocks",
                    "limits": {"buffers": 3, "bytes": None, "time": None},
                    "counts": {"in": None, "out": None, "dropped": None},
-                   "levels": []}]}
+                   "levels": [], "segment": segment(5000000000),
+                   "last_pts": 9000000000}]}
 
     def prop(name, value, changed=False, default=True):
         p = {"name": name, "type": "", "writable": True, "value": value,
@@ -2473,6 +2477,7 @@ def check_app_details(browser, good):
     for text in ("appsrc settings", "segments in time",
                  "ignores the segment of samples pushed",
                  "not set: it reports a latency of 0",
+                 "segment sent\ntime, from 0:00:00.000, base 0:00:00.000",
                  "Queue (appsrc's own)",
                  "only signals enough-data, and keeps queueing",
                  "105 / 1 / 0"):
@@ -2486,7 +2491,9 @@ def check_app_details(browser, good):
     assert browser.click_until(
         f'#graph .node[data-id="{node}"] > rect.box',
         "document.querySelector('#details h2')?.textContent === 'sink'")
-    for text in ("level\nnot available before GStreamer 1.28",
+    for text in ("segment received\ntime, from 0:00:05.000",
+                 "last PTS\n0:00:09.000",
+                 "level\nnot available before GStreamer 1.28",
                  "waits for the program to pull, holding up the pipeline",
                  "in / out / dropped\nnot available before GStreamer 1.28"):
         assert browser.wait(f"{details}.includes({json.dumps(text)})"), \

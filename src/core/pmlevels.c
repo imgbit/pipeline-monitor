@@ -228,6 +228,34 @@ enum_nick (gpointer object, const gchar * name)
 /* appsrc's and appsink's own queue: its levels and limits where this
  * GStreamer has them (null where not), what reaching a limit does, and the
  * counts of buffers in, out and dropped. */
+/* "segment":{format,start,base,rate} as last sent on the pad named
+ * pad_name (an appsrc's src, an appsink's sink), or null. */
+static void
+append_app_segment (GString * json, GstElement * element,
+    const gchar * pad_name)
+{
+  GstPad *pad = gst_element_get_static_pad (element, pad_name);
+  GstEvent *event = pad ? gst_pad_get_sticky_event (pad, GST_EVENT_SEGMENT,
+      0) : NULL;
+  const GstSegment *segment;
+
+  if (event == NULL) {
+    g_string_append (json, "\"segment\":null,");
+  } else {
+    gst_event_parse_segment (event, &segment);
+    g_string_append (json, "\"segment\":{");
+    pm_json_append_member_string (json, "format",
+        gst_format_get_name (segment->format));
+    pm_json_append_value (json, "start", segment->start);
+    pm_json_append_value (json, "base", segment->base);
+    g_string_append_printf (json, "\"rate\":%g,", segment->rate);
+    pm_json_close (json, '}');
+    g_string_append_c (json, ',');
+    gst_event_unref (event);
+  }
+  gst_clear_object (&pad);
+}
+
 static void
 append_app (GString * json, PmModel * model, PmElementRef * ref)
 {
@@ -258,6 +286,21 @@ append_app (GString * json, PmModel * model, PmElementRef * ref)
   pm_json_append_member_string (json, "at_limit", at_limit);
   if (leaky != NULL)
     pm_json_append_member_string (json, "leaky", leaky);
+  append_app_segment (json, element, g_str_equal (kind, "appsrc") ? "src" :
+      "sink");
+  /* appsink: its last buffer's PTS, while it keeps the last sample. */
+  if (g_str_equal (kind, "appsink")) {
+    GstSample *sample = NULL;
+    GstBuffer *buffer;
+
+    if (has_property (element, "last-sample"))
+      g_object_get (element, "last-sample", &sample, NULL);
+    buffer = sample ? gst_sample_get_buffer (sample) : NULL;
+    pm_json_append_value (json, "last_pts", buffer ? GST_BUFFER_PTS (buffer)
+        : GST_CLOCK_TIME_NONE);
+    if (sample)
+      gst_sample_unref (sample);
+  }
   g_string_append (json, "\"limits\":{");
   append_count (json, element, "buffers", "max-buffers");
   append_count (json, element, "bytes", "max-bytes");

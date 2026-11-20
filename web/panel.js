@@ -7,7 +7,7 @@ import { countElements } from "./render.js";
 import { summarizeCaps } from "./caps.js";
 import { capsList } from "./tooltip.js";
 import { formatSpan } from "./units.js";
-import { edgeRows } from "./levels.js";
+import { appStreamRows } from "./levels.js";
 
 // Pads whose full caps are open in the panel, kept across updates.
 const expanded = new Set();
@@ -72,78 +72,19 @@ export function updateQueueDetails(aside, rows) {
   section.replaceChildren(dl);
 }
 
-// appsrc's "Data from appsink" section: the appsinks its buffers came
-// from (followed by the data), and one the user chose to compare with.
-const comparing = new Map();
-
-function edgeTable(parent, into, out, same) {
-  const table = add(parent, "table", undefined, "app-pair");
-  const head = add(table, "tr");
-  for (const h of ["", "into appsink", "out of appsrc"])
-    add(head, "th", h);
-  for (const [label, a, b, differs] of edgeRows(into, out, same)) {
-    const tr = add(table, "tr", undefined, differs ? "differs" : undefined);
-    add(tr, "td", label, "muted");
-    add(tr, "td", a);
-    add(tr, "td", b);
-  }
-}
-
-export function updateAppPairs(aside, queue, queues) {
-  const section = aside.querySelector(".app-pairs");
-  if (!section || Number(section.dataset.element) !== queue?.element)
+// appsrc's and appsink's "Stream" section, refreshed with every "levels"
+// message.
+export function updateAppStream(aside, queue) {
+  const section = aside.querySelector(".app-stream");
+  if (!section || Number(section.dataset.element) !== queue?.element ||
+      !("segment" in queue))
     return;
-  let body = section.querySelector(".app-pairs-body");
-  let select = section.querySelector("select");
-  const sinks = [...queues.values()].filter((q) => q.kind === "appsink");
-  if (!body) {
-    body = add(section, "div", undefined, "app-pairs-body");
-    const label = add(section, "label", "Compare with ", "app-compare");
-    select = add(label, "select");
-    select.addEventListener("change", () => {
-      comparing.set(queue.element, Number(select.value) || null);
-      updateAppPairs(aside, queue, queues);
-    });
+  const dl = document.createElement("dl");
+  for (const [k, v] of appStreamRows(queue)) {
+    add(dl, "dt", k);
+    add(dl, "dd", v);
   }
-  // The choice list changes only when the appsinks do: rebuilding it
-  // would close it under the user's pointer.
-  const options = ["", ...sinks.map((s) => `${s.element}`)].join();
-  if (select.dataset.options !== options) {
-    select.dataset.options = options;
-    select.replaceChildren();
-    add(select, "option", "—").value = "";
-    for (const s of sinks)
-      add(select, "option", s.path).value = s.element;
-  }
-  const chosen = comparing.get(queue.element);
-  select.value = chosen && sinks.some((s) => s.element === chosen)
-    ? chosen : "";
-  section.querySelector(".app-compare").hidden = !sinks.length;
-
-  body.replaceChildren();
-  if (!queue.last_out) {
-    add(body, "div", sinks.length ? "no buffer out yet"
-      : "no appsink in this program", "muted");
-    return;
-  }
-  for (const from of queue.from ?? []) {
-    add(body, "div", `${from.path ?? "an appsink now gone"}: ` +
-      `${from.buffers} buffers, the same data`);
-    edgeTable(body, { pts: from.in_pts, segment: from.in_segment },
-      { pts: from.out_pts, segment: from.out_segment }, true);
-  }
-  if (queue.unmatched)
-    add(body, "div", `${queue.unmatched} buffers not from an appsink ` +
-      "(new or copied data)", "muted");
-  const sink = chosen && queues.get(chosen);
-  if (sink?.last_in) {
-    add(body, "div", `${sink.path}, chosen: its last buffer in against ` +
-      "appsrc's last buffer out, not shown to be the same data",
-    "app-chosen");
-    edgeTable(body, sink.last_in, queue.last_out, false);
-  } else if (sink) {
-    add(body, "div", `${sink.path}: no buffer in yet`, "muted");
-  }
+  section.replaceChildren(dl);
 }
 
 // Runs fn when the button is pressed. Parts of the panel are rebuilt
@@ -241,16 +182,15 @@ export function showDetails(aside, selection, index, onClose, log, queue) {
     add(aside, "div", "reading…", "app-settings").dataset.factory =
       element.factory;
   }
+  if (APP_SETTINGS[element.factory]) {
+    add(aside, "h3", "Stream");
+    add(aside, "div", undefined, "app-stream").dataset.element = element.id;
+  }
   if (queue) {
     add(aside, "h3", ["appsrc", "appsink"].includes(element.factory)
       ? `Queue (${element.factory}'s own)` : "Queue");
     add(aside, "div", undefined, "queue-levels");
     updateQueueDetails(aside, queue);
-  }
-  if (element.factory === "appsrc") {
-    add(aside, "h3", "Data from appsink");
-    const section = add(aside, "div", undefined, "app-pairs");
-    section.dataset.element = element.id;
   }
 
   if (element.pads.length > 0)

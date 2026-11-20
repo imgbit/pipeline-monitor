@@ -2104,6 +2104,8 @@ test_app_levels (void)
   /* No block, no leaky-type: past max-bytes it only signals. */
   g_assert_cmpstr (json_object_get_string_member (q, "at_limit"), ==,
       "signals");
+  g_assert_cmpstr (json_object_get_string_member
+      (json_object_get_object_member (q, "segment"), "format"), ==, "time");
   limits = json_object_get_object_member (q, "limits");
   g_assert_cmpint (json_object_get_int_member (limits, "bytes"), ==, 200000);
   levels = json_object_get_array_member (q, "levels");
@@ -2128,6 +2130,10 @@ test_app_levels (void)
   /* Nobody pulls: it waits, holding up its pipeline. */
   g_assert_cmpstr (json_object_get_string_member (q, "at_limit"), ==,
       "blocks");
+  g_assert_cmpstr (json_object_get_string_member
+      (json_object_get_object_member (q, "segment"), "format"), ==, "time");
+  /* It keeps its last sample by default. */
+  g_assert_false (json_object_get_null_member (q, "last_pts"));
   g_assert_cmpint (json_object_get_int_member (json_object_get_object_member
           (q, "limits"), "buffers"), ==, 3);
   levels = json_object_get_array_member (q, "levels");

@@ -79,20 +79,17 @@ function appRows(queue, unit) {
   return rows;
 }
 
-// Rows comparing what went into an appsink with what left an appsrc:
-// [label, appsink side, appsrc side, differs]. same: the same buffer, so
-// its PTS is compared too; else only the segments are.
-export function edgeRows(into, out, same) {
-  const seg = (s, key) => s === undefined ? "—" : s === null ? "none"
-    : key === "format" || key === "rate" ? String(s[key])
-      : clockTime(s[key]);
-  const rows = [["PTS", clockTime(into.pts), clockTime(out.pts), same &&
-    into.pts !== out.pts]];
-  for (const key of ["format", "start", "base", "rate"]) {
-    const a = seg(into.segment, key);
-    const b = seg(out.segment, key);
-    rows.push([`segment ${key}`, a, b, a !== b]);
-  }
+// appsrc's segment sent or appsink's segment received, and appsink's last
+// PTS: rows for the details panel.
+export function appStreamRows(queue) {
+  const s = queue.segment;
+  const at = (v) => s.format === "time" ? clockTime(v) : String(v ?? "—");
+  const rows = [[queue.kind === "appsrc" ? "segment sent" : "segment received",
+    s ? `${s.format}, from ${at(s.start)}, base ${at(s.base)}` +
+      (s.rate !== 1 ? `, rate ${s.rate}` : "") : "none yet"]];
+  if (queue.kind === "appsink")
+    rows.push(["last PTS", queue.last_pts === null ? "not kept " +
+      "(enable-last-sample is off) or none yet" : clockTime(queue.last_pts)]);
   return rows;
 }
 
