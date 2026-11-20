@@ -79,6 +79,23 @@ function appRows(queue, unit) {
   return rows;
 }
 
+// Rows comparing what went into an appsink with what left an appsrc:
+// [label, appsink side, appsrc side, differs]. same: the same buffer, so
+// its PTS is compared too; else only the segments are.
+export function edgeRows(into, out, same) {
+  const seg = (s, key) => s === undefined ? "—" : s === null ? "none"
+    : key === "format" || key === "rate" ? String(s[key])
+      : clockTime(s[key]);
+  const rows = [["PTS", clockTime(into.pts), clockTime(out.pts), same &&
+    into.pts !== out.pts]];
+  for (const key of ["format", "start", "base", "rate"]) {
+    const a = seg(into.segment, key);
+    const b = seg(out.segment, key);
+    rows.push([`segment ${key}`, a, b, a !== b]);
+  }
+  return rows;
+}
+
 // Rows for the tooltip and the details panel; padName(id) names a
 // multiqueue pad.
 export function queueRows(queue, unit, padName) {

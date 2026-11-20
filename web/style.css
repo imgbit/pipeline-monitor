@@ -994,3 +994,8 @@ body.viewing-dot #process-perf { display: none; }
 /* appsrc and appsink settings: the value, then what it does. */
 .app-settings dd { margin-bottom: 4px; }
 .app-setting-meaning { font-size: 12px; }
+.app-pair { border-collapse: collapse; margin: 4px 0 8px; font-size: 12px; }
+.app-pair th { text-align: left; font-weight: normal; color: var(--muted); }
+.app-pair th, .app-pair td { padding: 1px 12px 1px 0; }
+.app-pair tr.differs td:not(:first-child) { color: var(--error); font-weight: 600; }
+.app-compare { display: block; margin-top: 4px; }

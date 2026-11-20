@@ -61,6 +61,23 @@ void pm_model_set_live (PmModel * model, gpointer pipeline, gboolean live);
 GPtrArray *pm_model_find_elements (PmModel * model, PmElementFilter filter);
 void pm_element_ref_free (PmElementRef * ref);
 guint64 pm_model_pad_id (PmModel * model, gpointer pad);
+guint64 pm_model_element_id (PmModel * model, gpointer element);
+/* A buffer out of appsrc whose memory last went into the appsink with
+ * this id (0: from no appsink): its PTS and segment there and here
+ * (segments NULL where none). */
+void pm_model_pair_buffer (PmModel * model, gpointer appsrc, guint64 sink,
+    GstClockTime in_pts, const GstSegment * in_segment,
+    GstClockTime out_pts, const GstSegment * out_segment);
+/* "from":[...],"unmatched":N, for an appsrc's levels entry (each member
+ * followed by a comma), or NULL before any buffer. */
+gchar *pm_model_pairs_json (PmModel * model, guint64 appsrc);
+/* The last buffer out of an appsrc or into an appsink: its PTS and
+ * segment (NULL where none). */
+void pm_model_edge_buffer (PmModel * model, gpointer element,
+    GstClockTime pts, const GstSegment * segment);
+/* "key":{"pts":…,"segment":…}, for the element's levels entry, or NULL
+ * before any buffer. */
+gchar *pm_model_edge_json (PmModel * model, guint64 id, const gchar * key);
 GstElement *pm_model_get_element (PmModel * model, guint64 id);
 
 /* Where data stopped, and pipelines not reaching their state. */
