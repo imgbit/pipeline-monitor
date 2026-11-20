@@ -8,6 +8,7 @@
 #include "pmmodel.h"
 #include "pmrecorder.h"
 #include "pmserver.h"
+#include "pmstatus.h"
 
 #include <gio/gio.h>
 #include <gst/gst.h>
@@ -16,11 +17,14 @@
 #endif
 
 static const gchar *usage =
-    "[open [FILE]]\n\n"
+    "[open [FILE] | status [FILE]]\n\n"
     "Shows pipeline-monitor recordings in the browser, without a program:\n"
     "  pipeline-monitor              the recordings in the folder\n"
     "  pipeline-monitor open FILE    that recording, or a GStreamer .dot "
-    "file\n\n"
+    "file\n"
+    "Or as text, in the terminal:\n"
+    "  pipeline-monitor status       every running program with the tracer\n"
+    "  pipeline-monitor status FILE  a recording (see status --help)\n\n"
     "To watch a running program, use the tracer instead:\n"
     "  GST_TRACERS=pipeline-monitor your-program";
 
@@ -55,6 +59,10 @@ main (int argc, char **argv)
   PmModel *model;
   GMainLoop *loop;
 
+  if (argc > 1 && g_strcmp0 (argv[1], "status") == 0) {
+    g_option_context_free (context);
+    return pm_status_main (argc - 1, argv + 1);
+  }
   g_option_context_add_main_entries (context, entries, NULL);
   if (!g_option_context_parse (context, &argc, &argv, &error)) {
     g_printerr ("pipeline-monitor: %s\n", error->message);

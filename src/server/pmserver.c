@@ -514,6 +514,22 @@ handle_findings (SoupServer * soup, SoupServerMessage * msg,
             self->last_findings : "{\"findings\":[]}"));
 }
 
+/* GET /api/performance: the last CPU and memory sample (once a second). */
+static void
+handle_performance (SoupServer * soup, SoupServerMessage * msg,
+    const char *path, GHashTable * query, gpointer user_data)
+{
+  PmServer *self = user_data;
+
+  if (!check_request (self, msg))
+    return;
+  if (self->last_perf == NULL) {
+    soup_server_message_set_status (msg, SOUP_STATUS_NOT_FOUND, NULL);
+    return;
+  }
+  set_message_response (msg, "performance", g_strdup (self->last_perf));
+}
+
 static void
 handle_log (SoupServer * soup, SoupServerMessage * msg, const char *path,
     GHashTable * query, gpointer user_data)
@@ -1682,6 +1698,8 @@ server_thread (gpointer user_data)
   soup_server_add_handler (self->soup, "/api/opened", handle_opened, self,
       NULL);
   soup_server_add_handler (self->soup, "/api/dot", handle_dot, self, NULL);
+  soup_server_add_handler (self->soup, "/api/performance", handle_performance,
+      self, NULL);
   soup_server_add_handler (self->soup, "/api/pads", handle_watched_pads, self,
       NULL);
   soup_server_add_handler (self->soup, "/ws", handle_ws_request, self, NULL);

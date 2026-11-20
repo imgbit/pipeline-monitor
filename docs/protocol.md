@@ -107,7 +107,7 @@ belongs to that connection only. A new connection starts with nothing.
 | `pads` | every 250 ms, for watched pads | that connection | – |
 | `properties` | every 250 ms, for watched properties | that connection | `GET /api/properties?element=ID` |
 | `latency` | every 250 ms, while measuring | that connection | – |
-| `performance` | once per second | all | – |
+| `performance` | once per second | all | `GET /api/performance` (since 0.13) |
 | `recordings` | on connecting, when the list changes, every second while recording | all | `GET /api/recordings` |
 | `error` | a command failed | that connection | – |
 | `bye` | the program is ending | all | – |
@@ -454,6 +454,7 @@ Sent over the WebSocket as JSON text, at most 64 KiB:
 | `GET /api/findings` | `findings` |
 | `GET /api/levels` | `levels` |
 | `GET /api/properties?element=ID` | `properties` with that element and `reported` |
+| `GET /api/performance` | `performance`, the last sample; 404 before the first (since 0.13) |
 | `GET /api/pads` | `watched-pads` |
 | `GET /api/recordings` | `recordings` |
 | `GET /api/recordings/<name>` | the recording file (JSON Lines), as an attachment; 404 if there is none |

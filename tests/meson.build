@@ -77,6 +77,11 @@ if python.found()
     env : test_env,
     depends : [gstpipelinemonitor, serve, pipeline_monitor_tool],
     timeout : 240)
+  test('status', python,
+    args : [files('test_status.py'), serve, pipeline_monitor_tool],
+    env : test_env,
+    depends : [gstpipelinemonitor, serve, pipeline_monitor_tool],
+    timeout : 120)
 endif
 
 # Fuzz targets (tests/fuzz). With -Dfuzz=true they are libFuzzer programs
