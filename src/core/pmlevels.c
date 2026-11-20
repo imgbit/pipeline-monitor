@@ -264,19 +264,6 @@ append_app (GString * json, PmModel * model, PmElementRef * ref)
   append_count (json, element, "time", "max-time");
   pm_json_close (json, '}');
   g_string_append_c (json, ',');
-  {
-    gchar *edge = pm_model_edge_json (model, ref->id,
-        g_str_equal (kind, "appsrc") ? "last_out" : "last_in");
-    gchar *pairs = g_str_equal (kind, "appsrc") ?
-        pm_model_pairs_json (model, ref->id) : NULL;
-
-    if (edge != NULL)
-      g_string_append (json, edge);
-    if (pairs != NULL)
-      g_string_append (json, pairs);
-    g_free (edge);
-    g_free (pairs);
-  }
   g_string_append (json, "\"counts\":{");
   append_count (json, element, "in", "in");
   append_count (json, element, "out", "out");

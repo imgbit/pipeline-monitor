@@ -2142,67 +2142,6 @@ test_app_levels (void)
   stop_pipeline (pipeline);
 }
 
-/* appsink -> program -> appsrc: buffers pushed with the memory they were
- * pulled with are paired with that appsink; copies are not. */
-static void
-test_app_pairs (void)
-{
-  GstElement *pipeline = start_pipeline ("videotestsrc num-buffers=5 ! "
-      "video/x-raw,width=16,height=16 ! appsink name=ap-sink "
-      "appsrc name=ap-src format=time ! fakesink sync=false async=false");
-  GstElement *appsink = gst_bin_get_by_name (GST_BIN (pipeline), "ap-sink");
-  GstElement *appsrc = gst_bin_get_by_name (GST_BIN (pipeline), "ap-src");
-  JsonObject *q = NULL, *from;
-  JsonArray *sources;
-  JsonNode *root = NULL;
-  gint i, tries;
-
-  for (i = 0; i < 5; i++) {
-    GstSample *sample = NULL;
-    GstBuffer *buffer;
-    GstFlowReturn ret;
-
-    g_signal_emit_by_name (appsink, "pull-sample", &sample);
-    g_assert_nonnull (sample);
-    /* The last two copied: new memory, nothing links them. */
-    buffer = i < 3 ? gst_buffer_ref (gst_sample_get_buffer (sample))
-        : gst_buffer_copy_deep (gst_sample_get_buffer (sample));
-    g_signal_emit_by_name (appsrc, "push-buffer", buffer, &ret);
-    gst_buffer_unref (buffer);
-    gst_sample_unref (sample);
-  }
-  for (tries = 0; tries < 50; tries++) {
-    g_clear_pointer (&root, json_node_unref);
-    q = levels_entry ("/ap-src", &root);
-    if (q && json_object_has_member (q, "unmatched")
-        && json_object_get_int_member (q, "unmatched") == 2)
-      break;
-    g_usleep (100 * G_TIME_SPAN_MILLISECOND);
-  }
-  g_assert_nonnull (q);
-  g_assert_cmpint (json_object_get_int_member (q, "unmatched"), ==, 2);
-  sources = json_object_get_array_member (q, "from");
-  g_assert_cmpuint (json_array_get_length (sources), ==, 1);
-  from = json_array_get_object_element (sources, 0);
-  g_assert_true (g_str_has_suffix (json_object_get_string_member (from,
-              "path"), "/ap-sink"));
-  g_assert_cmpint (json_object_get_int_member (from, "buffers"), ==, 3);
-  g_assert_cmpstr (json_object_get_string_member
-      (json_object_get_object_member (from, "out_segment"), "format"), ==,
-      "time");
-  g_assert_true (json_object_has_member (q, "last_out"));
-  json_node_unref (root);
-
-  q = levels_entry ("/ap-sink", &root);
-  g_assert_nonnull (q);
-  g_assert_true (json_object_has_member (q, "last_in"));
-  g_assert_false (json_object_has_member (q, "from"));
-  json_node_unref (root);
-  gst_object_unref (appsink);
-  gst_object_unref (appsrc);
-  stop_pipeline (pipeline);
-}
-
 static void
 test_levels (void)
 {
@@ -4503,7 +4442,6 @@ main (int argc, char **argv)
   g_test_add_func ("/server/monitor-pad-gone", test_monitor_pad_gone);
   g_test_add_func ("/server/levels", test_levels);
   g_test_add_func ("/server/app-levels", test_app_levels);
-  g_test_add_func ("/server/app-pairs", test_app_pairs);
   g_test_add_func ("/server/levels-multiqueue", test_levels_multiqueue);
   g_test_add_func ("/server/levels-buffering-clock",
       test_levels_buffering_clock);

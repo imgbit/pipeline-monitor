@@ -2415,8 +2415,6 @@ def check_app_details(browser, good):
                              [pad(3, "src", "src", "src")]),
                      element(4, "sink", "appsink", "GstAppSink",
                              [pad(5, "sink", "sink", "sink")])]}]}
-    def segment(start):
-        return {"format": "time", "start": start, "base": 0, "rate": 1}
     levels = {"type": "levels", "protocol": 1, "time": started + 1000000,
               "pipelines": [], "queues": [
                   {"element": 2, "path": "p/src", "kind": "appsrc",
@@ -2424,20 +2422,12 @@ def check_app_details(browser, good):
                    "limits": {"buffers": 0, "bytes": 200000, "time": 0},
                    "counts": {"in": 105, "out": 1, "dropped": 0},
                    "levels": [{"buffers": 104, "bytes": 11980800,
-                               "time": 3466666667}],
-                   "last_out": {"pts": 5000000000, "segment": segment(0)},
-                   "from": [{"element": 4, "path": "p/sink", "buffers": 7,
-                             "in_pts": 5000000000, "out_pts": 5000000000,
-                             "in_segment": segment(5000000000),
-                             "out_segment": segment(0)}],
-                   "unmatched": 2},
+                               "time": 3466666667}]},
                   {"element": 4, "path": "p/sink", "kind": "appsink",
                    "at_limit": "blocks",
                    "limits": {"buffers": 3, "bytes": None, "time": None},
                    "counts": {"in": None, "out": None, "dropped": None},
-                   "levels": [],
-                   "last_in": {"pts": 9000000000,
-                               "segment": segment(5000000000)}}]}
+                   "levels": []}]}
 
     def prop(name, value, changed=False, default=True):
         p = {"name": name, "type": "", "writable": True, "value": value,
@@ -2488,22 +2478,6 @@ def check_app_details(browser, good):
                  "105 / 1 / 0"):
         assert browser.wait(f"{details}.includes({json.dumps(text)})"), \
             f"no {text!r} in: {browser.eval(details)}"
-    # Paired by the data: the segment start differs, the PTS does not.
-    pairs = "document.querySelector('.app-pairs')"
-    assert browser.wait(f"{pairs}.innerText.includes("
-                        "'p/sink: 7 buffers, the same data')"), \
-        browser.eval(f"{pairs}?.innerText")
-    differs = (f"[...{pairs}.querySelectorAll('tr.differs')].map(r => "
-               "r.firstChild.textContent).join()")
-    assert browser.eval(differs) == "segment start", browser.eval(differs)
-    assert browser.eval(f"{pairs}.innerText.includes('2 buffers not from "
-                        "an appsink')")
-    # Chosen: the appsink's last buffer in, its PTS not compared.
-    browser.eval(f"(s => {{ s.value = '4'; s.dispatchEvent(new Event("
-                 f"'change')); }})({pairs}.querySelector('select'))")
-    assert browser.wait(f"{pairs}.innerText.includes('p/sink, chosen')")
-    assert browser.eval(f"{pairs}.querySelectorAll('tr.differs').length") \
-        == 2
     # caps have no known default: not called one.
     assert browser.eval(f"!/caps\\s+video\\/x-raw \\(default\\)/"
                         f".test({details})"), browser.eval(details)

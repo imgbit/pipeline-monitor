@@ -245,14 +245,6 @@ the task has ended.
   no limit; a limit, a count or a level this GStreamer cannot read is
   `null` (counts and appsink's level since 1.28), and `levels` is empty
   without a level. No `overruns`, `underruns` or `buffering`.
-- In programs with both an appsink and an appsrc: `last_in` (appsink) and
-  `last_out` (appsrc), the last buffer's `pts` and `segment`
-  (`{"format","start","base","rate"}`, or `null` before one). An appsrc
-  also has `from`: the appsinks whose buffers it sent on, found by the
-  buffers' memory, each `{"element","path","buffers","in_pts","out_pts",
-  "in_segment","out_segment"}` for the last such buffer at either end;
-  and `unmatched`, the buffers that came from no appsink (new or copied
-  data).
 - `clock_provider`: the path of the element that gives the clock, or
   `null`.
 
