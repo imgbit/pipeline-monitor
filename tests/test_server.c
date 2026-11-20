@@ -2072,12 +2072,15 @@ test_app_levels (void)
       "fakesink sync=true async=false "
       "videotestsrc is-live=true ! appsink name=al-sink max-buffers=3");
   GstElement *appsrc = gst_bin_get_by_name (GST_BIN (pipeline), "al-src");
-  gboolean new_counts = gst_check_version (1, 28, 0);
+  guint major, minor, micro, nano;
+  gboolean new_counts;
   JsonObject *q, *limits, *counts;
   JsonArray *levels;
   JsonNode *root = NULL;
   gint i, tries;
 
+  gst_version (&major, &minor, &micro, &nano);
+  new_counts = major > 1 || minor >= 28;
   for (i = 0; i < 6; i++) {
     GstBuffer *b = gst_buffer_new_allocate (NULL, 256, NULL);
     GstFlowReturn ret;
