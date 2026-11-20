@@ -205,7 +205,13 @@ the task has ended.
   core or more for 5 s, where the pipeline keeps time; at the first element
   it runs) and `leftovers` (elements taken out of a pipeline and still
   alive after 30 s, at that pipeline; a warning when their number keeps
-  growing).
+  growing). Since 0.13, at an appsrc or appsink: `app-bytes` (appsrc sends
+  a segment in bytes with audio or video caps), `app-latency` (a sink in
+  its pipeline warned it has no room for its processing deadline, and the
+  appsrc is live without `min-latency`), `app-grows` (appsrc past a limit
+  for 5 s without `block` or `leaky-type`), `app-full` (appsink at a limit
+  for 5 s in a live pipeline, without `drop` or `leaky-type`; its level is
+  read since GStreamer 1.28).
 - `text` says what was found, `hint` what it means; both state only what
   was observed.
 - `count`, `first`, `last` when the problem repeats.

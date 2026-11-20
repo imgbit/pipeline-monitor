@@ -48,6 +48,8 @@ typedef struct
   guint64 overruns;
   guint64 underruns;
   gint buffering;
+  /* A sink that warned it has no room for its processing deadline. */
+  gboolean no_room;
   /* Its pipeline is live (its change to PAUSED returned NO_PREROLL). */
   gboolean live;
 } PmElementRef;
@@ -58,6 +60,7 @@ void pm_model_count_queue_event (PmModel * model, gpointer element,
     gboolean overrun);
 void pm_model_set_buffering (PmModel * model, gpointer element, gint percent);
 void pm_model_set_live (PmModel * model, gpointer pipeline, gboolean live);
+void pm_model_note_no_room (PmModel * model, gpointer sink);
 GPtrArray *pm_model_find_elements (PmModel * model, PmElementFilter filter);
 void pm_element_ref_free (PmElementRef * ref);
 guint64 pm_model_pad_id (PmModel * model, gpointer pad);

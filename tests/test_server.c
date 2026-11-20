@@ -3699,6 +3699,76 @@ test_findings_flow (void)
   g_free (id);
 }
 
+static void
+push_ahead (GstElement * appsrc, gint n, gsize size)
+{
+  gint i;
+
+  for (i = 0; i < n; i++) {
+    GstBuffer *b = gst_buffer_new_allocate (NULL, size, NULL);
+    GstFlowReturn ret;
+
+    GST_BUFFER_PTS (b) = 10 * GST_SECOND + i * GST_MSECOND;
+    g_signal_emit_by_name (appsrc, "push-buffer", b, &ret);
+    gst_buffer_unref (b);
+  }
+}
+
+static void
+expect_app_finding (const gchar * kind, const gchar * element,
+    gint timeout_s, const gchar * text)
+{
+  gchar *id = element_finding (kind, element);
+  JsonNode *node = wait_finding (id, timeout_s);
+
+  g_assert_nonnull (node);
+  g_assert_nonnull (strstr (json_object_get_string_member
+          (json_node_get_object (node), "text"), text));
+  json_node_unref (node);
+  g_free (id);
+}
+
+/* appsrc and appsink: a segment in bytes for video, no latency room, an
+ * appsrc queue past its limit, an appsink nobody pulls (its level can be
+ * read since 1.28). A correctly set appsrc has none of the first two. */
+static void
+test_findings_apps (void)
+{
+  GstElement *pipeline = start_pipeline ("appsrc name=ag-src format=time "
+      "max-bytes=1000 ! fakesink sync=true async=false "
+      "appsrc name=ab-src is-live=true "
+      "caps=video/x-raw,format=GRAY8,width=16,height=16,framerate=30/1 ! "
+      "fakesink name=ab-sink sync=true async=false "
+      "videotestsrc is-live=true ! appsink name=af-sink max-buffers=3");
+  GstElement *grows = gst_bin_get_by_name (GST_BIN (pipeline), "ag-src");
+  GstElement *bytes = gst_bin_get_by_name (GST_BIN (pipeline), "ab-src");
+  guint major, minor, micro, nano;
+  gchar *id;
+
+  gst_version (&major, &minor, &micro, &nano);
+  push_ahead (grows, 6, 256);
+  push_ahead (bytes, 1, 256);
+  expect_app_finding ("app-bytes", "ab-src", 5,
+      "sends a segment in bytes with video/x-raw");
+  expect_app_finding ("app-latency", "ab-src", 5,
+      "ab-sink has no room for its processing deadline");
+  expect_app_finding ("app-grows", "ag-src", 10,
+      "has held more than its max-bytes");
+  if (major > 1 || minor >= 28)
+    expect_app_finding ("app-full", "af-sink", 10,
+        "has been at its max-buffers");
+  id = element_finding ("app-bytes", "ag-src");
+  g_assert_null (wait_finding (id, 1));
+  g_free (id);
+  id = element_finding ("app-latency", "ag-src");
+  g_assert_null (wait_finding (id, 1));
+  g_free (id);
+
+  gst_object_unref (grows);
+  gst_object_unref (bytes);
+  stop_pipeline (pipeline);
+}
+
 /* A sink that never gets data keeps the pipeline from PAUSED. */
 static void
 test_findings_stuck (void)
@@ -4448,6 +4518,7 @@ main (int argc, char **argv)
   g_test_add_func ("/server/monitor-pad-gone", test_monitor_pad_gone);
   g_test_add_func ("/server/levels", test_levels);
   g_test_add_func ("/server/app-levels", test_app_levels);
+  g_test_add_func ("/server/findings-apps", test_findings_apps);
   g_test_add_func ("/server/levels-multiqueue", test_levels_multiqueue);
   g_test_add_func ("/server/levels-buffering-clock",
       test_levels_buffering_clock);

@@ -310,6 +310,12 @@ log_message (GstPipelineMonitorTracer * self, GstElement * element,
     level = PM_LOG_WARNING;
   }
   sync_element (self, element);
+  /* basesink: upstream reports too little latency room for its processing
+   * deadline (the text is translated; the debug part is not). */
+  if (level == PM_LOG_WARNING && error->domain == GST_CORE_ERROR &&
+      error->code == GST_CORE_ERROR_CLOCK && debug != NULL &&
+      strstr (debug, "the processing deadline") != NULL)
+    pm_model_note_no_room (self->model, element);
   pm_model_add_log (self->model, element, level, "message", error->message,
       debug, g_quark_to_string (error->domain), error->code);
   g_free (debug);

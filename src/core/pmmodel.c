@@ -28,6 +28,8 @@ struct _PmElement
   guint64 overruns;
   guint64 underruns;
   gint buffering;
+  /* A sink that warned it has no room for its processing deadline. */
+  gboolean no_room;
   PmPreroll preroll;
   gboolean live;
   /* Gives the element back while it exists, without keeping it alive. */
@@ -949,6 +951,7 @@ pm_model_find_elements (PmModel * model, PmElementFilter filter)
     ref->overruns = element->overruns;
     ref->underruns = element->underruns;
     ref->buffering = element->buffering;
+    ref->no_room = element->no_room;
     ref->live = top_level (element)->live;
     g_ptr_array_add (found, ref);
   }
@@ -2298,4 +2301,16 @@ pm_model_leftovers (PmModel * model, gint64 older_than)
   g_mutex_unlock (&model->lock);
   g_ptr_array_sort (found, compare_leftovers);
   return found;
+}
+
+void
+pm_model_note_no_room (PmModel * model, gpointer sink)
+{
+  PmElement *element;
+
+  g_mutex_lock (&model->lock);
+  element = g_hash_table_lookup (model->elements, sink);
+  if (element != NULL)
+    element->no_room = TRUE;
+  g_mutex_unlock (&model->lock);
 }

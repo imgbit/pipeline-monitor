@@ -678,6 +678,194 @@ add_sinks (PmFindings * self, GPtrArray * findings, GHashTable * seen)
   g_ptr_array_unref (sinks);
 }
 
+static gboolean
+app_filter (GstElement * element, gboolean top_level)
+{
+  GType src = g_type_from_name ("GstAppSrc");
+  GType sink = g_type_from_name ("GstAppSink");
+
+  return !top_level && ((src != 0 && g_type_is_a (G_OBJECT_TYPE (element),
+              src)) || (sink != 0 && g_type_is_a (G_OBJECT_TYPE (element),
+              sink)));
+}
+
+static gboolean
+has_prop (GstElement * element, const gchar * name)
+{
+  return g_object_class_find_property (G_OBJECT_GET_CLASS (element),
+      name) != NULL;
+}
+
+/* Whether a and b are in the same top-level pipeline. */
+static gboolean
+same_top (const gchar * a, const gchar * b)
+{
+  gsize n = strcspn (a, "/");
+
+  return strncmp (a, b, n) == 0 && (b[n] == '/' || b[n] == '\0');
+}
+
+/* How far past its limits an app queue is (1: at a limit; 0: no limit
+ * set or no level to read), the limit named in *limit. */
+static gdouble
+app_fill (GstElement * element, const gchar ** limit)
+{
+  static const gchar *names[][2] = {
+    {"max-buffers", "current-level-buffers"},
+    {"max-bytes", "current-level-bytes"},
+    {"max-time", "current-level-time"},
+  };
+  gdouble fill = 0;
+  guint i;
+
+  for (i = 0; i < G_N_ELEMENTS (names); i++) {
+    GValue max = G_VALUE_INIT, level = G_VALUE_INIT;
+    gdouble m, l;
+
+    if (!has_prop (element, names[i][0]) || !has_prop (element, names[i][1]))
+      continue;
+    g_value_init (&max, G_TYPE_UINT64);
+    g_value_init (&level, G_TYPE_UINT64);
+    {
+      GValue raw = G_VALUE_INIT;
+
+      g_object_get_property (G_OBJECT (element), names[i][0], &raw);
+      g_value_transform (&raw, &max);
+      g_value_unset (&raw);
+      g_object_get_property (G_OBJECT (element), names[i][1], &raw);
+      g_value_transform (&raw, &level);
+      g_value_unset (&raw);
+    }
+    m = g_value_get_uint64 (&max);
+    l = g_value_get_uint64 (&level);
+    if (m > 0 && l / m > fill) {
+      fill = l / m;
+      *limit = names[i][0];
+    }
+  }
+  return fill;
+}
+
+/* appsrc and appsink: what their settings do here. */
+static void
+add_apps (PmFindings * self, GPtrArray * findings, GHashTable * seen)
+{
+  GPtrArray *apps = pm_model_find_elements (self->model, app_filter);
+  GPtrArray *sinks = pm_model_find_elements (self->model, sink_filter);
+  gint64 now = g_get_monotonic_time ();
+  guint i, j;
+
+  for (i = 0; i < apps->len; i++) {
+    PmElementRef *ref = g_ptr_array_index (apps, i);
+    GstElement *e = ref->element;
+    gboolean is_src = has_prop (e, "is-live") && has_prop (e, "format");
+    PmQueueState *q = g_hash_table_lookup (self->queues, &ref->id);
+    const gchar *limit = NULL;
+    gdouble fill = app_fill (e, &limit);
+    gint leaky = 0;
+    gboolean block = FALSE, drop = FALSE;
+    PmFinding *f;
+
+    if (q == NULL) {
+      q = g_new0 (PmQueueState, 1);
+      g_hash_table_insert (self->queues, key_new (ref->id), q);
+    }
+    g_hash_table_add (seen, key_new (ref->id));
+    if (has_prop (e, "leaky-type"))
+      g_object_get (e, "leaky-type", &leaky, NULL);
+    if (has_prop (e, "block"))
+      g_object_get (e, "block", &block, NULL);
+    if (has_prop (e, "drop"))
+      g_object_get (e, "drop", &drop, NULL);
+    /* Past a limit (appsrc) or at one (appsink), since when. */
+    if (fill > (is_src ? 1.0 : 0.99)) {
+      if (q->full_since == 0)
+        q->full_since = now;
+    } else {
+      q->full_since = 0;
+    }
+
+    if (is_src) {
+      GstPad *pad = gst_element_get_static_pad (e, "src");
+      GstEvent *event = pad ? gst_pad_get_sticky_event (pad,
+          GST_EVENT_SEGMENT, 0) : NULL;
+      GstCaps *caps = pad ? gst_pad_get_current_caps (pad) : NULL;
+      const gchar *media = caps && gst_caps_get_size (caps) > 0 ?
+          gst_structure_get_name (gst_caps_get_structure (caps, 0)) : NULL;
+      gboolean live = FALSE;
+      gint64 min_latency = 0;
+
+      if (event != NULL) {
+        const GstSegment *segment;
+
+        gst_event_parse_segment (event, &segment);
+        if (segment->format == GST_FORMAT_BYTES && media &&
+            (g_str_has_prefix (media, "audio/") ||
+                g_str_has_prefix (media, "video/"))) {
+          f = finding_new ("app-bytes", PM_WARNING, ref->id, ref->path, 0,
+              NULL);
+          f->text = g_strdup_printf ("%s sends a segment in bytes with %s",
+              ref->path, media);
+          f->hint = g_strdup ("format is bytes (its default): a sink reads "
+              "the timestamps in the segment's format, as byte positions, "
+              "and cannot play them in time. Set format=time.");
+          g_ptr_array_add (findings, f);
+        }
+        gst_event_unref (event);
+      }
+      g_clear_pointer (&caps, gst_caps_unref);
+      gst_clear_object (&pad);
+
+      g_object_get (e, "is-live", &live, NULL);
+      if (has_prop (e, "min-latency"))
+        g_object_get (e, "min-latency", &min_latency, NULL);
+      for (j = 0; live && min_latency == -1 && j < sinks->len; j++) {
+        PmElementRef *sink = g_ptr_array_index (sinks, j);
+
+        if (!sink->no_room || !same_top (ref->path, sink->path))
+          continue;
+        f = finding_new ("app-latency", PM_WARNING, ref->id, ref->path, 0,
+            NULL);
+        f->text = g_strdup_printf ("%s has no room for its processing "
+            "deadline, and %s is live without min-latency", sink->path,
+            ref->path);
+        f->hint = g_strdup ("Without min-latency, appsrc reports a latency "
+            "with no room to add. The sink then plays each buffer as soon "
+            "as it arrives, late by its processing time, and warns "
+            "\"please add queues\". Set min-latency to at least how late "
+            "a buffer can be when it is pushed.");
+        g_ptr_array_add (findings, f);
+        break;
+      }
+
+      if (!block && leaky == 0 && q->full_since != 0 &&
+          now - q->full_since >= FULL_AFTER_US) {
+        f = finding_new ("app-grows", PM_WARNING, ref->id, ref->path, 0,
+            NULL);
+        f->text = g_strdup_printf ("%s has held more than its %s for %"
+            G_GINT64_FORMAT " s (%.0f×), and keeps queueing", ref->path,
+            limit, (now - q->full_since) / G_USEC_PER_SEC, fill);
+        f->hint = g_strdup ("More is pushed into it than leaves it. Past "
+            "its limits appsrc only emits enough-data; to stop there, set "
+            "block=true (the push waits) or leaky-type (it drops).");
+        g_ptr_array_add (findings, f);
+      }
+    } else if (!drop && leaky == 0 && ref->live && q->full_since != 0 &&
+        now - q->full_since >= FULL_AFTER_US) {
+      f = finding_new ("app-full", PM_WARNING, ref->id, ref->path, 0, NULL);
+      f->text = g_strdup_printf ("%s has been at its %s for %"
+          G_GINT64_FORMAT " s", ref->path, limit,
+          (now - q->full_since) / G_USEC_PER_SEC);
+      f->hint = g_strdup ("The program does not pull samples as fast as "
+          "they come; meanwhile appsink waits, holding up its pipeline. "
+          "To lose old samples instead, set drop=true or leaky-type.");
+      g_ptr_array_add (findings, f);
+    }
+  }
+  g_ptr_array_unref (sinks);
+  g_ptr_array_unref (apps);
+}
+
 /* Whether the pipeline at path's top level must keep up with time: live,
  * or with a sink that syncs to the clock. Otherwise (a file transcoded as
  * fast as it goes) a whole core is just its pace. */
@@ -902,6 +1090,7 @@ pm_findings_tick (PmFindings * self, gint64 stuck_after_us)
   add_structure (self, findings);
   add_queues (self, findings, seen);
   add_sinks (self, findings, seen);
+  add_apps (self, findings, seen);
   add_busy (self, findings);
   add_leftovers (self, findings);
   forget_others (self->queues, seen);
