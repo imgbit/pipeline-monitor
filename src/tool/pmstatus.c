@@ -366,7 +366,7 @@ span_text (gdouble ns)
 static gchar *
 wall_text (gint64 us)
 {
-  GDateTime *t = g_date_time_new_from_unix_local_usec (us);
+  GDateTime *t = g_date_time_new_from_unix_local (us / G_USEC_PER_SEC);
   gchar *text = t ? g_date_time_format (t, "%H:%M:%S") : g_strdup ("?");
 
   if (t)
@@ -450,7 +450,8 @@ print_header (Status * s)
   if (s->recording) {
     gchar *at = clock_text (s->at * 1000), *len = clock_text (s->length *
         1000);
-    GDateTime *t = g_date_time_new_from_unix_local_usec (s->started);
+    GDateTime *t = g_date_time_new_from_unix_local (s->started /
+        G_USEC_PER_SEC);
     gchar *when = t ? g_date_time_format (t, "%Y-%m-%d %H:%M:%S") : NULL;
 
     g_print ("Recording %s\n  of %s (pid %" G_GINT64_FORMAT "), started %s; "

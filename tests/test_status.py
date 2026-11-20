@@ -20,7 +20,9 @@ import time
 def status(tool, *args):
     r = subprocess.run([tool, "status", *args], capture_output=True,
                        timeout=60)
-    return r.returncode, r.stdout.decode("utf-8"), r.stderr.decode("utf-8")
+    # Windows ends lines with \r\n.
+    return (r.returncode, r.stdout.decode("utf-8").replace("\r\n", "\n"),
+            r.stderr.decode("utf-8").replace("\r\n", "\n"))
 
 
 def start(serve, pipeline):
