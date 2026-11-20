@@ -89,6 +89,8 @@ GUIDE = [
      "performance and recordings."),
     ("options", "Options", "pipeline-monitor's options: port, recordings, "
      "recording from the start, waiting for the page, and more."),
+    ("assistant", "AI assistants", "Let an AI assistant read your running "
+     "pipeline with pipeline-monitor status: problems, queues, caps, logs."),
     ("troubleshooting", "Troubleshooting", "When pipeline-monitor shows no "
      "address, no page or no graph: the usual causes and their fixes."),
 ]

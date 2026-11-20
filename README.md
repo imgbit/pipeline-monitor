@@ -182,9 +182,30 @@ Then open the address it prints, by default http://127.0.0.1:8765/.
 The server has no authentication. It only accepts connections from the same
 machine and only from its own page.
 
-Scripts and other tools can read the same data over HTTP and a WebSocket,
-e.g. `curl -s http://127.0.0.1:8765/api/findings`; see
+### In the terminal, and for AI assistants
+
+`pipeline-monitor status` prints what the page shows, as text: each
+running program with the tracer, its pipelines and states, queue fill,
+CPU, problems with their hints, and errors and warnings.
+
+```sh
+pipeline-monitor status                  # every program found
+pipeline-monitor status --element queue0 # one element: pads, caps, queue, properties
+pipeline-monitor status --graph          # every element, link and caps
+pipeline-monitor status --log            # the errors and warnings logged
+pipeline-monitor status rec.jsonl --at 12.5  # a recording, at 12.5 s
+```
+
+It exits with 1 when it finds an error, so scripts and AI coding
+assistants (Claude Code, Cursor, Codex and others that run commands) can
+use it directly: ask yours to "run `pipeline-monitor status` and find out
+why the pipeline stalls". `--json` gives the plugin's own messages, and
+the same data is on HTTP, e.g.
+`curl -s http://127.0.0.1:8765/api/findings`; see
 [docs/protocol.md](docs/protocol.md).
+
+Would an MCP server help you (for assistants that cannot run commands)?
+Say so in [Discussions](https://github.com/imgbit/pipeline-monitor/discussions).
 
 ### Recordings
 
