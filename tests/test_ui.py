@@ -1274,7 +1274,14 @@ def check_two_pipelines(browser, serve):
     try:
         browser.call("Page.navigate", url=url)
         assert browser.wait(f"!{select}.hidden && {select}.options.length "
-                            "=== 2", timeout=10), "no pipeline selector"
+                            "=== 2", timeout=10), \
+            "no pipeline selector: " + str(browser.eval(
+                f"JSON.stringify({{hidden: {select}.hidden, options: "
+                f"[...{select}.options].map(o => o.textContent), "
+                "connection: document.querySelector('.connection')"
+                "?.textContent, nodes: document.querySelectorAll("
+                "'#graph .node').length})")) + \
+            "\nprogram: " + "\n".join(server.lines[-10:])
         for want in ("other-sink", "retime"):
             browser.eval(f"(s => {{ s.value = [...s.options].find(o => "
                          f"o.selected === false).value; s.dispatchEvent("
