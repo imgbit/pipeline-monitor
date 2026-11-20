@@ -2037,6 +2037,108 @@ wait_full (const gchar * name, gint64 buffers)
   return NULL;
 }
 
+/* The queue entry of the element whose path ends with suffix in
+ * /api/levels, or NULL; *root to unref. */
+static JsonObject *
+levels_entry (const gchar * suffix, JsonNode ** root)
+{
+  gchar *body;
+  JsonArray *queues;
+  guint i;
+
+  get_status ("api/levels", "GET", NULL, &body, NULL);
+  *root = parse (body);
+  g_free (body);
+  queues = json_object_get_array_member (json_node_get_object (*root),
+      "queues");
+  for (i = 0; i < json_array_get_length (queues); i++) {
+    JsonObject *q = json_array_get_object_element (queues, i);
+
+    if (g_str_has_suffix (json_object_get_string_member (q, "path"), suffix))
+      return q;
+  }
+  return NULL;
+}
+
+/* appsrc's and appsink's own queues: levels, limits, what a limit does,
+ * the counts; what this GStreamer cannot read is null (counts and
+ * appsink's level before 1.28). appsrc: buffers timed 10 s ahead wait in
+ * it behind a syncing sink; appsink: nobody pulls. */
+static void
+test_app_levels (void)
+{
+  GstElement *pipeline = start_pipeline ("appsrc name=al-src format=time "
+      "caps=video/x-raw,format=GRAY8,width=16,height=16,framerate=30/1 ! "
+      "fakesink sync=true async=false "
+      "videotestsrc is-live=true ! appsink name=al-sink max-buffers=3");
+  GstElement *appsrc = gst_bin_get_by_name (GST_BIN (pipeline), "al-src");
+  gboolean new_counts = gst_check_version (1, 28, 0);
+  JsonObject *q, *limits, *counts;
+  JsonArray *levels;
+  JsonNode *root = NULL;
+  gint i, tries;
+
+  for (i = 0; i < 6; i++) {
+    GstBuffer *b = gst_buffer_new_allocate (NULL, 256, NULL);
+    GstFlowReturn ret;
+
+    GST_BUFFER_PTS (b) = 10 * GST_SECOND + i * GST_MSECOND;
+    g_signal_emit_by_name (appsrc, "push-buffer", b, &ret);
+    gst_buffer_unref (b);
+  }
+  for (tries = 0, q = NULL; tries < 50; tries++) {
+    g_clear_pointer (&root, json_node_unref);
+    q = levels_entry ("/al-src", &root);
+    if (q && json_array_get_length (json_object_get_array_member (q,
+                "levels")) == 1 && json_object_get_int_member
+        (json_array_get_object_element (json_object_get_array_member (q,
+                    "levels"), 0), "bytes") >= 5 * 256)
+      break;
+    g_usleep (100 * G_TIME_SPAN_MILLISECOND);
+  }
+  g_assert_nonnull (q);
+  g_assert_cmpstr (json_object_get_string_member (q, "kind"), ==, "appsrc");
+  /* No block, no leaky-type: past max-bytes it only signals. */
+  g_assert_cmpstr (json_object_get_string_member (q, "at_limit"), ==,
+      "signals");
+  limits = json_object_get_object_member (q, "limits");
+  g_assert_cmpint (json_object_get_int_member (limits, "bytes"), ==, 200000);
+  levels = json_object_get_array_member (q, "levels");
+  g_assert_cmpint (json_object_get_int_member (json_array_get_object_element
+          (levels, 0), "bytes"), >=, 5 * 256);
+  counts = json_object_get_object_member (q, "counts");
+  if (new_counts)
+    g_assert_cmpint (json_object_get_int_member (counts, "in"), ==, 6);
+  else
+    g_assert_true (json_object_get_null_member (counts, "in"));
+
+  for (tries = 0; tries < 50; tries++) {
+    g_clear_pointer (&root, json_node_unref);
+    q = levels_entry ("/al-sink", &root);
+    if (q && (!new_counts || json_object_get_int_member
+            (json_object_get_object_member (q, "counts"), "in") >= 3))
+      break;
+    g_usleep (100 * G_TIME_SPAN_MILLISECOND);
+  }
+  g_assert_nonnull (q);
+  g_assert_cmpstr (json_object_get_string_member (q, "kind"), ==, "appsink");
+  /* Nobody pulls: it waits, holding up its pipeline. */
+  g_assert_cmpstr (json_object_get_string_member (q, "at_limit"), ==,
+      "blocks");
+  g_assert_cmpint (json_object_get_int_member (json_object_get_object_member
+          (q, "limits"), "buffers"), ==, 3);
+  levels = json_object_get_array_member (q, "levels");
+  if (new_counts)
+    g_assert_cmpint (json_object_get_int_member (json_array_get_object_element
+            (levels, 0), "buffers"), ==, 3);
+  else
+    g_assert_cmpuint (json_array_get_length (levels), ==, 0);
+
+  json_node_unref (root);
+  gst_object_unref (appsrc);
+  stop_pipeline (pipeline);
+}
+
 static void
 test_levels (void)
 {
@@ -4336,6 +4438,7 @@ main (int argc, char **argv)
   g_test_add_func ("/server/invalid-utf8", test_invalid_utf8);
   g_test_add_func ("/server/monitor-pad-gone", test_monitor_pad_gone);
   g_test_add_func ("/server/levels", test_levels);
+  g_test_add_func ("/server/app-levels", test_app_levels);
   g_test_add_func ("/server/levels-multiqueue", test_levels_multiqueue);
   g_test_add_func ("/server/levels-buffering-clock",
       test_levels_buffering_clock);

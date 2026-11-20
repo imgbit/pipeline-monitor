@@ -161,8 +161,14 @@ export function showDetails(aside, selection, index, onClose, log, queue) {
   row("path", path);
   if (element.bin)
     row("contains", `${countElements(element)} elements`);
+  if (APP_SETTINGS[element.factory]) {
+    add(aside, "h3", `${element.factory} settings`);
+    add(aside, "div", "reading…", "app-settings").dataset.factory =
+      element.factory;
+  }
   if (queue) {
-    add(aside, "h3", "Queue");
+    add(aside, "h3", ["appsrc", "appsink"].includes(element.factory)
+      ? `Queue (${element.factory}'s own)` : "Queue");
     add(aside, "div", undefined, "queue-levels");
     updateQueueDetails(aside, queue);
   }
@@ -264,7 +270,70 @@ const PIN_ICON = '<svg viewBox="0 0 12 12" aria-hidden="true">' +
 // Fills the properties section from a /api/properties answer for the
 // element shown; called every second while the panel is open. pinning:
 // {has(name), toggle(name)} for pinning properties to a card.
+// The settings that decide how appsrc and appsink behave, each with what
+// it does (read in GStreamer's source, measured with
+// tests/appsrc_scenarios.py). meaning(value as text, raw value) -> text.
+const APP_SETTINGS = {
+  appsrc: [
+    ["format", (v) => v === "bytes" ? "segments in bytes: buffer " +
+      "timestamps are read as byte positions (for audio and video: time)"
+      : v === "time" ? "segments in time" : `segments in ${v}`],
+    ["is-live", (v) => v === "true" ? "live: its data runs with the clock"
+      : "not live"],
+    ["do-timestamp", (v) => v === "true" ? "fills in missing timestamps " +
+      "with the running time when it pushes; never changes ones you set"
+      : "leaves timestamps as pushed: a buffer without one cannot be placed " +
+      "in time"],
+    ["handle-segment-change", (v) => v === "true" ? "uses the segment of " +
+      "samples pushed with push-sample (with format=time)"
+      : "ignores the segment of samples pushed: its own starts at 0"],
+    ["min-latency", (v, raw) => raw === -1 ? "not set: it reports a latency of " +
+      "0, which leaves a sink no room for its own processing deadline"
+      : "the latency it reports"],
+    ["block", (v) => v === "true" ? "the program's push waits while the " +
+      "queue is full" : "the program's push never waits"],
+    ["leaky-type", (v) => v === "none" ? "keeps every buffer"
+      : `drops buffers (${v}) when the queue is full`],
+    ["caps", () => "what it announces; a pushed sample's caps replace it"],
+  ],
+  appsink: [
+    ["sync", (v) => v === "true" ? "waits for each buffer's time on the " +
+      "clock before the program gets it" : "gives buffers as they come"],
+    ["drop", (v) => v === "true" ? "drops the oldest when the queue is full"
+      : "when the queue is full, waits for the program to pull"],
+    ["leaky-type", (v) => v === "none" ? "keeps every buffer"
+      : `drops buffers (${v}) when the queue is full`],
+    ["wait-on-eos", (v) => v === "true" ? "at the end, waits until the " +
+      "program has pulled everything" : "ends without waiting"],
+    ["caps", () => "what it accepts"],
+  ],
+};
+
+// The appsrc or appsink settings section, from the element's properties.
+function updateAppSettings(aside, data) {
+  const section = aside.querySelector(".app-settings");
+  const factory = section?.dataset.factory;
+  if (!section || !data?.properties || !APP_SETTINGS[factory])
+    return;
+  const dl = document.createElement("dl");
+  for (const [name, meaning] of APP_SETTINGS[factory]) {
+    const p = data.properties.find((x) => x.name === name);
+    if (!p || p.not_answering)
+      continue;
+    const value = propertyText(p);
+    add(dl, "dt", name);
+    const dd = add(dl, "dd");
+    add(dd, "span", value, "app-setting-value");
+    // Only where the default is known (not for caps, for one).
+    if ("default" in p && !p.changed)
+      add(dd, "span", " (default)", "muted");
+    add(dd, "div", meaning(value, p.value), "app-setting-meaning muted");
+  }
+  section.replaceChildren(dl);
+}
+
 export function updateProperties(aside, id, data, pinning) {
+  updateAppSettings(aside, data);
   const section = aside.querySelector(".properties");
   if (!section || Number(section.dataset.element) !== id)
     return;

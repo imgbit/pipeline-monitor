@@ -990,3 +990,7 @@ body.welcoming .toolbar { display: none; }
 body.viewing-dot #performance-counter, body.viewing-dot #problems-counter,
 body.viewing-dot #log-counter, body.viewing-dot #threads,
 body.viewing-dot #process-perf { display: none; }
+
+/* appsrc and appsink settings: the value, then what it does. */
+.app-settings dd { margin-bottom: 4px; }
+.app-setting-meaning { font-size: 12px; }

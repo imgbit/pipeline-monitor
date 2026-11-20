@@ -2076,6 +2076,7 @@ def check_viewer(browser, rows, url):
     check_moments(browser, os.path.join(RECORDINGS, name))
     check_stream_levels(browser, os.path.join(RECORDINGS, name))
     check_unknown_cpu(browser, os.path.join(RECORDINGS, name))
+    check_app_details(browser, os.path.join(RECORDINGS, name))
     check_dot_viewer(browser)
     check_snapshot(browser, os.path.join(RECORDINGS, name))
     check_finding_age(browser, os.path.join(RECORDINGS, name))
@@ -2385,6 +2386,113 @@ def check_unknown_cpu(browser, good):
     assert browser.wait(f"{others}.length === 2"), "the choice was not kept"
     browser.eval(f"{row}.querySelector('.perf-toggle').click()")
     close_panel(browser, "performance")
+
+
+# appsrc and appsink: their settings with what each does, and their own
+# queue (an appsrc far past max-bytes that only signals; an appsink from a
+# GStreamer that cannot say its level).
+def check_app_details(browser, good):
+    with open(good) as f:
+        header = json.loads(f.readline())
+    started = header["started"]
+
+    def element(element_id, name, factory, kind, pads):
+        return {"id": element_id, "name": name, "path": f"p/{name}",
+                "factory": factory, "type": kind, "bin": False,
+                "state": "PLAYING", "pads": pads, "children": []}
+
+    def pad(pad_id, owner, name, direction):
+        return {"id": pad_id, "name": name, "path": f"p/{owner}:{name}",
+                "direction": direction, "presence": "always",
+                "ghost": False, "mode": "push"}
+
+    graph = {"type": "graph", "protocol": 1, "time": started, "links": [],
+             "threads": [], "pipelines": [{
+                 "id": 1, "name": "p", "path": "p", "factory": "pipeline",
+                 "type": "GstPipeline", "bin": True, "state": "PLAYING",
+                 "pads": [], "children": [
+                     element(2, "src", "appsrc", "GstAppSrc",
+                             [pad(3, "src", "src", "src")]),
+                     element(4, "sink", "appsink", "GstAppSink",
+                             [pad(5, "sink", "sink", "sink")])]}]}
+    levels = {"type": "levels", "protocol": 1, "time": started + 1000000,
+              "pipelines": [], "queues": [
+                  {"element": 2, "path": "p/src", "kind": "appsrc",
+                   "at_limit": "signals", "leaky": "none",
+                   "limits": {"buffers": 0, "bytes": 200000, "time": 0},
+                   "counts": {"in": 105, "out": 1, "dropped": 0},
+                   "levels": [{"buffers": 104, "bytes": 11980800,
+                               "time": 3466666667}]},
+                  {"element": 4, "path": "p/sink", "kind": "appsink",
+                   "at_limit": "blocks",
+                   "limits": {"buffers": 3, "bytes": None, "time": None},
+                   "counts": {"in": None, "out": None, "dropped": None},
+                   "levels": []}]}
+
+    def prop(name, value, changed=False, default=True):
+        p = {"name": name, "type": "", "writable": True, "value": value,
+             "changed": changed}
+        if default:
+            p["default"] = value
+        return p
+    properties = {"type": "properties", "protocol": 1, "time": started + 1000000,
+                  "elements": [{"element": 2, "path": "p/src",
+                                "properties": [
+                                    prop("format", {"nick": "time",
+                                                    "value": 3}, True),
+                                    prop("handle-segment-change", False),
+                                    prop("min-latency", -1),
+                                    prop("caps", {"caps": "video/x-raw"},
+                                         default=False)]}]}
+    open_messages(browser, header, [graph, levels, properties, {
+        "type": "end", "protocol": 1, "time": started + 2000000,
+        "reason": "stopped"}], "app-details.jsonl")
+    # This recording shown (the one before may still be open), then its
+    # end: the levels are a second in.
+    assert browser.wait(f"!!{element_selector('src')}")
+    browser.eval("(s => { s.value = s.max; s.dispatchEvent(new Event("
+                 "'input')); })(document.getElementById('seek'))")
+    # On the graph: the level against the limit it is nearest, in red.
+    label = (f"{element_selector('src')}.closest('svg').querySelector("
+             "'.level-text.full')?.textContent")
+    assert browser.wait(f"/^5990 % bytes/.test({label})"), \
+        browser.eval("JSON.stringify({texts: [...document.querySelectorAll("
+                     "'#graph .level-text')].map(t => t.textContent), "
+                     "banner: document.getElementById('viewing-text')"
+                     ".textContent, seek: (s => [s.value, s.max])("
+                     "document.getElementById('seek')), time: document"
+                     ".getElementById('play-time').textContent, levelled: "
+                     "[...document.querySelectorAll('#graph .node')].map(n "
+                     "=> [n.querySelector(':scope > .name')?.textContent, "
+                     "n.dataset.level ?? null, n.getBBox().width | 0])})")
+    details = "document.getElementById('details').innerText"
+    node = browser.eval(f"{element_selector('src')}?.dataset.id")
+    assert browser.click_until(
+        f'#graph .node[data-id="{node}"] > rect.box',
+        "document.querySelector('#details h2')?.textContent === 'src'")
+    for text in ("appsrc settings", "segments in time",
+                 "ignores the segment of samples pushed",
+                 "not set: it reports a latency of 0",
+                 "Queue (appsrc's own)",
+                 "only signals enough-data, and keeps queueing",
+                 "105 / 1 / 0"):
+        assert browser.wait(f"{details}.includes({json.dumps(text)})"), \
+            f"no {text!r} in: {browser.eval(details)}"
+    # caps have no known default: not called one.
+    assert browser.eval(f"!/caps\\s+video\\/x-raw \\(default\\)/"
+                        f".test({details})"), browser.eval(details)
+    close_details(browser)
+    node = browser.eval(f"{element_selector('sink')}?.dataset.id")
+    assert browser.click_until(
+        f'#graph .node[data-id="{node}"] > rect.box',
+        "document.querySelector('#details h2')?.textContent === 'sink'")
+    for text in ("level\nnot available before GStreamer 1.28",
+                 "waits for the program to pull, holding up the pipeline",
+                 "in / out / dropped\nnot available before GStreamer 1.28"):
+        assert browser.wait(f"{details}.includes({json.dumps(text)})"), \
+            f"no {text!r} in: {browser.eval(details)}"
+    close_details(browser)
+    browser.click("#viewing-close")
 
 
 def check_stream_levels(browser, good):

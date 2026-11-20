@@ -234,6 +234,17 @@ the task has ended.
   that post buffering messages.
 - `levels`: one entry for a queue; one per sink pad, with `pad`, for a
   multiqueue.
+- Since 0.13, also `appsrc` and `appsink` (their own queue):
+  `{"element":12,"path":"display/in","kind":"appsrc","at_limit":"signals",
+  "leaky":"none","limits":{"buffers":0,"bytes":200000,"time":0},
+  "counts":{"in":105,"out":1,"dropped":0},"levels":[{"buffers":104,
+  "bytes":11980800,"time":3466666667}]}`. `at_limit`: what reaching a limit
+  does, from the element's settings: `blocks` (appsrc with `block`, or an
+  appsink that does not drop: it waits), `drops` (`leaky-type` or `drop`),
+  `signals` (appsrc: only `enough-data`, it keeps queueing). A limit 0 is
+  no limit; a limit, a count or a level this GStreamer cannot read is
+  `null` (counts and appsink's level since 1.28), and `levels` is empty
+  without a level. No `overruns`, `underruns` or `buffering`.
 - `clock_provider`: the path of the element that gives the clock, or
   `null`.
 

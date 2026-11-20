@@ -10,7 +10,8 @@ const HEADER = 38;
 const ROW = 18;
 // Queues: each pad row holds a level, its number above a bar between the
 // pad names (render.js drawLevels).
-const LEVEL_TYPES = new Set(["GstQueue", "GstQueue2", "GstMultiQueue"]);
+const LEVEL_TYPES = new Set(["GstQueue", "GstQueue2", "GstMultiQueue",
+  "GstAppSrc", "GstAppSink"]);
 const LEVEL_ROW = 26;
 const LEVEL_BAR = 48;
 const PORT = 8;

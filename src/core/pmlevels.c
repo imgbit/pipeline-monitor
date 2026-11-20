@@ -44,6 +44,27 @@ queue_filter (GstElement * element, gboolean top_level)
   return !top_level && pm_levels_is_queue (element);
 }
 
+/* appsrc and appsink keep a queue of their own (in the app library: by
+ * type name too). */
+static const gchar *
+app_kind (GstElement * element)
+{
+  GType src = g_type_from_name ("GstAppSrc");
+  GType sink = g_type_from_name ("GstAppSink");
+
+  if (src != 0 && g_type_is_a (G_OBJECT_TYPE (element), src))
+    return "appsrc";
+  if (sink != 0 && g_type_is_a (G_OBJECT_TYPE (element), sink))
+    return "appsink";
+  return NULL;
+}
+
+static gboolean
+app_filter (GstElement * element, gboolean top_level)
+{
+  return !top_level && app_kind (element) != NULL;
+}
+
 static gboolean
 pipeline_filter (GstElement * element, gboolean top_level)
 {
@@ -147,6 +168,122 @@ append_queue (GString * json, PmModel * model, PmElementRef * ref)
   g_string_append_c (json, ',');
 }
 
+/* A number property, of whichever unsigned or signed type it has; FALSE
+ * where this GStreamer has no such property. */
+static gboolean
+get_count (gpointer object, const gchar * name, guint64 * out)
+{
+  GParamSpec *pspec = g_object_class_find_property (G_OBJECT_GET_CLASS
+      (object), name);
+  GValue value = G_VALUE_INIT;
+
+  if (pspec == NULL || !(pspec->flags & G_PARAM_READABLE))
+    return FALSE;
+  g_value_init (&value, pspec->value_type);
+  g_object_get_property (object, name, &value);
+  if (G_VALUE_HOLDS_UINT64 (&value))
+    *out = g_value_get_uint64 (&value);
+  else if (G_VALUE_HOLDS_UINT (&value))
+    *out = g_value_get_uint (&value);
+  else if (G_VALUE_HOLDS_INT64 (&value))
+    *out = MAX (g_value_get_int64 (&value), 0);
+  else if (G_VALUE_HOLDS_INT (&value))
+    *out = MAX (g_value_get_int (&value), 0);
+  else {
+    g_value_unset (&value);
+    return FALSE;
+  }
+  g_value_unset (&value);
+  return TRUE;
+}
+
+static void
+append_count (GString * json, gpointer object, const gchar * key,
+    const gchar * name)
+{
+  guint64 n;
+
+  if (get_count (object, name, &n))
+    pm_json_append_value (json, key, n);
+  else
+    g_string_append_printf (json, "\"%s\":null,", key);
+}
+
+/* An enum property's nick, NULL where there is none. */
+static const gchar *
+enum_nick (gpointer object, const gchar * name)
+{
+  GParamSpec *pspec = g_object_class_find_property (G_OBJECT_GET_CLASS
+      (object), name);
+  GEnumValue *value;
+  gint n = 0;
+
+  if (pspec == NULL || !G_IS_PARAM_SPEC_ENUM (pspec))
+    return NULL;
+  g_object_get (object, name, &n, NULL);
+  value = g_enum_get_value (G_PARAM_SPEC_ENUM (pspec)->enum_class, n);
+  return value ? value->value_nick : NULL;
+}
+
+/* appsrc's and appsink's own queue: its levels and limits where this
+ * GStreamer has them (null where not), what reaching a limit does, and the
+ * counts of buffers in, out and dropped. */
+static void
+append_app (GString * json, PmModel * model, PmElementRef * ref)
+{
+  GstElement *element = ref->element;
+  const gchar *kind = app_kind (element);
+  const gchar *leaky = enum_nick (element, "leaky-type");
+  gboolean block = FALSE, drop = FALSE;
+  guint64 level;
+  const gchar *at_limit;
+
+  if (has_property (element, "block"))
+    g_object_get (element, "block", &block, NULL);
+  if (has_property (element, "drop"))
+    g_object_get (element, "drop", &drop, NULL);
+  /* appsrc: past its limits it only emits enough-data unless it blocks or
+   * drops; appsink: it waits (blocking upstream) unless it drops. */
+  if ((leaky && g_strcmp0 (leaky, "none") != 0) || drop)
+    at_limit = "drops";
+  else if (g_str_equal (kind, "appsink") || block)
+    at_limit = "blocks";
+  else
+    at_limit = "signals";
+
+  g_string_append_c (json, '{');
+  pm_json_append_value (json, "element", ref->id);
+  pm_json_append_member_string (json, "path", ref->path);
+  pm_json_append_member_string (json, "kind", kind);
+  pm_json_append_member_string (json, "at_limit", at_limit);
+  if (leaky != NULL)
+    pm_json_append_member_string (json, "leaky", leaky);
+  g_string_append (json, "\"limits\":{");
+  append_count (json, element, "buffers", "max-buffers");
+  append_count (json, element, "bytes", "max-bytes");
+  append_count (json, element, "time", "max-time");
+  pm_json_close (json, '}');
+  g_string_append_c (json, ',');
+  g_string_append (json, "\"counts\":{");
+  append_count (json, element, "in", "in");
+  append_count (json, element, "out", "out");
+  append_count (json, element, "dropped", "dropped");
+  pm_json_close (json, '}');
+  g_string_append_c (json, ',');
+  /* No level before it can be read (appsink: GStreamer 1.28). */
+  g_string_append (json, "\"levels\":[");
+  if (get_count (element, "current-level-bytes", &level)) {
+    g_string_append_c (json, '{');
+    append_count (json, element, "buffers", "current-level-buffers");
+    pm_json_append_value (json, "bytes", level);
+    append_count (json, element, "time", "current-level-time");
+    pm_json_close (json, '}');
+  }
+  pm_json_close (json, ']');
+  pm_json_close (json, '}');
+  g_string_append_c (json, ',');
+}
+
 static void
 append_pipeline (GString * json, PmModel * model, PmElementRef * ref)
 {
@@ -238,6 +375,11 @@ pm_levels_to_json (PmModel * model)
   g_string_append (json, "\"queues\":[");
   for (i = 0; i < found->len; i++)
     append_queue (json, model, g_ptr_array_index (found, i));
+  g_ptr_array_unref (found);
+  found = pm_model_find_elements (model, app_filter);
+  g_ptr_array_sort (found, compare_refs);
+  for (i = 0; i < found->len; i++)
+    append_app (json, model, g_ptr_array_index (found, i));
   pm_json_close (json, ']');
   g_string_append_c (json, ',');
   g_ptr_array_unref (found);

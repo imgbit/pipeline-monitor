@@ -46,9 +46,44 @@ function amount(key, value, unit) {
   return String(value);
 }
 
+// What appsrc's and appsink's queue does at a limit (from their settings).
+const AT_LIMIT = {
+  blocks: { appsrc: "the program's push waits for room (block)",
+    appsink: "waits for the program to pull, holding up the pipeline" },
+  drops: { appsrc: "drops buffers (leaky-type)",
+    appsink: "drops buffers (drop / leaky-type)" },
+  signals: { appsrc: "only signals enough-data, and keeps queueing" },
+};
+
+// appsrc's and appsink's own queue: what this GStreamer can tell.
+function appRows(queue, unit) {
+  const rows = [];
+  if (!queue.levels.length)
+    rows.push(["level", "not available before GStreamer 1.28"]);
+  for (const level of queue.levels) {
+    for (const [key] of LIMITS) {
+      const max = queue.limits[key];
+      const value = level[key];
+      rows.push([key, `${value === null ? "—" : amount(key, value, unit)} / ` +
+        (max === null ? "no such limit" : max ? amount(key, max, unit)
+          : "no limit")]);
+    }
+  }
+  rows.push(["at a limit", AT_LIMIT[queue.at_limit]?.[queue.kind] ??
+    queue.at_limit]);
+  const { in: into, out, dropped } = queue.counts ?? {};
+  if (into === null || into === undefined)
+    rows.push(["in / out / dropped", "not available before GStreamer 1.28"]);
+  else
+    rows.push(["in / out / dropped", `${into} / ${out} / ${dropped}`]);
+  return rows;
+}
+
 // Rows for the tooltip and the details panel; padName(id) names a
 // multiqueue pad.
 export function queueRows(queue, unit, padName) {
+  if (queue.kind === "appsrc" || queue.kind === "appsink")
+    return appRows(queue, unit);
   const rows = [];
   for (const level of queue.levels) {
     const prefix = level.pad ? `${padName(level.pad)} ` : "";
