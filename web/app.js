@@ -666,15 +666,22 @@ function updateHeader(pipeline) {
 
   select.hidden = pipelines.length < 2;
   $("pipeline-name").hidden = pipelines.length >= 2;
-  if (pipelines.length >= 2) {
+  // Rebuilt only when the pipelines change: replacing the options closes
+  // the list while it is open (a program that keeps posting warnings sends
+  // the graph several times a second).
+  const list = pipelines.map((p) => `${p.id}:${p.name}`).join("\n");
+  if (pipelines.length >= 2 && select.dataset.list !== list) {
+    select.dataset.list = list;
     select.replaceChildren(...pipelines.map((p) => {
       const o = document.createElement("option");
       o.value = p.id;
       o.textContent = p.name;
-      o.selected = pipeline && p.id === pipeline.id;
       return o;
     }));
   }
+  if (pipelines.length >= 2 && pipeline &&
+      select.value !== String(pipeline.id))
+    select.value = String(pipeline.id);
   $("pipeline-name").textContent = pipeline ? pipeline.name : "";
   // Without a connection it is the last state known, not the current one.
   $("pipeline-state").textContent = pipeline

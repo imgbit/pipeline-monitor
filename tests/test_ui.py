@@ -1316,6 +1316,13 @@ def check_two_pipelines(browser, serve):
             "no 'latency ?' for an element that makes new timestamps"
         browser.eval("document.querySelector('#details .latency-section "
                      ".measure-toggle').click()")
+        # A redraw keeps the list's options: replacing them would close the
+        # list while it is open.
+        browser.eval(f"window.keptOption = {select}.options[0]")
+        for _ in range(2):
+            browser.eval("document.getElementById('caps-labels').click()")
+        assert browser.eval(f"{select}.options[0] === window.keptOption"), \
+            "the pipeline list was rebuilt on a redraw"
         assert not browser.errors, f"errors in the page: {browser.errors}"
     except (AssertionError, RuntimeError):
         # What the page and the program showed.
