@@ -129,25 +129,56 @@ export function linkRows(into, out, same) {
     const b = segmentCell(out.segment, key);
     rows.push([`segment ${key}`, a, b, a !== b]);
   }
+  // The buffer's running time at each end, from its PTS and segment.
+  const runA = runningTime(into.pts, into.segment);
+  const runB = same ? runningTime(out.pts, out.segment) : null;
+  rows.push(["running time", clockTime(runA), clockTime(runB), false]);
   const p = into.pipeline;
   const q = out.pipeline;
   if (p || q) {
     rows.push(["pipeline", p?.path ?? "—", q?.path ?? "—", false]);
     const clockA = p?.clock ?? "none";
     const clockB = q?.clock ?? "none";
-    rows.push(["clock", clockA, clockB, Boolean(p && q) && clockA !== clockB,
-      "The clock each pipeline runs on. Two different clocks drift apart, " +
-      "so timestamps cannot be carried from one pipeline to the other."]);
+    const sameClock = Boolean(p && q) && clockA === clockB;
+    rows.push(["clock", clockA, clockB, Boolean(p && q) && !sameClock]);
     // Only a problem when the timestamps were carried over unchanged.
     const carried = same && into.pts === out.pts;
+    // From a millisecond: below what is shown is no difference to see.
     rows.push(["base time", clockTime(p?.base_time), clockTime(q?.base_time),
-      carried && p?.base_time !== q?.base_time,
-      "Each pipeline's clock time at its start: running time = clock time " +
-      "- base time. When the timestamps are carried over unchanged (here " +
-      `${carried ? "they are" : "they are not"}), different base times ` +
-      "make the same timestamp a different moment in each pipeline."]);
+      carried && p?.base_time != null && q?.base_time != null &&
+      Math.abs(p.base_time - q.base_time) >= 1e6]);
+    // When each pipeline plays it on its clock: base time + running time.
+    const playA = runA === null || p?.base_time == null ? null
+      : p.base_time + runA;
+    const playB = runB === null || q?.base_time == null ? null
+      : q.base_time + runB;
+    let b = clockTime(playB);
+    if (playA !== null && playB !== null)
+      b += sameClock ? ` (${signedSpan(playB - playA)})`
+        : " (different clocks: not comparable)";
+    rows.push(["plays at", clockTime(playA), b, false,
+      "When the pipeline plays this buffer, as a time on its clock: its " +
+      "base time + the buffer's running time (its PTS within the segment). " +
+      "The same buffer meant for the same moment at both ends shows the " +
+      "same time; the difference after it is how much later (or earlier) " +
+      "it plays after going through the program and appsrc. A lost " +
+      "segment, timestamps carried between pipelines with different base " +
+      "times, or restamping all show up here."]);
   }
   return rows;
+}
+
+// (PTS − segment start) / rate + segment base, for a time segment played
+// forwards; null when it cannot be told.
+function runningTime(pts, segment) {
+  if (pts === null || pts === undefined || !segment ||
+      segment.format !== "time" || !(segment.rate > 0) || pts < segment.start)
+    return null;
+  return Math.round((pts - segment.start) / segment.rate) + segment.base;
+}
+
+function signedSpan(ns) {
+  return `${ns < 0 ? "−" : "+"}${(Math.abs(ns) / 1e9).toFixed(3)} s`;
 }
 
 // appsrc's segment sent or appsink's segment received, and appsink's last

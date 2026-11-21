@@ -355,7 +355,7 @@ function problemsOf(element) {
 
 function showProblems() {
   const selection = buildIndex(state.graph).elements.get(state.selected);
-  if (selection)
+  if (selection && !detailsFrozen())
     updateProblemsDetails($("details"), problemsOf(selection.element));
   const { pads, elements } = findings.byPlace();
   const sev = (map) => new Map([...map].map(([id, list]) => [id,
@@ -815,10 +815,8 @@ async function layoutAndRender() {
   showLatencyLabels();
   // A click being made on the panel: rebuilding it now would remove the
   // pressed button and lose the click. It is rebuilt once released.
-  if (detailsHeld) {
-    detailsDeferred = true;
+  if (detailsFrozen())
     return;
-  }
   const details = selection && log.enabled ? {
     entries: log.entriesFor(selection.element.id),
     muted: log.isMuted(selection.path),
@@ -846,8 +844,32 @@ async function layoutAndRender() {
 
 // While a pointer is pressed on the details panel, it is not rebuilt: the
 // rebuild waits for the release, and runs after the click is delivered.
+// Nor while text in it is selected (a rebuild would drop the selection):
+// it waits until the selection is gone.
 let detailsHeld = false;
 let detailsDeferred = false;
+
+function selectingInDetails() {
+  const s = document.getSelection();
+  return Boolean(s && !s.isCollapsed && s.rangeCount &&
+    $("details").contains(s.getRangeAt(0).commonAncestorContainer));
+}
+
+// Whether the panel is to be left as it is now; if so, it is brought up to
+// date later.
+function detailsFrozen() {
+  if (!detailsHeld && !selectingInDetails())
+    return false;
+  detailsDeferred = true;
+  return true;
+}
+
+document.addEventListener("selectionchange", () => {
+  if (detailsDeferred && !detailsHeld && !selectingInDetails()) {
+    detailsDeferred = false;
+    update();
+  }
+});
 $("details").addEventListener("pointerdown", () => {
   detailsHeld = true;
 });
@@ -891,6 +913,8 @@ async function refreshProperties() {
     }
     if (state.selected === id) {
       propsLast = { id, data };
+    }
+    if (state.selected === id && !detailsFrozen()) {
       updateProperties($("details"), id, data, pinningFor(id));
       const selection = buildIndex(state.graph).elements.get(id);
       updateLatencyDetails($("details"), latencyDetails(selection));
@@ -1038,6 +1062,8 @@ function applyLatency(latency) {
   measure.apply(latency);
   showLatencyLabels();
   showMeasureAll();
+  if (detailsFrozen())
+    return;
   const index = buildIndex(state.graph);
   updateLatencyDetails($("details"), latencyDetails(
     index.elements.get(state.selected)));
@@ -1049,11 +1075,13 @@ function applyLevels(levels) {
     [p.element, p]));
   view.setLevels(state.queues);
   showTimes(currentPipeline());
+  state.levelsTime = levels.time;
+  if (detailsFrozen())
+    return;
   const index = buildIndex(state.graph);
   updateQueueDetails($("details"), queueDetails(
     index.elements.get(state.selected), index));
   updateAppStream($("details"), state.queues.get(state.selected));
-  state.levelsTime = levels.time;
   updateAppLink($("details"), state.queues.get(state.selected), state.queues,
     levels.time, jumpTo, levels.pipelines);
 }

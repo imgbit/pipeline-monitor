@@ -1340,6 +1340,22 @@ def check_two_pipelines(browser, serve):
             "no 'latency ?' for an element that makes new timestamps"
         browser.eval("document.querySelector('#details .latency-section "
                      ".measure-toggle').click()")
+        # Text selected in the details panel stays selected while the live
+        # program updates it; the panel catches up once it is let go.
+        # A value in Properties: read again and redrawn every second.
+        path = ("document.querySelector('#details .props tr:nth-child(1) "
+                "td:last-child')")
+        browser.eval(f"(n => {{ const r = document.createRange(); "
+                     f"r.selectNodeContents(n); getSelection()"
+                     f".removeAllRanges(); getSelection().addRange(r); "
+                     f"window.selectedNode = n; }})({path})")
+        time.sleep(2)
+        assert browser.eval("!getSelection().isCollapsed && "
+                            "window.selectedNode.isConnected"), \
+            "the selection was lost to an update"
+        browser.eval("getSelection().removeAllRanges()")
+        assert browser.wait("!window.selectedNode.isConnected"), \
+            "the panel did not catch up after the selection"
         # A redraw keeps the list's options: replacing them would close the
         # list while it is open.
         browser.eval(f"window.keptOption = {select}.options[0]")
@@ -2576,8 +2592,15 @@ def check_app_details(browser, good):
             ".firstChild?.textContent ?? '') + '=' + [...r.children].slice(1)"
             ".map(c => c.textContent).join('/')).join(';')")
     for row in ("pipeline=p/p", "clock=GstSystemClock/GstSystemClock",
-                "base time=0:00:07.000/0:00:07.000"):
+                "base time=0:00:07.000/0:00:07.000",
+                # PTS 5 s in a segment from 5 s, out in one from 0.
+                "running time=0:00:00.000/0:00:05.000",
+                "plays at=0:00:07.000/0:00:12.000 (+5.000 s)"):
         assert row in browser.eval(rows), browser.eval(rows)
+    plays = (f"[...{link}.querySelectorAll('tr')].find(r => r.firstChild"
+             ".textContent === 'plays at')?.firstChild.title ?? ''")
+    assert "base time + the buffer's running time" in browser.eval(plays), \
+        browser.eval(plays)
     assert browser.eval(f"{link}.querySelector('.app-compare').hidden")
     # Its name goes to it.
     browser.eval("document.querySelector('.app-link-place')"

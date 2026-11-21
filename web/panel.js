@@ -100,7 +100,7 @@ function linkTable(parent, rows) {
     const tr = add(table, "tr", undefined, differs ? "differs" : undefined);
     const name = add(tr, "td", label, "muted");
     if (meaning)
-      info(name, `row:${label}`, meaning);
+      name.title = meaning;
     add(tr, "td", a);
     add(tr, "td", b);
   }
@@ -575,6 +575,7 @@ export function updateProperties(aside, id, data, pinning) {
 }
 
 function showPads(aside, element, index) {
+  add(aside, "h3", "Pads");
   const table = add(aside, "table");
   const head = add(table, "tr");
   for (const h of ["pad", "dir", "mode", "presence", "linked to", "caps"])
