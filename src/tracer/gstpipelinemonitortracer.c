@@ -527,15 +527,22 @@ pair_buffer (GstPipelineMonitorTracer * self, PmPadRole * r, GstBuffer * b,
     /* A mark already there: the same buffer going into another appsink
      * too (a tee: same PTS) adds this one; else the memory was reused
      * for a new buffer (a buffer pool) and the old mark goes. So a mark
-     * names exactly the appsinks this buffer went into. */
-    for (i = 0; i < n && g_atomic_int_get (&live_marks); i++) {
+     * names exactly the appsinks this buffer went into. Looking, adding
+     * and making a mark are one step under the lock: appsinks fed by a
+     * tee do it at the same moment. */
+    if (slot)
+      r->last_slot = slot;
+    if (sample)
+      r->last_mark = now;
+    for (i = 0; i < n && (sample || g_atomic_int_get (&live_marks)); i++) {
       GstMiniObject *mem = GST_MINI_OBJECT (gst_buffer_peek_memory (b, i));
       PmMark copy;
       gboolean joined = FALSE;
       guint k, j;
       PmMark *old;
 
-      if (G_LIKELY (gst_mini_object_get_qdata (mem, mark_quark) == NULL))
+      if (!sample && G_LIKELY (gst_mini_object_get_qdata (mem,
+                  mark_quark) == NULL))
         continue;
       g_mutex_lock (&mark_lock);
       old = gst_mini_object_get_qdata (mem, mark_quark);
@@ -547,9 +554,22 @@ pair_buffer (GstPipelineMonitorTracer * self, PmPadRole * r, GstBuffer * b,
           copy = *old;
           joined = TRUE;
         }
-        sample = FALSE;
-      } else if (old) {
-        gst_mini_object_set_qdata (mem, mark_quark, NULL, NULL);
+      } else {
+        if (old)
+          gst_mini_object_set_qdata (mem, mark_quark, NULL, NULL);
+        if (sample) {
+          PmMark *m = g_new0 (PmMark, 1);
+
+          m->sinks[0] = r->sink;
+          m->n_sinks = 1;
+          m->pts = GST_BUFFER_PTS (b);
+          m->has_segment = r->has_segment;
+          if (r->has_segment)
+            gst_segment_copy_into (&r->segment, &m->segment);
+          m->time = now;
+          g_atomic_int_inc (&live_marks);
+          gst_mini_object_set_qdata (mem, mark_quark, m, mark_free);
+        }
       }
       g_mutex_unlock (&mark_lock);
       /* Already out of appsrcs: each is fed by every appsink of this
@@ -561,27 +581,6 @@ pair_buffer (GstPipelineMonitorTracer * self, PmPadRole * r, GstBuffer * b,
               &copy.segment : NULL, copy.appsrcs[j].pts,
               copy.appsrcs[j].has_segment ? &copy.appsrcs[j].segment : NULL,
               copy.appsrcs[j].delay);
-    }
-    if (slot)
-      r->last_slot = slot;
-    if (!sample)
-      return;
-    r->last_mark = now;
-    for (i = 0; i < n; i++) {
-      PmMark *m = g_new0 (PmMark, 1);
-
-      m->sinks[0] = r->sink;
-      m->n_sinks = 1;
-      m->pts = GST_BUFFER_PTS (b);
-      m->has_segment = r->has_segment;
-      if (r->has_segment)
-        gst_segment_copy_into (&r->segment, &m->segment);
-      m->time = now;
-      g_atomic_int_inc (&live_marks);
-      g_mutex_lock (&mark_lock);
-      gst_mini_object_set_qdata (GST_MINI_OBJECT (gst_buffer_peek_memory (b,
-                  i)), mark_quark, m, mark_free);
-      g_mutex_unlock (&mark_lock);
     }
   } else if (r->role == ROLE_FROM_APPSRC) {
     GstMiniObject *mem = NULL;
