@@ -2552,7 +2552,7 @@ def check_app_details(browser, good):
         f'#graph .node[data-id="{node}"] > rect.box',
         "document.querySelector('#details h2')?.textContent === 'src'")
     for text in ("segment sent\ntime, from 0:00:00.000, base 0:00:00.000",
-                 "Queue (appsrc's own)",
+                 "appsrc queue",
                  "only signals enough-data, and keeps queueing",
                  "105 / 1 / 0"):
         assert browser.wait(f"{details}.includes({json.dumps(text)})"), \
@@ -2595,12 +2595,16 @@ def check_app_details(browser, good):
                 "base time=0:00:07.000/0:00:07.000",
                 # PTS 5 s in a segment from 5 s, out in one from 0.
                 "running time=0:00:00.000/0:00:05.000",
-                "plays at=0:00:07.000/0:00:12.000 (+5.000 s)"):
+                "plays at=0:00:00.000/0:00:05.000 (+5.000 s)"):
         assert row in browser.eval(rows), browser.eval(rows)
     plays = (f"[...{link}.querySelectorAll('tr')].find(r => r.firstChild"
              ".textContent === 'plays at')?.firstChild.title ?? ''")
     assert "base time + the buffer's running time" in browser.eval(plays), \
         browser.eval(plays)
+    heads = (f"[...{link}.querySelectorAll('th')].map(h => h.title)"
+             ".join('|')")
+    assert "As the buffer went into p/sink" in browser.eval(heads), \
+        browser.eval(heads)
     assert browser.eval(f"{link}.querySelector('.app-compare').hidden")
     # Its name goes to it.
     browser.eval("document.querySelector('.app-link-place')"
@@ -2615,8 +2619,9 @@ def check_app_details(browser, good):
     assert browser.click_until(
         f'#graph .node[data-id="{node}"] > rect.box',
         "document.querySelector('#details h2')?.textContent === 'sink'")
+    # Its last buffer's PTS is not repeated here (its pad, pinned, shows it).
+    assert browser.eval(f"!{details}.includes('last PTS')")
     for text in ("segment received\ntime, from 0:00:05.000",
-                 "last PTS\n0:00:09.000",
                  "level\nnot available before GStreamer 1.28",
                  "waits for the program to pull, holding up the pipeline",
                  "in / out / dropped\nnot available before GStreamer 1.28"):

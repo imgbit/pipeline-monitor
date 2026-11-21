@@ -91,11 +91,15 @@ export function updateAppStream(aside, queue) {
 // The appsink an appsrc was set to be compared with, by appsrc id.
 const comparing = new Map();
 
-function linkTable(parent, rows) {
+// sink, src: the two elements' paths, for the column headers' tooltips.
+function linkTable(parent, rows, sink, src) {
   const table = add(parent, "table", undefined, "app-pair");
   const head = add(table, "tr");
-  for (const h of ["", "into appsink", "out of appsrc"])
-    add(head, "th", h);
+  add(head, "th", "");
+  add(head, "th", "into appsink").title = "As the buffer went into " +
+    `${sink ?? "the appsink"}: read as it was pushed into its sink pad.`;
+  add(head, "th", "out of appsrc").title = "As the same buffer left " +
+    `${src ?? "the appsrc"}: read as appsrc pushed it out of its src pad.`;
   for (const [label, a, b, differs, meaning] of rows) {
     const tr = add(table, "tr", undefined, differs ? "differs" : undefined);
     const name = add(tr, "td", label, "muted");
@@ -207,7 +211,8 @@ export function updateAppLink(aside, queue, queues, now, jump,
       segment: f.out_segment, pipeline: pipelineOf(queue.path) }, true),
     ["in between", "", formatSpan(f.delay, "auto"), false,
       "How long the buffer took from the appsink to leaving appsrc: the " +
-      "time in the program and in appsrc's queue."]]);
+      "time in the program and in appsrc's queue."]],
+    group.map((g) => g.path).join(", "), queue.path);
   }
   if (!shown.length) {
     const none = add(body, "div", "none found", "muted");
@@ -224,7 +229,7 @@ export function updateAppLink(aside, queue, queues, now, jump,
         "appsrc's segment: not shown to be the same data.");
       linkTable(body, linkRows({ pts: sink.last_pts, segment: sink.segment,
         pipeline: pipelineOf(sink.path) }, { segment: queue.segment,
-        pipeline: pipelineOf(queue.path) }, false));
+        pipeline: pipelineOf(queue.path) }, false), sink.path, queue.path);
     }
   }
 }
@@ -330,7 +335,7 @@ export function showDetails(aside, selection, index, onClose, log, queue) {
   }
   if (queue) {
     add(aside, "h3", ["appsrc", "appsink"].includes(element.factory)
-      ? `Queue (${element.factory}'s own)` : "Queue");
+      ? `${element.factory} queue` : "Queue");
     add(aside, "div", undefined, "queue-levels");
     updateQueueDetails(aside, queue);
   }

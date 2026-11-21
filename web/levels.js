@@ -123,7 +123,12 @@ function segmentCell(s, key) {
 // what the row means.
 export function linkRows(into, out, same) {
   const rows = [["PTS", clockTime(into.pts), same ? clockTime(out.pts) : "—",
-    same && into.pts !== out.pts]];
+    same && into.pts !== out.pts, same
+      ? "The same buffer's timestamp (its PTS) as it went into the appsink " +
+        "and as it left the appsrc, read by the tracer at each push. The " +
+        "program or appsrc (do-timestamp) may change it on the way."
+      : "The appsink's last buffer's timestamp; appsrc's buffers are not " +
+        "known to be the same, so theirs is not shown."]];
   for (const key of ["format", "start", "base", "rate"]) {
     const a = segmentCell(into.segment, key);
     const b = segmentCell(out.segment, key);
@@ -147,23 +152,33 @@ export function linkRows(into, out, same) {
     rows.push(["base time", clockTime(p?.base_time), clockTime(q?.base_time),
       carried && p?.base_time != null && q?.base_time != null &&
       Math.abs(p.base_time - q.base_time) >= 1e6]);
-    // When each pipeline plays it on its clock: base time + running time.
+    // When each pipeline plays it on its clock (base time + running time),
+    // both counted from the appsink pipeline's start: small numbers to
+    // compare, rather than the clock's own (time since the computer
+    // started, for the system clock).
     const playA = runA === null || p?.base_time == null ? null
       : p.base_time + runA;
     const playB = runB === null || q?.base_time == null ? null
       : q.base_time + runB;
-    let b = clockTime(playB);
-    if (playA !== null && playB !== null)
-      b += sameClock ? ` (${signedSpan(playB - playA)})`
-        : " (different clocks: not comparable)";
-    rows.push(["plays at", clockTime(playA), b, false,
-      "When the pipeline plays this buffer, as a time on its clock: its " +
-      "base time + the buffer's running time (its PTS within the segment). " +
-      "The same buffer meant for the same moment at both ends shows the " +
-      "same time; the difference after it is how much later (or earlier) " +
-      "it plays after going through the program and appsrc. A lost " +
-      "segment, timestamps carried between pipelines with different base " +
-      "times, or restamping all show up here."]);
+    const from = (t) => t === null ? "—" : t < p.base_time
+      ? `−${clockTime(p.base_time - t)}` : clockTime(t - p.base_time);
+    let a = "—";
+    let b = "—";
+    if (playA !== null)
+      a = from(playA);
+    if (playB !== null && sameClock)
+      b = from(playB) + (playA !== null
+        ? ` (${signedSpan(playB - playA)})` : "");
+    else if (playB !== null)
+      b = "different clocks: not comparable";
+    rows.push(["plays at", a, b, false,
+      `When each pipeline plays this buffer, counted from ${p?.path ?? "the " +
+      "appsink's pipeline"}'s start: base time + the buffer's running ` +
+      "time (its PTS within its segment), on the clock. The same buffer " +
+      "meant for the same moment at both ends shows the same time; the " +
+      "difference after it is how much later (or earlier) it plays after " +
+      "the program and appsrc. A lost segment, timestamps carried between " +
+      "pipelines with different base times, or restamping all show here."]);
   }
   return rows;
 }
@@ -181,18 +196,14 @@ function signedSpan(ns) {
   return `${ns < 0 ? "−" : "+"}${(Math.abs(ns) / 1e9).toFixed(3)} s`;
 }
 
-// appsrc's segment sent or appsink's segment received, and appsink's last
-// PTS: rows for the details panel.
+// appsrc's segment sent or appsink's segment received: rows for the
+// details panel.
 export function appStreamRows(queue) {
   const s = queue.segment;
   const at = (v) => s.format === "time" ? clockTime(v) : String(v ?? "—");
-  const rows = [[queue.kind === "appsrc" ? "segment sent" : "segment received",
+  return [[queue.kind === "appsrc" ? "segment sent" : "segment received",
     s ? `${s.format}, from ${at(s.start)}, base ${at(s.base)}` +
       (s.rate !== 1 ? `, rate ${s.rate}` : "") : "none yet"]];
-  if (queue.kind === "appsink")
-    rows.push(["last PTS", queue.last_pts === null ? "not kept " +
-      "(enable-last-sample is off) or none yet" : clockTime(queue.last_pts)]);
-  return rows;
 }
 
 // Rows for the tooltip and the details panel; padName(id) names a
