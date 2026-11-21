@@ -434,8 +434,15 @@ typedef struct
 {
   guint64 sinks[MARK_SINKS];
   guint n_sinks;
-  /* The appsrcs it already left: a later appsink is linked to them too. */
-  guint64 appsrcs[MARK_SINKS];
+  /* The appsrcs it already left, and how it left each: an appsink it
+   * goes into later is linked to them too. */
+  struct
+  {
+    guint64 id;
+    GstClockTime pts, delay;
+    GstSegment segment;
+    gboolean has_segment;
+  } appsrcs[MARK_SINKS];
   guint n_appsrcs;
   GstClockTime pts;
   GstSegment segment;
@@ -523,8 +530,9 @@ pair_buffer (GstPipelineMonitorTracer * self, PmPadRole * r, GstBuffer * b,
      * names exactly the appsinks this buffer went into. */
     for (i = 0; i < n && g_atomic_int_get (&live_marks); i++) {
       GstMiniObject *mem = GST_MINI_OBJECT (gst_buffer_peek_memory (b, i));
-      guint64 shared_to[MARK_SINKS], others[MARK_SINKS];
-      guint n_shared = 0, n_others = 0, k;
+      PmMark copy;
+      gboolean joined = FALSE;
+      guint k, j;
       PmMark *old;
 
       if (G_LIKELY (gst_mini_object_get_qdata (mem, mark_quark) == NULL))
@@ -536,20 +544,23 @@ pair_buffer (GstPipelineMonitorTracer * self, PmPadRole * r, GstBuffer * b,
         for (k = 0; k < old->n_sinks && old->sinks[k] != r->sink; k++);
         if (k == old->n_sinks && k < MARK_SINKS) {
           old->sinks[old->n_sinks++] = r->sink;
-          /* Already out of appsrcs: they get this appsink too. */
-          n_shared = old->n_appsrcs;
-          memcpy (shared_to, old->appsrcs, sizeof (shared_to));
-          n_others = old->n_sinks;
-          memcpy (others, old->sinks, sizeof (others));
+          copy = *old;
+          joined = TRUE;
         }
         sample = FALSE;
       } else if (old) {
         gst_mini_object_set_qdata (mem, mark_quark, NULL, NULL);
       }
       g_mutex_unlock (&mark_lock);
-      for (k = 0; k < n_shared; k++)
-        pm_model_fed_by_shared (self->model, shared_to[k], others,
-            n_others, GST_BUFFER_PTS (b));
+      /* Already out of appsrcs: each is fed by every appsink of this
+       * buffer, shared. */
+      for (j = 0; joined && j < copy.n_appsrcs; j++)
+        for (k = 0; k < copy.n_sinks; k++)
+          pm_model_fed_by_id (self->model, copy.appsrcs[j].id,
+              copy.sinks[k], TRUE, copy.pts, copy.has_segment ?
+              &copy.segment : NULL, copy.appsrcs[j].pts,
+              copy.appsrcs[j].has_segment ? &copy.appsrcs[j].segment : NULL,
+              copy.appsrcs[j].delay);
     }
     if (slot)
       r->last_slot = slot;
@@ -589,10 +600,17 @@ pair_buffer (GstPipelineMonitorTracer * self, PmPadRole * r, GstBuffer * b,
     g_mutex_lock (&mark_lock);
     found = gst_mini_object_get_qdata (mem, mark_quark);
     if (found) {
-      for (k = 0; k < found->n_appsrcs && found->appsrcs[k] !=
+      for (k = 0; k < found->n_appsrcs && found->appsrcs[k].id !=
           r->appsrc_id; k++);
-      if (k == found->n_appsrcs && k < MARK_SINKS)
-        found->appsrcs[found->n_appsrcs++] = r->appsrc_id;
+      if (k == found->n_appsrcs && k < MARK_SINKS) {
+        found->appsrcs[k].id = r->appsrc_id;
+        found->appsrcs[k].pts = GST_BUFFER_PTS (b);
+        found->appsrcs[k].delay = (now - found->time) * GST_USECOND;
+        found->appsrcs[k].has_segment = r->has_segment;
+        if (r->has_segment)
+          gst_segment_copy_into (&r->segment, &found->appsrcs[k].segment);
+        found->n_appsrcs++;
+      }
       copy = *found;
     }
     g_mutex_unlock (&mark_lock);

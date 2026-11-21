@@ -3810,10 +3810,15 @@ test_app_link (void)
 }
 
 /* The fed_by entry of the appsrc whose path ends with src for the appsink
- * whose path ends with sink, waiting for it; NULL if none comes. */
+ * whose path ends with sink, waiting for it (and, if shared, until it is
+ * known to be: only once every branch got the buffer); the last seen, or
+ * NULL if none comes. */
 static JsonObject *
-wait_fed_by (const gchar * src, const gchar * sink, JsonNode ** root)
+wait_fed_by (const gchar * src, const gchar * sink, gboolean shared,
+    JsonNode ** root)
 {
+  JsonObject *seen = NULL;
+
   gint tries;
   guint i;
 
@@ -3828,12 +3833,30 @@ wait_fed_by (const gchar * src, const gchar * sink, JsonNode ** root)
     for (i = 0; fed && i < json_array_get_length (fed); i++) {
       JsonObject *f = json_array_get_object_element (fed, i);
 
-      if (g_str_has_suffix (json_object_get_string_member (f, "path"), sink))
-        return f;
+      if (g_str_has_suffix (json_object_get_string_member (f, "path"),
+              sink)) {
+        seen = f;
+        if (!shared || json_object_get_boolean_member (f, "shared"))
+          return f;
+      }
     }
+    seen = NULL;
     g_usleep (100 * G_TIME_SPAN_MILLISECOND);
   }
-  return NULL;
+  /* The last answer, for the failure message. */
+  {
+    JsonObject *q = levels_entry (src, root);
+    JsonArray *fed = q && json_object_has_member (q, "fed_by") ?
+        json_object_get_array_member (q, "fed_by") : NULL;
+
+    for (i = 0; fed && i < json_array_get_length (fed); i++) {
+      JsonObject *f = json_array_get_object_element (fed, i);
+
+      if (g_str_has_suffix (json_object_get_string_member (f, "path"), sink))
+        seen = f;
+    }
+  }
+  return seen;
 }
 
 /* One camera teed into two appsinks; the program reads only one, and
@@ -3870,10 +3893,12 @@ test_app_link_shared (void)
   }
   for (i = 0; i < 2; i++)
     for (j = 0; j < 2; j++) {
-      JsonObject *f = wait_fed_by (srcs[i], sinks[j], &root);
+      JsonObject *f = wait_fed_by (srcs[i], sinks[j], TRUE, &root);
 
-      g_assert_nonnull (f);
-      g_assert_true (json_object_get_boolean_member (f, "shared"));
+      if (f == NULL || !json_object_get_boolean_member (f, "shared"))
+        g_error ("%s fed by %s: %s", srcs[i], sinks[j], f ?
+            json_to_string (json_node_init_object (json_node_alloc (), f),
+                FALSE) : "not found");
     }
   g_clear_pointer (&root, json_node_unref);
 
