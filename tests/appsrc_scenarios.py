@@ -27,6 +27,13 @@ Scenarios:
   copied-data        the bytes copied into new buffers (nothing links them)
   two-sinks          two cameras into one appsrc, in turns
   stops              the program stops pushing after 3 s
+
+Which appsink feeds which appsrc (display1/in1 is a second display):
+  fan-out            one camera into both appsrcs
+  crossed            camera0 into display1, camera1 into display
+  switch             one camera into display, then display1, every 3 s
+  tee                one camera teed into two appsinks (out0, spare0);
+                     the program reads only out0
 """
 
 import argparse
@@ -40,9 +47,14 @@ from gi.repository import GLib, Gst, GstApp  # noqa: E402,F401
 CAMERA = ("videotestsrc name=cam{n} pattern={pattern} {live} ! "
           "video/x-raw,format=I420,width=320,height=240,framerate=30/1 ! "
           "appsink name=out{n} sync={sync} max-buffers=4 drop=true")
-DISPLAY = ("appsrc name=in caps=video/x-raw,format=I420,width=320,"
+CAMERA_TEE = ("videotestsrc name=cam{n} pattern={pattern} {live} ! "
+              "video/x-raw,format=I420,width=320,height=240,framerate=30/1 ! "
+              "tee name=t{n} t{n}. ! queue ! appsink name=out{n} sync={sync} "
+              "max-buffers=4 drop=true t{n}. ! queue ! appsink name=spare{n} "
+              "max-buffers=1 drop=true")
+DISPLAY = ("appsrc name=in{n} caps=video/x-raw,format=I420,width=320,"
            "height=240,framerate=30/1 {props} ! videoconvert ! "
-           "fakesink name=display sync=true")
+           "fakesink name=display{n} sync=true")
 
 SCENARIOS = {
     "bytes-segment": {"display": ""},
@@ -66,6 +78,15 @@ SCENARIOS = {
                   "cameras": 2, "strip": True},
     "stops": {"display": "format=time is-live=true do-timestamp=true",
               "strip": True, "stop": 3},
+    "fan-out": {"display": "format=time is-live=true do-timestamp=true",
+                "strip": True, "displays": 2, "route": "all"},
+    "crossed": {"display": "format=time is-live=true do-timestamp=true",
+                "strip": True, "cameras": 2, "displays": 2,
+                "route": "crossed"},
+    "switch": {"display": "format=time is-live=true do-timestamp=true",
+               "strip": True, "displays": 2, "route": "switch"},
+    "tee": {"display": "format=time is-live=true do-timestamp=true",
+            "strip": True, "tee": True},
 }
 
 
@@ -82,25 +103,50 @@ def main():
     seek = s.get("seek")
     cameras = []
     for n in range(s.get("cameras", 1)):
-        cameras.append(Gst.parse_launch(CAMERA.format(
+        cameras.append(Gst.parse_launch(
+            (CAMERA_TEE if s.get("tee") else CAMERA).format(
             n=n, pattern=["ball", "smpte"][n],
             # Seeking needs a source that is not live; sync paces it.
             live="" if seek else "is-live=true",
             sync="true" if seek else "false")))
         cameras[-1].set_name(f"camera{n}")
-    display = Gst.parse_launch(DISPLAY.format(props=s["display"]))
-    display.set_name("display")
-    appsrc = display.get_by_name("in")
+    displays = []
+    for n in range(s.get("displays", 1)):
+        # The first keeps the names "display" and "in".
+        suffix = str(n) if n else ""
+        displays.append(Gst.parse_launch(DISPLAY.format(
+            n=suffix, props=s["display"])))
+        displays[-1].set_name(f"display{suffix}")
+    display = displays[0]
+    appsrcs = [d.get_by_name(f"in{str(n) if n else ''}")
+               for n, d in enumerate(displays)]
+    appsrc = appsrcs[0]
     pushed = {"n": 0}
     started = GLib.get_monotonic_time()
 
-    def forward(sink):
+    def targets(n):
+        route = s.get("route")
+        if route == "all":
+            return appsrcs
+        if route == "crossed":
+            return [appsrcs[1 - n]]
+        if route == "switch":
+            turn = (GLib.get_monotonic_time() - started) // 3000000
+            return [appsrcs[turn % 2]]
+        return [appsrc]
+
+    def forward(sink, n):
         sample = sink.emit("pull-sample")
         if sample is None:
             return Gst.FlowReturn.EOS
         if s.get("stop") and \
                 GLib.get_monotonic_time() - started > s["stop"] * 1000000:
             return Gst.FlowReturn.OK
+        for target in targets(n):
+            push(target, sample)
+        return Gst.FlowReturn.OK
+
+    def push(target, sample):
         buffer = sample.get_buffer()
         if s.get("copy"):
             ok, info = buffer.map(Gst.MapFlags.READ)
@@ -122,20 +168,19 @@ def main():
                 # its base time.
                 clock = display.get_clock()
                 if clock is None:
-                    return Gst.FlowReturn.OK
+                    return
                 buffer.pts = clock.get_time() - display.get_base_time()
         if "seek" in s or s["display"] == "":
-            appsrc.emit("push-sample", Gst.Sample.new(
+            target.emit("push-sample", Gst.Sample.new(
                 buffer, sample.get_caps(), sample.get_segment(), None))
         else:
-            appsrc.emit("push-buffer", buffer)
+            target.emit("push-buffer", buffer)
         pushed["n"] += 1
-        return Gst.FlowReturn.OK
 
     for n, camera in enumerate(cameras):
         sink = camera.get_by_name(f"out{n}")
         sink.set_property("emit-signals", True)
-        sink.connect("new-sample", forward)
+        sink.connect("new-sample", forward, n)
 
     for camera in cameras:
         camera.set_state(Gst.State.PAUSED)
@@ -193,7 +238,8 @@ def main():
             Gst.PadProbeType.BUFFER, at_sink)
         cameras[0].get_by_name("out0").get_static_pad("sink").add_probe(
             Gst.PadProbeType.BUFFER, at_camera)
-    display.set_state(Gst.State.PLAYING)
+    for d in displays:
+        d.set_state(Gst.State.PLAYING)
 
     loop = GLib.MainLoop()
     GLib.timeout_add(int(args.seconds * 1000), loop.quit)
@@ -219,7 +265,7 @@ def main():
         stats = display.get_by_name("display").get_property("stats")
         print("  sink rendered", stats.get_value("rendered"), "dropped",
               stats.get_value("dropped"))
-    for p in [display, *cameras]:
+    for p in [*displays, *cameras]:
         p.set_state(Gst.State.NULL)
     return 0
 
