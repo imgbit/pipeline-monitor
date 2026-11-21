@@ -83,11 +83,16 @@ function appRows(queue, unit) {
 // is current; an older one is shown only when no current one is.
 export const LINK_FRESH_US = 5e6;
 
-// An appsrc's links: {current, old}, the newest first.
+// An appsrc's links: {current, old}; current ones by name (they would
+// swap places as each is seen again), old ones the newest first.
 export function appsrcLinks(queue, now) {
-  const all = [...(queue?.fed_by ?? [])].sort((a, b) => b.last - a.last);
-  return { current: all.filter((f) => now - f.last <= LINK_FRESH_US),
-    old: all.filter((f) => now - f.last > LINK_FRESH_US) };
+  const all = queue?.fed_by ?? [];
+  return {
+    current: all.filter((f) => now - f.last <= LINK_FRESH_US)
+      .sort((a, b) => (a.path ?? "").localeCompare(b.path ?? "")),
+    old: all.filter((f) => now - f.last > LINK_FRESH_US)
+      .sort((a, b) => b.last - a.last),
+  };
 }
 
 // The appsrcs an appsink's buffers currently leave: [{element, path}].

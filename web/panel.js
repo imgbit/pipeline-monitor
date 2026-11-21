@@ -129,8 +129,11 @@ export function updateAppLink(aside, queue, queues, now, jump) {
   if (section.dataset.kind === "appsink") {
     body.replaceChildren();
     const found = appsinkLinks(queue.element, queues, now);
-    if (!found.length)
-      add(body, "div", "No appsrc seen sending its buffers on.", "muted");
+    if (!found.length) {
+      const row = add(body, "div", "none found", "muted");
+      info(row, "feeds-none", "No appsrc was seen sending this appsink's " +
+        "buffers on: the program may copy the data, or not pass it on.");
+    }
     for (const f of found) {
       const row = add(body, "div");
       place(row, f.element, f.path);
@@ -173,25 +176,31 @@ export function updateAppLink(aside, queue, queues, now, jump) {
     place(row, f.element, f.path);
     add(row, "span", ` · detected from the data, seen ${ago(now - f.last)}`,
       "muted");
-    if (f.shared)
-      add(body, "div", "The same buffers also went into another appsink: " +
-        "which one the program read them from is not known.",
-      "muted app-link-shared");
+    if (f.shared) {
+      add(row, "span", " · shared", "muted");
+      info(row, `shared:${f.element}`, "The same buffers also went into " +
+        "another appsink: which one the program read them from is not known.");
+    }
     linkTable(body, linkRows({ pts: f.in_pts, segment: f.in_segment },
       { pts: f.out_pts, segment: f.out_segment }, true));
-    add(body, "div", `time in the program and appsrc's queue: ` +
-      `${formatSpan(f.delay, "auto")}`, "muted app-link-delay");
+    const delay = add(body, "div", `in between: ${formatSpan(f.delay,
+      "auto")}`, "muted app-link-delay");
+    info(delay, "link-delay", "How long the buffer took from the appsink " +
+      "to leaving appsrc: the time in the program and in appsrc's queue.");
   }
   if (!shown.length) {
-    add(body, "div", sinks.length
-      ? "No appsink's buffers seen leaving it: the data may be copied, or " +
-        "come from elsewhere."
-      : "No appsink in this program.", "muted");
+    const none = add(body, "div", "none found", "muted");
+    info(none, "fed-none", sinks.length
+      ? "No appsink's buffers were seen leaving this appsrc: the program " +
+        "may copy the data, or make its own. Choose an appsink below to " +
+        "compare with it."
+      : "This program has no appsink.");
     const sink = chosen && queues.get(chosen);
     if (sink && queue.segment !== undefined) {
-      add(body, "div", `${sink.path}, chosen by you: its last buffer and ` +
-        "segment against appsrc's segment, not shown to be the same data",
-      "app-chosen");
+      const chosenRow = add(body, "div", `${sink.path} · chosen by you`,
+        "app-chosen");
+      info(chosenRow, "chosen", "Its last buffer and segment against " +
+        "appsrc's segment: not shown to be the same data.");
       linkTable(body, linkRows({ pts: sink.last_pts, segment: sink.segment },
         { segment: queue.segment }, false));
     }
@@ -446,11 +455,39 @@ const APP_SETTINGS = {
 };
 
 // The appsrc or appsink settings section, from the element's properties.
+// An ⓘ after a short line: its explanation, shown on hover and opened by
+// a click (also on phones). Open ones stay open while the panel is rebuilt.
+const openInfo = new Set();
+
+function info(parent, key, text) {
+  const button = add(parent, "button", "ⓘ", "info-toggle");
+  button.title = text;
+  button.setAttribute("aria-label", "What this means");
+  const box = add(parent, "div", text, "info-text");
+  const show = () => {
+    box.hidden = !openInfo.has(key);
+    button.setAttribute("aria-expanded", String(!box.hidden));
+  };
+  show();
+  onPress(button, () => {
+    if (openInfo.has(key))
+      openInfo.delete(key);
+    else
+      openInfo.add(key);
+    show();
+  });
+}
+
 function updateAppSettings(aside, data) {
   const section = aside.querySelector(".app-settings");
   const factory = section?.dataset.factory;
-  if (!section || !data?.properties || !APP_SETTINGS[factory])
+  if (!section || !APP_SETTINGS[factory])
     return;
+  // The element gone, or not answering: nothing to read.
+  if (!data?.properties || data.not_answering) {
+    section.textContent = "not available";
+    return;
+  }
   const dl = document.createElement("dl");
   for (const [name, meaning] of APP_SETTINGS[factory]) {
     const p = data.properties.find((x) => x.name === name);
@@ -463,7 +500,7 @@ function updateAppSettings(aside, data) {
     // Only where the default is known (not for caps, for one).
     if ("default" in p && !p.changed)
       add(dd, "span", " (default)", "muted");
-    add(dd, "div", meaning(value, p.value), "app-setting-meaning muted");
+    info(dd, `${factory}:${name}`, meaning(value, p.value));
   }
   section.replaceChildren(dl);
 }

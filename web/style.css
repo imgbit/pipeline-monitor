@@ -993,7 +993,10 @@ body.viewing-dot #process-perf { display: none; }
 
 /* appsrc and appsink settings: the value, then what it does. */
 .app-settings dd { margin-bottom: 4px; }
-.app-setting-meaning { font-size: 12px; }
+.info-toggle { all: unset; cursor: pointer; color: var(--muted);
+  font-size: 12px; margin-left: 4px; }
+.info-toggle:hover, .info-toggle[aria-expanded="true"] { color: var(--accent); }
+.info-text { font-size: 12px; color: var(--muted); margin: 2px 0 4px; }
 #details .app-stream dl { margin: 0; }
 .app-pair { border-collapse: collapse; margin: 4px 0; font-size: 12px; }
 .app-pair th { text-align: left; font-weight: normal; color: var(--muted); }

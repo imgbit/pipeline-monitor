@@ -2495,27 +2495,38 @@ def check_app_details(browser, good):
     assert browser.click_until(
         f'#graph .node[data-id="{node}"] > rect.box',
         "document.querySelector('#details h2')?.textContent === 'src'")
-    for text in ("appsrc settings", "segments in time",
-                 "ignores the segment of samples pushed",
-                 "not set: it reports a latency of 0",
+    for text in ("appsrc settings",
                  "segment sent\ntime, from 0:00:00.000, base 0:00:00.000",
                  "Queue (appsrc's own)",
                  "only signals enough-data, and keeps queueing",
                  "105 / 1 / 0"):
         assert browser.wait(f"{details}.includes({json.dumps(text)})"), \
             f"no {text!r} in: {browser.eval(details)}"
+    # Each setting's meaning behind its ⓘ: hidden until clicked.
+    all_text = "document.getElementById('details').textContent"
+    for text in ("segments in time", "ignores the segment of samples pushed",
+                 "not set: it reports a latency of 0"):
+        assert browser.wait(f"{all_text}.includes({json.dumps(text)})"), \
+            f"no {text!r} in: {browser.eval(all_text)}"
+        assert not browser.eval(f"{details}.includes({json.dumps(text)})"), \
+            f"{text!r} shown before its ⓘ is clicked"
+    browser.eval("document.querySelector('.app-settings .info-toggle')"
+                 ".scrollIntoView({block: 'center'})")
+    assert browser.click_until(".app-settings .info-toggle",
+                               f"{details}.includes('segments in time')"), \
+        "the first ⓘ did not open"
     # caps have no known default: not called one.
     assert browser.eval(f"!/caps\\s+video\\/x-raw \\(default\\)/"
                         f".test({details})"), browser.eval(details)
     # The appsink it is fed by, found from the data: the segment lost on the
     # way marked, no manual choice offered.
     link = "document.querySelector('.app-link')"
-    for text in ("p/sink · detected from the data, seen 1.0 s ago",
-                 "time in the program and appsrc's queue: 2.0 ms",
-                 "The same buffers also went into another appsink: which "
-                 "one the program read them from is not known."):
+    for text in ("p/sink · detected from the data, seen 1.0 s ago · shared",
+                 "in between: 2.0 ms"):
         assert browser.wait(f"{link}.innerText.includes({json.dumps(text)})"),\
             browser.eval(f"{link}?.innerText")
+    assert browser.eval(f"{link}.textContent.includes('The same buffers also "
+                        "went into another appsink')")
     differs = (f"[...{link}.querySelectorAll('tr.differs')].map(r => "
                "r.firstChild.textContent).join()")
     assert browser.eval(differs) == "segment start", browser.eval(differs)
@@ -2533,6 +2544,10 @@ def check_app_details(browser, good):
     assert browser.click_until(
         f'#graph .node[data-id="{node}"] > rect.box',
         "document.querySelector('#details h2')?.textContent === 'sink'")
+    # No properties recorded for it: said, not "reading…" for ever.
+    assert browser.wait("document.querySelector('.app-settings')"
+                        "?.textContent === 'not available'"), \
+        browser.eval("document.querySelector('.app-settings')?.textContent")
     for text in ("segment received\ntime, from 0:00:05.000",
                  "last PTS\n0:00:09.000",
                  "level\nnot available before GStreamer 1.28",
