@@ -417,6 +417,7 @@ typedef struct
   gint role;
   guint64 sink;
   GstElement *appsrc;
+  guint64 appsrc_id;
   GstSegment segment;
   gboolean has_segment;
   gint64 last_mark;
@@ -427,10 +428,15 @@ typedef struct
  * first one's segment, when it was marked. */
 #define MARK_SINKS 4
 
+/* Read and changed by the appsinks' and appsrcs' threads: under
+ * mark_lock (looking a mark up is safe without). */
 typedef struct
 {
   guint64 sinks[MARK_SINKS];
   guint n_sinks;
+  /* The appsrcs it already left: a later appsink is linked to them too. */
+  guint64 appsrcs[MARK_SINKS];
+  guint n_appsrcs;
   GstClockTime pts;
   GstSegment segment;
   gboolean has_segment;
@@ -439,6 +445,7 @@ typedef struct
 
 static GQuark mark_quark;
 static gint live_marks;
+static GMutex mark_lock;
 
 static void
 mark_free (gpointer data)
@@ -472,6 +479,7 @@ pad_role (GstPipelineMonitorTracer * self, GstPad * pad, PmPushTiming * t)
     r->role = ROLE_FROM_APPSRC;
     /* The pad's own element: it outlives the pad. */
     r->appsrc = GST_ELEMENT (parent);
+    r->appsrc_id = pm_model_element_id (self->model, parent);
   }
   gst_clear_object (&into);
   gst_clear_object (&parent);
@@ -515,20 +523,33 @@ pair_buffer (GstPipelineMonitorTracer * self, PmPadRole * r, GstBuffer * b,
      * names exactly the appsinks this buffer went into. */
     for (i = 0; i < n && g_atomic_int_get (&live_marks); i++) {
       GstMiniObject *mem = GST_MINI_OBJECT (gst_buffer_peek_memory (b, i));
-      PmMark *old = gst_mini_object_get_qdata (mem, mark_quark);
-      guint k;
+      guint64 shared_to[MARK_SINKS], others[MARK_SINKS];
+      guint n_shared = 0, n_others = 0, k;
+      PmMark *old;
 
-      if (G_LIKELY (old == NULL))
+      if (G_LIKELY (gst_mini_object_get_qdata (mem, mark_quark) == NULL))
         continue;
-      if (GST_BUFFER_PTS_IS_VALID (b) && old->pts == GST_BUFFER_PTS (b) &&
-          r->sink != 0) {
+      g_mutex_lock (&mark_lock);
+      old = gst_mini_object_get_qdata (mem, mark_quark);
+      if (old && GST_BUFFER_PTS_IS_VALID (b) && old->pts ==
+          GST_BUFFER_PTS (b) && r->sink != 0) {
         for (k = 0; k < old->n_sinks && old->sinks[k] != r->sink; k++);
-        if (k == old->n_sinks && k < MARK_SINKS)
+        if (k == old->n_sinks && k < MARK_SINKS) {
           old->sinks[old->n_sinks++] = r->sink;
+          /* Already out of appsrcs: they get this appsink too. */
+          n_shared = old->n_appsrcs;
+          memcpy (shared_to, old->appsrcs, sizeof (shared_to));
+          n_others = old->n_sinks;
+          memcpy (others, old->sinks, sizeof (others));
+        }
         sample = FALSE;
-      } else {
+      } else if (old) {
         gst_mini_object_set_qdata (mem, mark_quark, NULL, NULL);
       }
+      g_mutex_unlock (&mark_lock);
+      for (k = 0; k < n_shared; k++)
+        pm_model_fed_by_shared (self->model, shared_to[k], others,
+            n_others, GST_BUFFER_PTS (b));
     }
     if (slot)
       r->last_slot = slot;
@@ -536,7 +557,7 @@ pair_buffer (GstPipelineMonitorTracer * self, PmPadRole * r, GstBuffer * b,
       return;
     r->last_mark = now;
     for (i = 0; i < n; i++) {
-      PmMark *m = g_new (PmMark, 1);
+      PmMark *m = g_new0 (PmMark, 1);
 
       m->sinks[0] = r->sink;
       m->n_sinks = 1;
@@ -546,26 +567,42 @@ pair_buffer (GstPipelineMonitorTracer * self, PmPadRole * r, GstBuffer * b,
         gst_segment_copy_into (&r->segment, &m->segment);
       m->time = now;
       g_atomic_int_inc (&live_marks);
+      g_mutex_lock (&mark_lock);
       gst_mini_object_set_qdata (GST_MINI_OBJECT (gst_buffer_peek_memory (b,
                   i)), mark_quark, m, mark_free);
+      g_mutex_unlock (&mark_lock);
     }
   } else if (r->role == ROLE_FROM_APPSRC) {
-    PmMark *found = NULL;
+    GstMiniObject *mem = NULL;
+    PmMark *found, copy;
+    guint k;
 
     if (!g_atomic_int_get (&live_marks))
       return;
-    for (i = 0; i < n && found == NULL; i++)
-      found = gst_mini_object_get_qdata (GST_MINI_OBJECT
-          (gst_buffer_peek_memory (b, i)), mark_quark);
+    for (i = 0; i < n && mem == NULL; i++)
+      if (gst_mini_object_get_qdata (GST_MINI_OBJECT (gst_buffer_peek_memory
+                  (b, i)), mark_quark))
+        mem = GST_MINI_OBJECT (gst_buffer_peek_memory (b, i));
+    if (G_LIKELY (mem == NULL))
+      return;
+    /* The mark stays: the same memory may leave other appsrcs too. */
+    g_mutex_lock (&mark_lock);
+    found = gst_mini_object_get_qdata (mem, mark_quark);
+    if (found) {
+      for (k = 0; k < found->n_appsrcs && found->appsrcs[k] !=
+          r->appsrc_id; k++);
+      if (k == found->n_appsrcs && k < MARK_SINKS)
+        found->appsrcs[found->n_appsrcs++] = r->appsrc_id;
+      copy = *found;
+    }
+    g_mutex_unlock (&mark_lock);
     if (found == NULL)
       return;
-    for (i = 0; i < found->n_sinks; i++)
-      pm_model_fed_by (self->model, r->appsrc, found->sinks[i],
-          found->n_sinks > 1, found->pts, found->has_segment ?
-          &found->segment : NULL, GST_BUFFER_PTS (b),
-          r->has_segment ? &r->segment : NULL,
-          (now - found->time) * GST_USECOND);
-    /* The mark stays: the same memory may leave other appsrcs too. */
+    for (i = 0; i < copy.n_sinks; i++)
+      pm_model_fed_by (self->model, r->appsrc, copy.sinks[i],
+          copy.n_sinks > 1, copy.pts, copy.has_segment ? &copy.segment :
+          NULL, GST_BUFFER_PTS (b), r->has_segment ? &r->segment : NULL,
+          (now - copy.time) * GST_USECOND);
   }
 }
 

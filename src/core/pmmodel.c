@@ -2354,7 +2354,8 @@ pm_model_fed_by (PmModel * model, gpointer appsrc, guint64 sink,
   }
   f->samples++;
   f->last = g_get_real_time ();
-  f->shared = shared;
+  /* Once seen shared, it stays so. */
+  f->shared = f->shared || shared;
   f->in_pts = in_pts;
   f->out_pts = out_pts;
   f->delay = delay;
@@ -2489,4 +2490,48 @@ pm_fed_by_free (PmFedBy * f)
 {
   g_free (f->path);
   g_free (f);
+}
+
+void
+pm_model_fed_by_shared (PmModel * model, guint64 appsrc, const guint64 * sinks,
+    guint n_sinks, GstClockTime pts)
+{
+  PmElement *element = NULL;
+  PmFedBy *from = NULL;
+  GHashTableIter iter;
+  gpointer value;
+  guint i, k;
+
+  g_mutex_lock (&model->lock);
+  g_hash_table_iter_init (&iter, model->elements);
+  while (element == NULL && g_hash_table_iter_next (&iter, NULL, &value))
+    if (((PmElement *) value)->id == appsrc)
+      element = value;
+  /* The entry the appsrc made for this very buffer. */
+  for (i = 0; element && element->fed_by && i < element->fed_by->len; i++) {
+    PmFedBy *f = g_ptr_array_index (element->fed_by, i);
+
+    if (f->in_pts == pts && from == NULL)
+      from = f;
+  }
+  for (k = 0; from && k < n_sinks; k++) {
+    PmFedBy *f = NULL;
+
+    for (i = 0; i < element->fed_by->len && f == NULL; i++)
+      if (((PmFedBy *) g_ptr_array_index (element->fed_by, i))->sink ==
+          sinks[k])
+        f = g_ptr_array_index (element->fed_by, i);
+    if (f == NULL) {
+      f = g_memdup2 (from, sizeof (PmFedBy));
+      f->sink = sinks[k];
+      f->samples = 0;
+      g_ptr_array_add (element->fed_by, f);
+    }
+    if (f != from) {
+      f->samples++;
+      f->last = from->last;
+    }
+    f->shared = TRUE;
+  }
+  g_mutex_unlock (&model->lock);
 }

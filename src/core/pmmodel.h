@@ -86,6 +86,10 @@ void pm_fed_by_free (PmFedBy * f);
 void pm_model_fed_by (PmModel * model, gpointer appsrc, guint64 sink,
     gboolean shared, GstClockTime in_pts, const GstSegment * in_segment, GstClockTime out_pts,
     const GstSegment * out_segment, GstClockTime delay);
+/* The buffer with this PTS, already out of the appsrc with this id, also
+ * went into all these appsinks: each is linked to it, shared. */
+void pm_model_fed_by_shared (PmModel * model, guint64 appsrc,
+    const guint64 * sinks, guint n_sinks, GstClockTime pts);
 /* "fed_by":[...], for an appsrc's levels entry, or NULL. */
 gchar *pm_model_fed_by_json (PmModel * model, guint64 appsrc);
 GPtrArray *pm_model_find_elements (PmModel * model, PmElementFilter filter);
