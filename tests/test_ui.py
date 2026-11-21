@@ -325,6 +325,30 @@ class Browser:
         self.call("Input.dispatchMouseEvent", type="mouseReleased",
                   x=x + dx, y=y + dy, button="left", clickCount=1)
 
+    # Moves the pointer over the element an expression returns until the
+    # condition holds: the live graph can be redrawn under the pointer.
+    def hover_until(self, expression, condition, tries=3):
+        for _ in range(tries):
+            point = self.eval(
+                f"(() => {{ const n = {expression}; if (!n) return null;"
+                " const r = n.getBoundingClientRect();"
+                " return [r.x + r.width / 2, r.y + r.height / 2]; })()")
+            assert point, f"nothing to hover: {expression}"
+            under = self.eval(
+                f"(n => n ? n.tagName + (n.getAttribute('class') ? '.' + "
+                f"n.getAttribute('class') : '') : 'nothing')"
+                f"(document.elementFromPoint({point[0]}, {point[1]}))")
+            self.clicks = self.clicks[-14:] + [
+                f"{time.time():.2f} hover {expression[:40]} at "
+                f"{point[0]:.0f},{point[1]:.0f}: {under}"]
+            # Away first, so that coming back is a new hover.
+            self.call("Input.dispatchMouseEvent", type="mouseMoved", x=2, y=2)
+            self.call("Input.dispatchMouseEvent", type="mouseMoved",
+                      x=point[0], y=point[1])
+            if self.wait(condition, timeout=3):
+                return True
+        return False
+
     # Moves the mouse to the middle of the element an expression returns.
     def hover(self, expression):
         point = self.eval(
@@ -1210,8 +1234,8 @@ def check_ended(browser, serve):
         assert browser.wait(f"{status}.textContent === 'program ended'"), \
             "page did not see the program end"
         assert browser.eval("!document.getElementById('ended').hidden")
-        # The last state stays on screen.
-        assert browser.eval(f"{NODES} > 0"), "last state not kept"
+        # The last state stays on screen (laid out again in the background).
+        assert browser.wait(f"{NODES} > 0"), "last state not kept"
         assert browser.wait("document.getElementById('pipeline-state')"
                             ".textContent.includes('NULL')"), \
             "the stopped pipeline is not shown as NULL"
@@ -1797,18 +1821,20 @@ def check_threads_view(browser, serve):
                             f"{body}.textContent.includes('tq9:src') && "
                             f"{body}.textContent.includes('other threads')"), \
             "performance: " + str(browser.eval(f"{body}.textContent"))
-        rows = f"{body}.querySelectorAll('tr').length"
-        summed = browser.eval(rows)
+        # The rows of the other threads one by one (live: how many changes
+        # from second to second, so their own rows, not a count).
+        others = f"{body}.querySelectorAll('tr.perf-other').length"
         toggle = f"{body}.querySelector('.perf-toggle')"
         assert browser.eval(f"{toggle}.textContent") == "+"
+        assert browser.eval(others) == 0
         browser.eval(f"{toggle}.click()")
-        assert browser.wait(f"{rows} > {summed} && {toggle}.textContent === "
+        assert browser.wait(f"{others} > 0 && {toggle}.textContent === "
                             f"'−' && {toggle}.getAttribute('aria-expanded') "
                             "=== 'true'"), \
             "the other threads not listed one by one"
         browser.eval(f"{toggle}.click()")
-        assert browser.wait(f"{rows} === {summed}"), \
-            "the other threads not added up again"
+        assert browser.wait(f"{others} === 0 && {toggle}.textContent === "
+                            "'+'"), "the other threads not added up again"
         link = (f"[...{body}.querySelectorAll('.perf-element')].find(b => "
                 "b.textContent === 'tsink')")
         browser.eval(f"{link}.click()")
@@ -1848,6 +1874,12 @@ def check_format_finding(browser, serve):
         assert browser.eval("/[0-9]+× · [0-9]+ (s|min) ago/.test(document."
                             "querySelector('#findings-rows .finding-count')"
                             ".textContent)"), "no count and time"
+        # It ends right after failing: while it tears its pipeline down,
+        # the finding's element is briefly not in the graph and a click on
+        # its place does nothing. Once it has ended, the last graph is back.
+        assert browser.wait("document.getElementById('connection')"
+                            ".textContent === 'program ended'"), \
+            "the program did not end"
         open_panel(browser, "problems")
         assert browser.wait("!document.getElementById('findings-panel')"
                             ".hidden")
@@ -3787,10 +3819,10 @@ def check_pins(browser):
         f"/^[0-9]+:[0-9][0-9]:[0-9][0-9]\\.[0-9]{{9}}$/.test({pin_row('PTS')})"), \
         f"PTS: {browser.eval(pin_row('PTS'))}"
     tip = "document.querySelector('.tooltip')"
-    browser.hover(f"document.querySelector('{pad}')")
-    assert browser.wait(f"!{tip}.hidden && "
-                        f"{tip}.textContent.includes('buffers/s')"), \
-        "no rate in the tooltip of a pinned pad"
+    assert browser.hover_until(f"document.querySelector('{pad}')",
+                               f"!{tip}.hidden && "
+                               f"{tip}.textContent.includes('buffers/s')"), \
+        "no rate in the tooltip of a pinned pad\n" + browser.history()
     browser.call("Input.dispatchMouseEvent", type="mouseMoved", x=2, y=2)
 
     browser.click("#time-unit")
