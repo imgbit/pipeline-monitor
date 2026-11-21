@@ -50,7 +50,9 @@ variable, without changing your application, and open http://127.0.0.1:8765/.
   late buffers, sources sending nothing, a thread using a whole core where
   the pipeline must keep up, and elements still alive after leaving their
   pipeline
-- GStreamer's own `.dot` file of a running pipeline, saved from the page
+- GStreamer's `.dot` files: save one of a running pipeline from the page,
+  or open the ones your program dumped (`GST_DEBUG_DUMP_DOT_DIR`) in the
+  viewer, drawn like a live pipeline, without Graphviz
 - Element details, collapsible bins, light and dark theme
 - Local only: listens on 127.0.0.1 and loads nothing from the internet
 
@@ -233,6 +235,12 @@ Say so in [Discussions](https://github.com/imgbit/pipeline-monitor/discussions).
   for example one you were sent, run `pipeline-monitor` (lists the folder) or
   `pipeline-monitor open FILE.jsonl` (options: `--recordings DIR`,
   `--port PORT`, `--no-browser`).
+- GStreamer `.dot` files open the same way (Add file…, a drop on the page,
+  or `pipeline-monitor open FILE.dot`), one entry per file: the graph as
+  the program dumped it, with states, caps and properties, and where a link
+  failed, what each side accepts. A `.dot` is one moment without live data,
+  so Performance, Problems and Log are not shown; element factories are
+  looked up from the type, and say so.
 
 ## Status
 

@@ -47,7 +47,8 @@
   element's.
 - **Recordings:** **Record** saves everything the page shows over time,
   **Snapshot** one moment. Files you can play back here, or send with a
-  bug report. **Add file…** opens one from your computer.
+  bug report. **Add file…** opens one from your computer, or a GStreamer
+  `.dot` file.
 ![A demo in the viewer: its question and answer, play, the steps, the slider, the time and the step; the list of recordings](images/viewer.png)
 
 - **Viewer:** a recording opens read-only at its start, with ▶, the speed
@@ -55,5 +56,10 @@
   recorded moment to the next; click the time or the step to type where to
   go. Where the recording has no pipeline, the page says when it appears and
   takes you there. Its pins show the recorded values.
+- **A .dot file:** a pipeline graph your program dumped
+  (`GST_DEBUG_DUMP_DOT_DIR`), drawn like a live pipeline, with states, caps
+  and properties; where a link failed, what each side accepts. It is one
+  moment without live data, so Performance, Problems and Log are hidden.
+  Element factories are looked up from the type, and say so.
 - **When the program ends or is killed:** the page keeps the last state
   and connects again by itself when the program runs again.
