@@ -79,6 +79,51 @@ function appRows(queue, unit) {
   return rows;
 }
 
+// appsink -> appsrc links, found from the data: one seen in the last 5 s
+// is current; an older one is shown only when no current one is.
+export const LINK_FRESH_US = 5e6;
+
+// An appsrc's links: {current, old}, the newest first.
+export function appsrcLinks(queue, now) {
+  const all = [...(queue?.fed_by ?? [])].sort((a, b) => b.last - a.last);
+  return { current: all.filter((f) => now - f.last <= LINK_FRESH_US),
+    old: all.filter((f) => now - f.last > LINK_FRESH_US) };
+}
+
+// The appsrcs an appsink's buffers currently leave: [{element, path}].
+export function appsinkLinks(sinkId, queues, now) {
+  const found = [];
+  for (const q of queues.values())
+    if (q.kind === "appsrc" && appsrcLinks(q, now).current
+      .some((f) => f.element === sinkId))
+      found.push({ element: q.element, path: q.path });
+  return found;
+}
+
+function segmentCell(s, key) {
+  if (s === undefined)
+    return "—";
+  if (s === null)
+    return "none";
+  if (key === "format" || key === "rate")
+    return String(s[key]);
+  return s.format === "time" ? clockTime(s[key]) : String(s[key]);
+}
+
+// [label, into appsink, out of appsrc, differs]: the same buffer at both
+// ends (link), or the appsink's last buffer and segment against the
+// appsrc's segment (chosen: not the same buffer, PTS not compared).
+export function linkRows(into, out, same) {
+  const rows = [["PTS", clockTime(into.pts), same ? clockTime(out.pts) : "—",
+    same && into.pts !== out.pts]];
+  for (const key of ["format", "start", "base", "rate"]) {
+    const a = segmentCell(into.segment, key);
+    const b = segmentCell(out.segment, key);
+    rows.push([`segment ${key}`, a, b, a !== b]);
+  }
+  return rows;
+}
+
 // appsrc's segment sent or appsink's segment received, and appsink's last
 // PTS: rows for the details panel.
 export function appStreamRows(queue) {

@@ -6,7 +6,7 @@ import { GraphView, countElements, threadColours, threadText }
   from "./render.js";
 import { isTimeProperty, propertyText, showDetails, updateLatencyDetails,
   updateProblemsDetails, updateProperties, updateQueueDetails, valueText,
-  updateAppStream }
+  updateAppStream, updateAppLink }
   from "./panel.js";
 import { LogView } from "./log.js";
 import { Tooltip } from "./tooltip.js";
@@ -824,6 +824,8 @@ async function layoutAndRender() {
   if (selection) {
     updateProblemsDetails($("details"), problemsOf(selection.element));
     updateAppStream($("details"), state.queues.get(selection.element.id));
+    updateAppLink($("details"), state.queues.get(selection.element.id),
+      state.queues, state.levelsTime ?? 0, jumpTo);
   }
   // The panel was rebuilt: refill it from the last answer, or ask now for a
   // newly selected element.
@@ -1043,6 +1045,25 @@ function applyLevels(levels) {
   updateQueueDetails($("details"), queueDetails(
     index.elements.get(state.selected), index));
   updateAppStream($("details"), state.queues.get(state.selected));
+  state.levelsTime = levels.time;
+  updateAppLink($("details"), state.queues.get(state.selected), state.queues,
+    levels.time, jumpTo);
+}
+
+// Shows the element with this id, in whichever pipeline holds it.
+function jumpTo(id) {
+  const element = buildIndex(state.graph).elements.get(id);
+  if (!element)
+    return;
+  const top = element.path.split("/")[0];
+  const pipeline = state.graph.pipelines.find((p) => p.path === top);
+  if (pipeline && pipeline.id !== state.pipelineId) {
+    state.pipelineId = pipeline.id;
+    $("pipeline-select").value = String(pipeline.id);
+  }
+  view.handlers.select(id);
+  // The other end's details from their top.
+  $("details").scrollTop = 0;
 }
 
 // Recordings shown read-only: the program's state is set aside meanwhile.

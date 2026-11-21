@@ -286,6 +286,13 @@ append_app (GString * json, PmModel * model, PmElementRef * ref)
   pm_json_append_member_string (json, "at_limit", at_limit);
   if (leaky != NULL)
     pm_json_append_member_string (json, "leaky", leaky);
+  if (g_str_equal (kind, "appsrc")) {
+    gchar *fed = pm_model_fed_by_json (model, ref->id);
+
+    if (fed)
+      g_string_append (json, fed);
+    g_free (fed);
+  }
   append_app_segment (json, element, g_str_equal (kind, "appsrc") ? "src" :
       "sink");
   /* appsink: its last buffer's PTS, while it keeps the last sample. */

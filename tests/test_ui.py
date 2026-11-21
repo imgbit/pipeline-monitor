@@ -2432,7 +2432,14 @@ def check_app_details(browser, good):
                    "counts": {"in": 105, "out": 1, "dropped": 0},
                    "levels": [{"buffers": 104, "bytes": 11980800,
                                "time": 3466666667}],
-                   "segment": segment(0)},
+                   "segment": segment(0),
+                   # Found from the data a second before.
+                   "fed_by": [{"element": 4, "path": "p/sink", "samples": 7,
+                               "last": started, "shared": True,
+                               "in_pts": 5000000000, "out_pts": 5000000000,
+                               "delay": 2000000,
+                               "in_segment": segment(5000000000),
+                               "out_segment": segment(0)}]},
                   {"element": 4, "path": "p/sink", "kind": "appsink",
                    "at_limit": "blocks",
                    "limits": {"buffers": 3, "bytes": None, "time": None},
@@ -2493,6 +2500,27 @@ def check_app_details(browser, good):
     # caps have no known default: not called one.
     assert browser.eval(f"!/caps\\s+video\\/x-raw \\(default\\)/"
                         f".test({details})"), browser.eval(details)
+    # The appsink it is fed by, found from the data: the segment lost on the
+    # way marked, no manual choice offered.
+    link = "document.querySelector('.app-link')"
+    for text in ("p/sink · detected from the data, seen 1.0 s ago",
+                 "time in the program and appsrc's queue: 2.0 ms",
+                 "The same buffers also went into another appsink: which "
+                 "one the program read them from is not known."):
+        assert browser.wait(f"{link}.innerText.includes({json.dumps(text)})"),\
+            browser.eval(f"{link}?.innerText")
+    differs = (f"[...{link}.querySelectorAll('tr.differs')].map(r => "
+               "r.firstChild.textContent).join()")
+    assert browser.eval(differs) == "segment start", browser.eval(differs)
+    assert browser.eval(f"{link}.querySelector('.app-compare').hidden")
+    # Its name goes to it.
+    browser.eval("document.querySelector('.app-link-place')"
+                 ".scrollIntoView({block: 'center'})")
+    assert browser.click_until(
+        ".app-link-place",
+        "document.querySelector('#details h2')?.textContent === 'sink'")
+    assert browser.wait(f"{link}.innerText.includes('p/src · detected from "
+                        "the data')"), browser.eval(f"{link}?.innerText")
     close_details(browser)
     node = browser.eval(f"{element_selector('sink')}?.dataset.id")
     assert browser.click_until(

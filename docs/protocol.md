@@ -211,7 +211,9 @@ the task has ended.
   appsrc is live without `min-latency`), `app-grows` (appsrc past a limit
   for 5 s without `block` or `leaky-type`), `app-full` (appsink at a limit
   for 5 s in a live pipeline, without `drop` or `leaky-type`; its level is
-  read since GStreamer 1.28).
+  read since GStreamer 1.28), `app-segment` (an appsink's buffers, seen in
+  the last 5 s, leave the appsrc in a segment with another start than the
+  one they arrived in).
 - `text` says what was found, `hint` what it means; both state only what
   was observed.
 - `count`, `first`, `last` when the problem repeats.
@@ -255,6 +257,15 @@ the task has ended.
   (`{"format","start","base","rate"}`, or `null` before one); appsink
   also has `last_pts`, its last buffer's PTS (`null` without one, or when
   the program turned `enable-last-sample` off).
+- An appsrc fed by an appsink of the same program has `fed_by`: each
+  appsink whose buffers were seen leaving it, found from the data (about
+  every 100 ms a buffer going into an appsink is marked; a marked buffer
+  leaving an appsrc links the two; copied data links nothing):
+  `{"element","path","samples","last","in_pts","out_pts","delay",
+  "in_segment","out_segment"}`. `last`: when the last marked buffer left
+  (µs, as `time`); the rest is about that buffer: its PTS and segment
+  into the appsink and out of the appsrc, and the time between. Absent
+  until one is seen.
 - `clock_provider`: the path of the element that gives the clock, or
   `null`.
 

@@ -22,6 +22,8 @@ struct _GstPipelineMonitorTracer
   gboolean log;
   gboolean flow;
   gboolean wait;
+  /* appsinks and appsrcs made; pairing: both exist. */
+  gint appsinks, appsrcs, pairing;
 };
 
 /* The running server, for the exit handler (programs that exit without
@@ -85,6 +87,14 @@ on_underrun (GstElement * element, GstPipelineMonitorTracer * self)
   pm_model_count_queue_event (self->model, element, FALSE);
 }
 
+static gboolean
+is_type (GstElement * element, const gchar * name)
+{
+  GType type = g_type_from_name (name);
+
+  return type != 0 && g_type_is_a (G_OBJECT_TYPE (element), type);
+}
+
 static void
 do_element_new (GstTracer * tracer, GstClockTime ts, GstElement * element)
 {
@@ -101,6 +111,12 @@ do_element_new (GstTracer * tracer, GstClockTime ts, GstElement * element)
   GST_DEBUG_OBJECT (tracer, "new element %s (%s)", GST_OBJECT_NAME (element),
       G_OBJECT_TYPE_NAME (element));
   sync_element (self, element);
+  if (is_type (element, "GstAppSink"))
+    g_atomic_int_inc (&self->appsinks);
+  else if (is_type (element, "GstAppSrc"))
+    g_atomic_int_inc (&self->appsrcs);
+  if (g_atomic_int_get (&self->appsinks) && g_atomic_int_get (&self->appsrcs))
+    g_atomic_int_set (&self->pairing, 1);
   if (pm_levels_is_queue (element) &&
       g_signal_lookup ("overrun", G_OBJECT_TYPE (element)) != 0) {
     g_signal_connect_object (element, "overrun", G_CALLBACK (on_overrun),
@@ -377,6 +393,191 @@ eos_quark (void)
   return quark;
 }
 
+/* appsink -> program -> appsrc, found from the data: about every 100 ms a
+ * buffer going into each appsink has its memory marked (qdata, unseen by
+ * the program); a marked memory leaving an appsrc proves the link. A buffer
+ * into an appsink that is not marked loses any old mark (a buffer pool
+ * reuses memory), so a mark always names the appsink last passed. */
+
+#define MARK_EVERY_US (100 * G_TIME_SPAN_MILLISECOND)
+
+enum
+{
+  ROLE_OTHER = 1,
+  ROLE_INTO_APPSINK,
+  ROLE_FROM_APPSRC,
+};
+
+/* A pad's role, kept with the peer it was worked out for, and what the
+ * role needs: the appsink's id or the appsrc, the segment last sent, when
+ * the last mark was made. Pushes on a pad are serialized. */
+typedef struct
+{
+  GstPad *peer;
+  gint role;
+  guint64 sink;
+  GstElement *appsrc;
+  GstSegment segment;
+  gboolean has_segment;
+  gint64 last_mark;
+  guint64 last_slot;
+} PmPadRole;
+
+/* The appsinks one buffer went into (a tee: several), its PTS and the
+ * first one's segment, when it was marked. */
+#define MARK_SINKS 4
+
+typedef struct
+{
+  guint64 sinks[MARK_SINKS];
+  guint n_sinks;
+  GstClockTime pts;
+  GstSegment segment;
+  gboolean has_segment;
+  gint64 time;
+} PmMark;
+
+static GQuark mark_quark;
+static gint live_marks;
+
+static void
+mark_free (gpointer data)
+{
+  g_free (data);
+  g_atomic_int_add (&live_marks, -1);
+}
+
+/* Kept with the pad's push timing: no second lookup per push. */
+static PmPadRole *
+pad_role (GstPipelineMonitorTracer * self, GstPad * pad, PmPushTiming * t)
+{
+  PmPadRole *r = t->pairing;
+  GstPad *peer = GST_PAD_PEER (pad);
+  GstObject *parent, *into;
+
+  if (G_LIKELY (r != NULL && r->peer == peer && r->role != 0))
+    return r;
+  if (r == NULL)
+    t->pairing = r = g_new0 (PmPadRole, 1);
+  r->peer = peer;
+  parent = gst_pad_get_parent (pad);
+  into = peer ? gst_pad_get_parent (peer) : NULL;
+  r->role = ROLE_OTHER;
+  if (into && GST_IS_ELEMENT (into) && is_type (GST_ELEMENT (into),
+          "GstAppSink")) {
+    r->role = ROLE_INTO_APPSINK;
+    r->sink = pm_model_element_id (self->model, into);
+  } else if (parent && GST_IS_ELEMENT (parent) &&
+      is_type (GST_ELEMENT (parent), "GstAppSrc")) {
+    r->role = ROLE_FROM_APPSRC;
+    /* The pad's own element: it outlives the pad. */
+    r->appsrc = GST_ELEMENT (parent);
+  }
+  gst_clear_object (&into);
+  gst_clear_object (&parent);
+  return r;
+}
+
+static void
+pair_segment (GstPad * pad, GstEvent * event)
+{
+  PmPushTiming *t = pm_push_timing (pad);
+  PmPadRole *r = t->pairing;
+  const GstSegment *segment;
+
+  /* Before the first buffer: the role is worked out then. */
+  if (r == NULL)
+    t->pairing = r = g_new0 (PmPadRole, 1);
+  gst_event_parse_segment (event, &segment);
+  gst_segment_copy_into (segment, &r->segment);
+  r->has_segment = TRUE;
+}
+
+/* now: the hook's timestamp, in µs. */
+static void
+pair_buffer (GstPipelineMonitorTracer * self, PmPadRole * r, GstBuffer * b,
+    gint64 now)
+{
+  guint i, n = gst_buffer_n_memory (b);
+
+  if (r->role == ROLE_INTO_APPSINK) {
+    /* Which buffers: the first in each 100 ms of PTS, so that appsinks
+     * fed the same buffers (a tee) mark the same ones; by the clock when
+     * there is no PTS. */
+    guint64 slot = GST_BUFFER_PTS_IS_VALID (b) ? GST_BUFFER_PTS (b) /
+        (MARK_EVERY_US * GST_USECOND) + 1 : 0;
+    gboolean sample = r->sink != 0 && (slot ? slot != r->last_slot :
+        now - r->last_mark >= MARK_EVERY_US);
+
+    /* A mark already there: the same buffer going into another appsink
+     * too (a tee: same PTS) adds this one; else the memory was reused
+     * for a new buffer (a buffer pool) and the old mark goes. So a mark
+     * names exactly the appsinks this buffer went into. */
+    for (i = 0; i < n && g_atomic_int_get (&live_marks); i++) {
+      GstMiniObject *mem = GST_MINI_OBJECT (gst_buffer_peek_memory (b, i));
+      PmMark *old = gst_mini_object_get_qdata (mem, mark_quark);
+      guint k;
+
+      if (G_LIKELY (old == NULL))
+        continue;
+      if (GST_BUFFER_PTS_IS_VALID (b) && old->pts == GST_BUFFER_PTS (b) &&
+          r->sink != 0) {
+        for (k = 0; k < old->n_sinks && old->sinks[k] != r->sink; k++);
+        if (k == old->n_sinks && k < MARK_SINKS)
+          old->sinks[old->n_sinks++] = r->sink;
+        sample = FALSE;
+      } else {
+        gst_mini_object_set_qdata (mem, mark_quark, NULL, NULL);
+      }
+    }
+    if (slot)
+      r->last_slot = slot;
+    if (!sample)
+      return;
+    r->last_mark = now;
+    for (i = 0; i < n; i++) {
+      PmMark *m = g_new (PmMark, 1);
+
+      m->sinks[0] = r->sink;
+      m->n_sinks = 1;
+      m->pts = GST_BUFFER_PTS (b);
+      m->has_segment = r->has_segment;
+      if (r->has_segment)
+        gst_segment_copy_into (&r->segment, &m->segment);
+      m->time = now;
+      g_atomic_int_inc (&live_marks);
+      gst_mini_object_set_qdata (GST_MINI_OBJECT (gst_buffer_peek_memory (b,
+                  i)), mark_quark, m, mark_free);
+    }
+  } else if (r->role == ROLE_FROM_APPSRC) {
+    PmMark *found = NULL;
+
+    if (!g_atomic_int_get (&live_marks))
+      return;
+    for (i = 0; i < n && found == NULL; i++)
+      found = gst_mini_object_get_qdata (GST_MINI_OBJECT
+          (gst_buffer_peek_memory (b, i)), mark_quark);
+    if (found == NULL)
+      return;
+    for (i = 0; i < found->n_sinks; i++)
+      pm_model_fed_by (self->model, r->appsrc, found->sinks[i],
+          found->n_sinks > 1, found->pts, found->has_segment ?
+          &found->segment : NULL, GST_BUFFER_PTS (b),
+          r->has_segment ? &r->segment : NULL,
+          (now - found->time) * GST_USECOND);
+    /* The mark stays: the same memory may leave other appsrcs too. */
+  }
+}
+
+static gboolean
+pair_list_item (GstBuffer ** buffer, guint idx, gpointer user_data)
+{
+  gpointer *args = user_data;
+
+  pair_buffer (args[0], args[1], *buffer, GPOINTER_TO_SIZE (args[2]));
+  return TRUE;
+}
+
 static void
 do_pad_push_event_pre (GstTracer * tracer, GstClockTime ts, GstPad * pad,
     GstEvent * event)
@@ -384,6 +585,9 @@ do_pad_push_event_pre (GstTracer * tracer, GstClockTime ts, GstPad * pad,
   GstEventType type = GST_EVENT_TYPE (event);
   GstPad *peer;
 
+  if (type == GST_EVENT_SEGMENT && g_atomic_int_get
+      (&GST_PIPELINE_MONITOR_TRACER (tracer)->pairing))
+    pair_segment (pad, event);
   if (type != GST_EVENT_EOS && type != GST_EVENT_STREAM_START &&
       type != GST_EVENT_FLUSH_STOP)
     return;
@@ -601,6 +805,22 @@ do_pad_push_pre (GstTracer * tracer, GstClockTime ts, GstPad * pad,
   if (G_UNLIKELY (!g_atomic_int_get (&t->moved)))
     g_atomic_int_set (&t->moved, 1);
   pm_model_note_pad_thread (model, t, thread);
+  if (G_UNLIKELY (g_atomic_int_get (&GST_PIPELINE_MONITOR_TRACER
+              (tracer)->pairing))) {
+    GstPipelineMonitorTracer *self = GST_PIPELINE_MONITOR_TRACER (tracer);
+    PmPadRole *r = pad_role (self, pad, t);
+    gint64 now = ts / GST_USECOND;
+
+    if (r->role == ROLE_OTHER)
+      return;
+    if (GST_IS_BUFFER (data)) {
+      pair_buffer (self, r, data, now);
+    } else if (GST_IS_BUFFER_LIST (data)) {
+      gpointer args[] = { self, r, GSIZE_TO_POINTER (now) };
+
+      gst_buffer_list_foreach (data, pair_list_item, args);
+    }
+  }
 }
 
 static void
@@ -860,6 +1080,7 @@ gst_pipeline_monitor_tracer_class_init (GstPipelineMonitorTracerClass * klass)
   gobject_class->get_property = gst_pipeline_monitor_tracer_get_property;
   gobject_class->constructed = gst_pipeline_monitor_tracer_constructed;
   gobject_class->finalize = gst_pipeline_monitor_tracer_finalize;
+  mark_quark = g_quark_from_static_string ("pipeline-monitor-appsink-mark");
 
   g_object_class_install_property (gobject_class, PROP_URL,
       g_param_spec_string ("url", "URL",

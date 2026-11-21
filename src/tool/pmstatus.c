@@ -1003,6 +1003,89 @@ print_queue (Status * s, gint64 id)
   }
 }
 
+#define LINK_FRESH_US (5 * G_USEC_PER_SEC)
+
+/* The levels message's time: "now" for the links' ages. */
+static gint64
+levels_time (Status * s)
+{
+  return inum (obj (s->levels), "time");
+}
+
+/* appsink -> appsrc links found from the data (seen in the last 5 s; an
+ * older one only when there is no newer). */
+static void
+print_links (Status * s, gint64 id, const gchar * kind)
+{
+  JsonArray *queues = arr (obj (s->levels), "queues");
+  gint64 now = levels_time (s);
+  guint i, j, shown = 0;
+
+  if (g_strcmp0 (kind, "appsink") == 0) {
+    for (i = 0; queues && i < json_array_get_length (queues); i++) {
+      JsonObject *q = json_array_get_object_element (queues, i);
+      JsonArray *fed = arr (q, "fed_by");
+
+      for (j = 0; fed && j < json_array_get_length (fed); j++) {
+        JsonObject *f = json_array_get_object_element (fed, j);
+
+        if (inum (f, "element") == id && now - inum (f, "last") <=
+            LINK_FRESH_US) {
+          g_print ("%s %s (detected from the data)\n", shown++ ? "     " :
+              "Feeds", str (q, "path"));
+        }
+      }
+    }
+    if (!shown)
+      g_print ("Feeds: no appsrc seen sending its buffers on\n");
+    return;
+  }
+  for (i = 0; queues && i < json_array_get_length (queues); i++) {
+    JsonObject *q = json_array_get_object_element (queues, i);
+    JsonArray *fed = arr (q, "fed_by");
+    gint64 newest = 0;
+
+    if (inum (q, "element") != id)
+      continue;
+    for (j = 0; fed && j < json_array_get_length (fed); j++)
+      newest = MAX (newest, inum (json_array_get_object_element (fed, j),
+              "last"));
+    for (j = 0; fed && j < json_array_get_length (fed); j++) {
+      JsonObject *f = json_array_get_object_element (fed, j);
+      JsonObject *in = child_obj (f, "in_segment");
+      JsonObject *out = child_obj (f, "out_segment");
+      gint64 age = now - inum (f, "last");
+      gchar *in_pts = clock_text (inum (f, "in_pts"));
+      gchar *out_pts = clock_text (inum (f, "out_pts"));
+      gchar *in_start = in ? clock_text (inum (in, "start")) : NULL;
+      gchar *out_start = out ? clock_text (inum (out, "start")) : NULL;
+      gchar *delay = span_text (num (f, "delay"));
+
+      if (age > LINK_FRESH_US && newest - inum (f, "last") > 0)
+        goto next;
+      g_print ("Fed by %s (detected from the data, seen %.1f s ago)\n"
+          "  PTS %s into the appsink, %s out of appsrc; %s between\n"
+          "  segment from %s into the appsink, from %s out of appsrc\n",
+          str (f, "path") ? str (f, "path") : "an appsink now gone",
+          MAX (age, 0) / 1e6, in_pts, out_pts, delay,
+          in_start ? in_start : "none", out_start ? out_start : "none");
+      if (json_object_get_boolean_member_with_default (f, "shared", FALSE))
+        g_print ("  the same buffers also went into another appsink: which "
+            "one the program read them from is not known\n");
+      shown++;
+    next:
+      g_free (in_pts);
+      g_free (out_pts);
+      g_free (in_start);
+      g_free (out_start);
+      g_free (delay);
+    }
+  }
+  if (!shown)
+    g_print ("Fed by: no appsink's buffers seen leaving it (the data may be "
+        "copied, or come from elsewhere)\n");
+}
+
 static gint
 print_element (Status * s, const gchar * name)
 {
@@ -1045,6 +1128,9 @@ print_element (Status * s, const gchar * name)
   }
   index_clear (&x);
   print_queue (s, inum (e, "id"));
+  if (g_strcmp0 (str (e, "factory"), "appsrc") == 0 ||
+      g_strcmp0 (str (e, "factory"), "appsink") == 0)
+    print_links (s, inum (e, "id"), str (e, "factory"));
   if (s->recording) {
     gint64 id = inum (e, "id");
     JsonNode *n = g_hash_table_lookup (s->props, &id);

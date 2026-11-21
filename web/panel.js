@@ -7,7 +7,8 @@ import { countElements } from "./render.js";
 import { summarizeCaps } from "./caps.js";
 import { capsList } from "./tooltip.js";
 import { formatSpan } from "./units.js";
-import { appStreamRows } from "./levels.js";
+import { appStreamRows, appsinkLinks, appsrcLinks, linkRows }
+  from "./levels.js";
 
 // Pads whose full caps are open in the panel, kept across updates.
 const expanded = new Set();
@@ -85,6 +86,116 @@ export function updateAppStream(aside, queue) {
     add(dl, "dd", v);
   }
   section.replaceChildren(dl);
+}
+
+// The appsink an appsrc was set to be compared with, by appsrc id.
+const comparing = new Map();
+
+function linkTable(parent, rows) {
+  const table = add(parent, "table", undefined, "app-pair");
+  const head = add(table, "tr");
+  for (const h of ["", "into appsink", "out of appsrc"])
+    add(head, "th", h);
+  for (const [label, a, b, differs] of rows) {
+    const tr = add(table, "tr", undefined, differs ? "differs" : undefined);
+    add(tr, "td", label, "muted");
+    add(tr, "td", a);
+    add(tr, "td", b);
+  }
+}
+
+function ago(us) {
+  const s = Math.max(0, us) / 1e6;
+  return s < 1 ? "just now" : `${s < 10 ? s.toFixed(1) : Math.round(s)} s ago`;
+}
+
+// "Data from appsink" (appsrc) and "Data to appsrc" (appsink), refreshed
+// with every "levels" message. now: the message's time; jump(id) shows
+// that element.
+export function updateAppLink(aside, queue, queues, now, jump) {
+  const section = aside.querySelector(".app-link");
+  if (!section || Number(section.dataset.element) !== queue?.element)
+    return;
+  let body = section.querySelector(".app-link-body");
+  if (!body)
+    body = add(section, "div", undefined, "app-link-body");
+  const place = (parent, element, path) => {
+    const button = add(parent, "button", path ?? "an element now gone",
+      "app-link-place");
+    button.title = "Show it in the graph";
+    onPress(button, () => jump(element));
+  };
+
+  if (section.dataset.kind === "appsink") {
+    body.replaceChildren();
+    const found = appsinkLinks(queue.element, queues, now);
+    if (!found.length)
+      add(body, "div", "No appsrc seen sending its buffers on.", "muted");
+    for (const f of found) {
+      const row = add(body, "div");
+      place(row, f.element, f.path);
+      add(row, "span", " · detected from the data", "muted");
+    }
+    return;
+  }
+
+  const { current, old } = appsrcLinks(queue, now);
+  const shown = current.length ? current : old.slice(0, 1);
+  const sinks = [...queues.values()].filter((q) => q.kind === "appsink");
+  let compare = section.querySelector(".app-compare");
+  if (!compare) {
+    compare = add(section, "label", "Compare with ", "app-compare");
+    const select = add(compare, "select");
+    select.addEventListener("change", () => {
+      comparing.set(queue.element, Number(select.value) || null);
+      updateAppLink(aside, queue, queues, now, jump);
+    });
+  }
+  const select = compare.querySelector("select");
+  // Rebuilt only when the appsinks change: it would close under the
+  // pointer.
+  const options = sinks.map((s) => s.element).join();
+  if (select.dataset.options !== options) {
+    select.dataset.options = options;
+    select.replaceChildren();
+    add(select, "option", "—").value = "";
+    for (const s of sinks)
+      add(select, "option", s.path).value = s.element;
+  }
+  // Found from the data, or chosen: never both.
+  compare.hidden = shown.length > 0 || !sinks.length;
+  const chosen = compare.hidden ? null : comparing.get(queue.element);
+  select.value = chosen ?? "";
+
+  body.replaceChildren();
+  for (const f of shown) {
+    const row = add(body, "div");
+    place(row, f.element, f.path);
+    add(row, "span", ` · detected from the data, seen ${ago(now - f.last)}`,
+      "muted");
+    if (f.shared)
+      add(body, "div", "The same buffers also went into another appsink: " +
+        "which one the program read them from is not known.",
+      "muted app-link-shared");
+    linkTable(body, linkRows({ pts: f.in_pts, segment: f.in_segment },
+      { pts: f.out_pts, segment: f.out_segment }, true));
+    add(body, "div", `time in the program and appsrc's queue: ` +
+      `${formatSpan(f.delay, "auto")}`, "muted app-link-delay");
+  }
+  if (!shown.length) {
+    add(body, "div", sinks.length
+      ? "No appsink's buffers seen leaving it: the data may be copied, or " +
+        "come from elsewhere."
+      : "No appsink in this program.", "muted");
+    const sink = chosen && queues.get(chosen);
+    if (sink && queue.segment !== undefined) {
+      add(body, "div", `${sink.path}, chosen by you: its last buffer and ` +
+        "segment against appsrc's segment, not shown to be the same data",
+      "app-chosen");
+      linkTable(body, linkRows({ pts: sink.last_pts, segment: sink.segment },
+        { segment: queue.segment }, false));
+    }
+  }
 }
 
 // Runs fn when the button is pressed. Parts of the panel are rebuilt
@@ -185,6 +296,11 @@ export function showDetails(aside, selection, index, onClose, log, queue) {
   if (APP_SETTINGS[element.factory]) {
     add(aside, "h3", "Stream");
     add(aside, "div", undefined, "app-stream").dataset.element = element.id;
+    add(aside, "h3", element.factory === "appsrc" ? "Data from appsink"
+      : "Data to appsrc");
+    const link = add(aside, "div", undefined, "app-link");
+    link.dataset.element = element.id;
+    link.dataset.kind = element.factory;
   }
   if (queue) {
     add(aside, "h3", ["appsrc", "appsink"].includes(element.factory)

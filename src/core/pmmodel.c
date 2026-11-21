@@ -30,6 +30,9 @@ struct _PmElement
   gint buffering;
   /* A sink that warned it has no room for its processing deadline. */
   gboolean no_room;
+  /* An appsrc: the appsinks its buffers were seen to come from
+   * (PmFedBy), NULL until one is. */
+  GPtrArray *fed_by;
   PmPreroll preroll;
   gboolean live;
   /* Gives the element back while it exists, without keeping it alive. */
@@ -176,6 +179,8 @@ pm_element_free (PmElement * element)
   g_free (element->factory);
   g_free (element->type);
   g_free (element->left_path);
+  if (element->fed_by != NULL)
+    g_ptr_array_unref (element->fed_by);
   g_ptr_array_unref (element->children);
   g_ptr_array_unref (element->pads);
   if (element->missing != NULL)
@@ -1660,6 +1665,13 @@ timing_quark (void)
   return quark;
 }
 
+static void
+push_timing_free (gpointer data)
+{
+  g_free (((PmPushTiming *) data)->pairing);
+  g_free (data);
+}
+
 PmPushTiming *
 pm_push_timing (GstPad * pad)
 {
@@ -1667,7 +1679,8 @@ pm_push_timing (GstPad * pad)
 
   if (t == NULL) {
     t = g_new0 (PmPushTiming, 1);
-    g_object_set_qdata_full (G_OBJECT (pad), timing_quark (), t, g_free);
+    g_object_set_qdata_full (G_OBJECT (pad), timing_quark (), t,
+        push_timing_free);
   }
   return t;
 }
@@ -2313,4 +2326,167 @@ pm_model_note_no_room (PmModel * model, gpointer sink)
   if (element != NULL)
     element->no_room = TRUE;
   g_mutex_unlock (&model->lock);
+}
+
+
+void
+pm_model_fed_by (PmModel * model, gpointer appsrc, guint64 sink,
+    gboolean shared, GstClockTime in_pts, const GstSegment * in_segment, GstClockTime out_pts,
+    const GstSegment * out_segment, GstClockTime delay)
+{
+  PmElement *element;
+  PmFedBy *f = NULL;
+  guint i;
+
+  g_mutex_lock (&model->lock);
+  element = g_hash_table_lookup (model->elements, appsrc);
+  if (element == NULL)
+    goto done;
+  if (element->fed_by == NULL)
+    element->fed_by = g_ptr_array_new_with_free_func (g_free);
+  for (i = 0; i < element->fed_by->len && f == NULL; i++)
+    if (((PmFedBy *) g_ptr_array_index (element->fed_by, i))->sink == sink)
+      f = g_ptr_array_index (element->fed_by, i);
+  if (f == NULL) {
+    f = g_new0 (PmFedBy, 1);
+    f->sink = sink;
+    g_ptr_array_add (element->fed_by, f);
+  }
+  f->samples++;
+  f->last = g_get_real_time ();
+  f->shared = shared;
+  f->in_pts = in_pts;
+  f->out_pts = out_pts;
+  f->delay = delay;
+  f->in_has_segment = in_segment != NULL;
+  if (in_segment)
+    gst_segment_copy_into (in_segment, &f->in_segment);
+  f->out_has_segment = out_segment != NULL;
+  if (out_segment)
+    gst_segment_copy_into (out_segment, &f->out_segment);
+done:
+  g_mutex_unlock (&model->lock);
+}
+
+static void
+append_fed_segment (GString * json, const gchar * key, gboolean has,
+    const GstSegment * segment)
+{
+  if (!has) {
+    g_string_append_printf (json, "\"%s\":null,", key);
+    return;
+  }
+  g_string_append_printf (json, "\"%s\":{", key);
+  pm_json_append_member_string (json, "format",
+      gst_format_get_name (segment->format));
+  pm_json_append_value (json, "start", segment->start);
+  pm_json_append_value (json, "base", segment->base);
+  g_string_append_printf (json, "\"rate\":%g,", segment->rate);
+  pm_json_close (json, '}');
+  g_string_append_c (json, ',');
+}
+
+gchar *
+pm_model_fed_by_json (PmModel * model, guint64 appsrc)
+{
+  PmElement *element = NULL, *sink;
+  GHashTableIter iter;
+  gpointer value;
+  GString *json;
+  guint i;
+
+  g_mutex_lock (&model->lock);
+  g_hash_table_iter_init (&iter, model->elements);
+  while (element == NULL && g_hash_table_iter_next (&iter, NULL, &value))
+    if (((PmElement *) value)->id == appsrc)
+      element = value;
+  if (element == NULL || element->fed_by == NULL) {
+    g_mutex_unlock (&model->lock);
+    return NULL;
+  }
+  json = g_string_new ("\"fed_by\":[");
+  for (i = 0; i < element->fed_by->len; i++) {
+    PmFedBy *f = g_ptr_array_index (element->fed_by, i);
+    gchar *path;
+
+    sink = NULL;
+    g_hash_table_iter_init (&iter, model->elements);
+    while (sink == NULL && g_hash_table_iter_next (&iter, NULL, &value))
+      if (((PmElement *) value)->id == f->sink)
+        sink = value;
+    path = sink ? element_path (sink) : NULL;
+    g_string_append_c (json, '{');
+    pm_json_append_value (json, "element", f->sink);
+    pm_json_append_member_string (json, "path", path);
+    pm_json_append_value (json, "samples", f->samples);
+    g_string_append_printf (json, "\"shared\":%s,", f->shared ? "true" :
+        "false");
+    g_string_append_printf (json, "\"last\":%" G_GINT64_FORMAT ",",
+        f->last);
+    pm_json_append_value (json, "in_pts", f->in_pts);
+    pm_json_append_value (json, "out_pts", f->out_pts);
+    pm_json_append_value (json, "delay", f->delay);
+    append_fed_segment (json, "in_segment", f->in_has_segment,
+        &f->in_segment);
+    append_fed_segment (json, "out_segment", f->out_has_segment,
+        &f->out_segment);
+    pm_json_close (json, '}');
+    g_string_append_c (json, ',');
+    g_free (path);
+  }
+  pm_json_close (json, ']');
+  g_string_append_c (json, ',');
+  g_mutex_unlock (&model->lock);
+  return g_string_free (json, FALSE);
+}
+
+guint64
+pm_model_element_id (PmModel * model, gpointer object)
+{
+  PmElement *element;
+  guint64 id;
+
+  g_mutex_lock (&model->lock);
+  element = g_hash_table_lookup (model->elements, object);
+  id = element ? element->id : 0;
+  g_mutex_unlock (&model->lock);
+  return id;
+}
+
+GPtrArray *
+pm_model_fed_by_list (PmModel * model, guint64 appsrc)
+{
+  GPtrArray *list = g_ptr_array_new_with_free_func ((GDestroyNotify)
+      pm_fed_by_free);
+  PmElement *element = NULL, *sink;
+  GHashTableIter iter;
+  gpointer value;
+  guint i;
+
+  g_mutex_lock (&model->lock);
+  g_hash_table_iter_init (&iter, model->elements);
+  while (element == NULL && g_hash_table_iter_next (&iter, NULL, &value))
+    if (((PmElement *) value)->id == appsrc)
+      element = value;
+  for (i = 0; element && element->fed_by && i < element->fed_by->len; i++) {
+    PmFedBy *f = g_memdup2 (g_ptr_array_index (element->fed_by, i),
+        sizeof (PmFedBy));
+
+    sink = NULL;
+    g_hash_table_iter_init (&iter, model->elements);
+    while (sink == NULL && g_hash_table_iter_next (&iter, NULL, &value))
+      if (((PmElement *) value)->id == f->sink)
+        sink = value;
+    f->path = sink ? element_path (sink) : NULL;
+    g_ptr_array_add (list, f);
+  }
+  g_mutex_unlock (&model->lock);
+  return list;
+}
+
+void
+pm_fed_by_free (PmFedBy * f)
+{
+  g_free (f->path);
+  g_free (f);
 }

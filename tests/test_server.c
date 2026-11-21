@@ -3728,6 +3728,162 @@ expect_app_finding (const gchar * kind, const gchar * element,
   g_free (id);
 }
 
+/* appsink -> program -> appsrc, found from the data: buffers pushed with
+ * the memory they were pulled with link the two (and, the appsink seeked to
+ * 5 s and appsrc keeping its own segment, the segment lost on the way);
+ * copies link nothing. */
+static void
+test_app_link (void)
+{
+  GstElement *camera = gst_parse_launch ("videotestsrc ! "
+      "video/x-raw,width=16,height=16,framerate=30/1 ! appsink name=al-out "
+      "max-buffers=100", NULL);
+  GstElement *display = start_pipeline ("appsrc name=al-in format=time ! "
+      "fakesink sync=false async=false appsrc name=al-copy format=time ! "
+      "fakesink sync=false async=false");
+  GstElement *out = gst_bin_get_by_name (GST_BIN (camera), "al-out");
+  GstElement *in = gst_bin_get_by_name (GST_BIN (display), "al-in");
+  GstElement *copy = gst_bin_get_by_name (GST_BIN (display), "al-copy");
+  JsonObject *q = NULL, *f;
+  JsonArray *fed = NULL;
+  JsonNode *root = NULL;
+  gint i;
+
+  gst_element_set_state (camera, GST_STATE_PAUSED);
+  g_assert_cmpint (gst_element_get_state (camera, NULL, NULL, 5 * GST_SECOND),
+      ==, GST_STATE_CHANGE_SUCCESS);
+  g_assert_true (gst_element_seek_simple (camera, GST_FORMAT_TIME,
+          GST_SEEK_FLAG_FLUSH, 5 * GST_SECOND));
+  gst_element_get_state (camera, NULL, NULL, 5 * GST_SECOND);
+  gst_element_set_state (camera, GST_STATE_PLAYING);
+  /* Marks go on about every 100 ms: some of these buffers carry one. */
+  for (i = 0; i < 12; i++) {
+    GstSample *sample = NULL;
+    GstBuffer *buffer;
+    GstFlowReturn ret;
+
+    g_usleep (60 * G_TIME_SPAN_MILLISECOND);
+    g_signal_emit_by_name (out, "pull-sample", &sample);
+    g_assert_nonnull (sample);
+    buffer = gst_sample_get_buffer (sample);
+    g_signal_emit_by_name (in, "push-buffer", buffer, &ret);
+    buffer = gst_buffer_copy_deep (buffer);
+    g_signal_emit_by_name (copy, "push-buffer", buffer, &ret);
+    gst_buffer_unref (buffer);
+    gst_sample_unref (sample);
+  }
+
+  for (i = 0; i < 50 && fed == NULL; i++) {
+    g_clear_pointer (&root, json_node_unref);
+    q = levels_entry ("/al-in", &root);
+    if (q && json_object_has_member (q, "fed_by"))
+      fed = json_object_get_array_member (q, "fed_by");
+    else
+      g_usleep (100 * G_TIME_SPAN_MILLISECOND);
+  }
+  g_assert_nonnull (fed);
+  g_assert_cmpuint (json_array_get_length (fed), ==, 1);
+  f = json_array_get_object_element (fed, 0);
+  g_assert_true (g_str_has_suffix (json_object_get_string_member (f, "path"),
+          "/al-out"));
+  g_assert_cmpint (json_object_get_int_member (f, "samples"), >=, 1);
+  g_assert_cmpint (json_object_get_int_member (json_object_get_object_member
+          (f, "in_segment"), "start"), ==, 5 * GST_SECOND);
+  g_assert_cmpint (json_object_get_int_member (json_object_get_object_member
+          (f, "out_segment"), "start"), ==, 0);
+  json_node_unref (root);
+
+  q = levels_entry ("/al-copy", &root);
+  g_assert_nonnull (q);
+  g_assert_false (json_object_has_member (q, "fed_by"));
+  json_node_unref (root);
+
+  expect_app_finding ("app-segment", "al-in", 5,
+      "al-out's buffers in a segment from 0:00:00.000, not the one they "
+      "arrived in (from 0:00:05.000)");
+
+  gst_object_unref (out);
+  gst_object_unref (in);
+  gst_object_unref (copy);
+  stop_pipeline (display);
+  stop_pipeline (camera);
+}
+
+/* The fed_by entry of the appsrc whose path ends with src for the appsink
+ * whose path ends with sink, waiting for it; NULL if none comes. */
+static JsonObject *
+wait_fed_by (const gchar * src, const gchar * sink, JsonNode ** root)
+{
+  gint tries;
+  guint i;
+
+  for (tries = 0; tries < 30; tries++) {
+    JsonObject *q;
+    JsonArray *fed;
+
+    g_clear_pointer (root, json_node_unref);
+    q = levels_entry (src, root);
+    fed = q && json_object_has_member (q, "fed_by") ?
+        json_object_get_array_member (q, "fed_by") : NULL;
+    for (i = 0; fed && i < json_array_get_length (fed); i++) {
+      JsonObject *f = json_array_get_object_element (fed, i);
+
+      if (g_str_has_suffix (json_object_get_string_member (f, "path"), sink))
+        return f;
+    }
+    g_usleep (100 * G_TIME_SPAN_MILLISECOND);
+  }
+  return NULL;
+}
+
+/* One camera teed into two appsinks; the program reads only one, and
+ * pushes each sample into two appsrcs. Both appsrcs are fed by both
+ * appsinks' data, flagged as shared: which one was read is not known. */
+static void
+test_app_link_shared (void)
+{
+  GstElement *camera = start_pipeline ("videotestsrc is-live=true ! "
+      "video/x-raw,width=16,height=16,framerate=30/1 ! tee name=t "
+      "t. ! queue ! appsink name=ls-x max-buffers=1 drop=true "
+      "t. ! queue ! appsink name=ls-y max-buffers=100");
+  GstElement *display = start_pipeline ("appsrc name=ls-a format=time ! "
+      "fakesink sync=false async=false appsrc name=ls-b format=time ! "
+      "fakesink sync=false async=false");
+  GstElement *y = gst_bin_get_by_name (GST_BIN (camera), "ls-y");
+  GstElement *a = gst_bin_get_by_name (GST_BIN (display), "ls-a");
+  GstElement *b = gst_bin_get_by_name (GST_BIN (display), "ls-b");
+  const gchar *srcs[] = { "/ls-a", "/ls-b" }, *sinks[] = { "/ls-x", "/ls-y" };
+  JsonNode *root = NULL;
+  gint i, j;
+
+  for (i = 0; i < 20; i++) {
+    GstSample *sample = NULL;
+    GstFlowReturn ret;
+
+    g_signal_emit_by_name (y, "pull-sample", &sample);
+    g_assert_nonnull (sample);
+    g_signal_emit_by_name (a, "push-buffer", gst_sample_get_buffer (sample),
+        &ret);
+    g_signal_emit_by_name (b, "push-buffer", gst_sample_get_buffer (sample),
+        &ret);
+    gst_sample_unref (sample);
+  }
+  for (i = 0; i < 2; i++)
+    for (j = 0; j < 2; j++) {
+      JsonObject *f = wait_fed_by (srcs[i], sinks[j], &root);
+
+      g_assert_nonnull (f);
+      g_assert_true (json_object_get_boolean_member (f, "shared"));
+    }
+  g_clear_pointer (&root, json_node_unref);
+
+  gst_object_unref (y);
+  gst_object_unref (a);
+  gst_object_unref (b);
+  stop_pipeline (display);
+  stop_pipeline (camera);
+}
+
 /* appsrc and appsink: a segment in bytes for video, no latency room, an
  * appsrc queue past its limit, an appsink nobody pulls (its level can be
  * read since 1.28). A correctly set appsrc has none of the first two. */
@@ -4519,6 +4675,8 @@ main (int argc, char **argv)
   g_test_add_func ("/server/levels", test_levels);
   g_test_add_func ("/server/app-levels", test_app_levels);
   g_test_add_func ("/server/findings-apps", test_findings_apps);
+  g_test_add_func ("/server/app-link", test_app_link);
+  g_test_add_func ("/server/app-link-shared", test_app_link_shared);
   g_test_add_func ("/server/levels-multiqueue", test_levels_multiqueue);
   g_test_add_func ("/server/levels-buffering-clock",
       test_levels_buffering_clock);

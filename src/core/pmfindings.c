@@ -746,6 +746,55 @@ app_fill (GstElement * element, const gchar ** limit)
   return fill;
 }
 
+#define FED_FRESH_US (5 * G_USEC_PER_SEC)
+
+static gchar *
+clock_text (GstClockTime t)
+{
+  guint64 ms = t / GST_MSECOND;
+
+  return g_strdup_printf ("%" G_GUINT64_FORMAT ":%02u:%02u.%03u",
+      ms / 3600000, (guint) (ms / 60000 % 60), (guint) (ms / 1000 % 60),
+      (guint) (ms % 1000));
+}
+
+/* An appsink's buffers leave the appsrc in another segment than the one
+ * they arrived in: their timestamps are then read against another start. */
+static void
+add_segment_lost (PmFindings * self, GPtrArray * findings,
+    PmElementRef * ref, GstElement * appsrc)
+{
+  GPtrArray *list = pm_model_fed_by_list (self->model, ref->id);
+  gint64 now = g_get_real_time ();
+  guint i;
+
+  for (i = 0; i < list->len; i++) {
+    PmFedBy *fb = g_ptr_array_index (list, i);
+    gchar *in, *out;
+    PmFinding *f;
+
+    if (now - fb->last > FED_FRESH_US || !fb->in_has_segment ||
+        !fb->out_has_segment || fb->in_segment.format != GST_FORMAT_TIME ||
+        fb->out_segment.format != GST_FORMAT_TIME ||
+        fb->in_segment.start == fb->out_segment.start)
+      continue;
+    in = clock_text (fb->in_segment.start);
+    out = clock_text (fb->out_segment.start);
+    f = finding_new ("app-segment", PM_WARNING, ref->id, ref->path, 0, NULL);
+    f->text = g_strdup_printf ("%s sends %s's buffers in a segment from %s, "
+        "not the one they arrived in (from %s)", ref->path,
+        fb->path ? fb->path : "an appsink", out, in);
+    f->hint = g_strdup ("Their timestamps are read against another start, "
+        "so they play at another time. appsrc keeps its own segment unless "
+        "samples are pushed (push-sample) with handle-segment-change=true "
+        "and format=time.");
+    g_ptr_array_add (findings, f);
+    g_free (in);
+    g_free (out);
+  }
+  g_ptr_array_unref (list);
+}
+
 /* appsrc and appsink: what their settings do here. */
 static void
 add_apps (PmFindings * self, GPtrArray * findings, GHashTable * seen)
@@ -837,6 +886,8 @@ add_apps (PmFindings * self, GPtrArray * findings, GHashTable * seen)
         g_ptr_array_add (findings, f);
         break;
       }
+
+      add_segment_lost (self, findings, ref, e);
 
       if (!block && leaky == 0 && q->full_since != 0 &&
           now - q->full_since >= FULL_AFTER_US) {
