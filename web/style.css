@@ -992,7 +992,6 @@ body.viewing-dot #log-counter, body.viewing-dot #threads,
 body.viewing-dot #process-perf { display: none; }
 
 /* appsrc and appsink settings: the value, then what it does. */
-.app-settings dd { margin-bottom: 4px; }
 .info-toggle { all: unset; cursor: pointer; color: var(--muted);
   font-size: 12px; margin-left: 4px; }
 .info-toggle:hover, .info-toggle[aria-expanded="true"] { color: var(--accent); }

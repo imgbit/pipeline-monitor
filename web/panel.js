@@ -321,11 +321,6 @@ export function showDetails(aside, selection, index, onClose, log, queue) {
   if (element.bin)
     row("contains", `${countElements(element)} elements`);
   if (APP_SETTINGS[element.factory]) {
-    add(aside, "h3", `${element.factory} settings`);
-    add(aside, "div", "reading…", "app-settings").dataset.factory =
-      element.factory;
-  }
-  if (APP_SETTINGS[element.factory]) {
     add(aside, "h3", "Stream");
     add(aside, "div", undefined, "app-stream").dataset.element = element.id;
     add(aside, "h3", element.factory === "appsrc" ? "Data from appsink"
@@ -351,6 +346,7 @@ export function showDetails(aside, selection, index, onClose, log, queue) {
   add(aside, "h3", "Properties");
   const props = add(aside, "div", "loading…", "properties");
   props.dataset.element = element.id;
+  props.dataset.factory = element.factory ?? "";
 }
 
 // One line for any value from /api/properties.
@@ -501,35 +497,8 @@ function info(parent, key, text) {
   });
 }
 
-function updateAppSettings(aside, data) {
-  const section = aside.querySelector(".app-settings");
-  const factory = section?.dataset.factory;
-  if (!section || !APP_SETTINGS[factory])
-    return;
-  // The element gone, or not answering: nothing to read.
-  if (!data?.properties || data.not_answering) {
-    section.textContent = "not available";
-    return;
-  }
-  const dl = document.createElement("dl");
-  for (const [name, meaning] of APP_SETTINGS[factory]) {
-    const p = data.properties.find((x) => x.name === name);
-    if (!p || p.not_answering)
-      continue;
-    const value = propertyText(p);
-    add(dl, "dt", name);
-    const dd = add(dl, "dd");
-    add(dd, "span", value, "app-setting-value");
-    // Only where the default is known (not for caps, for one).
-    if ("default" in p && !p.changed)
-      add(dd, "span", " (default)", "muted");
-    info(dd, `${factory}:${name}`, meaning(value, p.value));
-  }
-  section.replaceChildren(dl);
-}
 
 export function updateProperties(aside, id, data, pinning) {
-  updateAppSettings(aside, data);
   const section = aside.querySelector(".properties");
   if (!section || Number(section.dataset.element) !== id)
     return;
@@ -560,8 +529,13 @@ export function updateProperties(aside, id, data, pinning) {
       });
     }
     const name = add(tr, "td", p.name, p.changed ? "changed" : undefined);
+    // For appsrc's and appsink's settings that decide timing and queueing:
+    // what this value does, in the same tooltip.
+    const meaning = !p.not_answering && APP_SETTINGS[section.dataset.factory]
+      ?.find(([n]) => n === p.name)?.[1];
     name.title = propertyTitle(p) + (p.changed ? "\nchanged from default"
-      : "");
+      : "") + (meaning ? `\n\n${p.name} ${propertyText(p)}: ` +
+      meaning(propertyText(p), p.value) : "");
     const cell = add(tr, "td");
     if (p.not_answering) {
       cell.textContent = "not answering";

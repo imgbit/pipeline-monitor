@@ -2503,26 +2503,26 @@ def check_app_details(browser, good):
     assert browser.click_until(
         f'#graph .node[data-id="{node}"] > rect.box',
         "document.querySelector('#details h2')?.textContent === 'src'")
-    for text in ("appsrc settings",
-                 "segment sent\ntime, from 0:00:00.000, base 0:00:00.000",
+    for text in ("segment sent\ntime, from 0:00:00.000, base 0:00:00.000",
                  "Queue (appsrc's own)",
                  "only signals enough-data, and keeps queueing",
                  "105 / 1 / 0"):
         assert browser.wait(f"{details}.includes({json.dumps(text)})"), \
             f"no {text!r} in: {browser.eval(details)}"
-    # Each setting's meaning behind its ⓘ: hidden until clicked.
-    all_text = "document.getElementById('details').textContent"
-    for text in ("segments in time", "ignores the segment of samples pushed",
-                 "not set: it reports a latency of 0"):
-        assert browser.wait(f"{all_text}.includes({json.dumps(text)})"), \
-            f"no {text!r} in: {browser.eval(all_text)}"
+    # No section of its own: what a setting's value does is in the
+    # tooltip of its row in Properties, not shown on the page.
+    assert not browser.eval("document.querySelector('.app-settings')")
+    for name, text in (("format", "segments in time"),
+                       ("handle-segment-change",
+                        "ignores the segment of samples pushed"),
+                       ("min-latency", "not set: it reports a latency of 0")):
+        title = ("[...document.querySelectorAll('#details .props tr')].find("
+                 f"r => r.children[1]?.textContent === {json.dumps(name)})"
+                 "?.children[1].title ?? ''")
+        assert browser.wait(f"({title}).includes({json.dumps(text)})"), \
+            f"{name}: {browser.eval(title)!r}"
         assert not browser.eval(f"{details}.includes({json.dumps(text)})"), \
-            f"{text!r} shown before its ⓘ is clicked"
-    browser.eval("document.querySelector('.app-settings .info-toggle')"
-                 ".scrollIntoView({block: 'center'})")
-    assert browser.click_until(".app-settings .info-toggle",
-                               f"{details}.includes('segments in time')"), \
-        "the first ⓘ did not open"
+            f"{text!r} shown on the page"
     # caps have no known default: not called one.
     assert browser.eval(f"!/caps\\s+video\\/x-raw \\(default\\)/"
                         f".test({details})"), browser.eval(details)
@@ -2560,10 +2560,6 @@ def check_app_details(browser, good):
     assert browser.click_until(
         f'#graph .node[data-id="{node}"] > rect.box',
         "document.querySelector('#details h2')?.textContent === 'sink'")
-    # No properties recorded for it: said, not "reading…" for ever.
-    assert browser.wait("document.querySelector('.app-settings')"
-                        "?.textContent === 'not available'"), \
-        browser.eval("document.querySelector('.app-settings')?.textContent")
     for text in ("segment received\ntime, from 0:00:05.000",
                  "last PTS\n0:00:09.000",
                  "level\nnot available before GStreamer 1.28",
