@@ -2578,7 +2578,7 @@ def check_app_details(browser, good):
     # way marked, no manual choice offered.
     link = "document.querySelector('.app-link')"
     for text in ("p/sink · detected from the data, seen 1.0 s ago · shared",
-                 "in between: 2.0 ms"):
+                 "in between\t\t2.0 ms"):
         assert browser.wait(f"{link}.innerText.includes({json.dumps(text)})"),\
             browser.eval(f"{link}?.innerText")
     assert browser.eval(f"{link}.textContent.includes('The same buffers "

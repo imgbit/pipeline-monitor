@@ -997,11 +997,15 @@ body.viewing-dot #process-perf { display: none; }
 .info-toggle:hover, .info-toggle[aria-expanded="true"] { color: var(--accent); }
 .info-text { font-size: 12px; color: var(--muted); margin: 2px 0 4px; }
 #details .app-stream dl { margin: 0; }
-.app-pair { border-collapse: collapse; margin: 4px 0; font-size: 12px; }
+/* Fixed columns, digits of one width: values changing every second do not
+   move them. */
+.app-pair { border-collapse: collapse; margin: 4px 0 10px; font-size: 12px;
+  table-layout: fixed; width: 100%; font-variant-numeric: tabular-nums; }
+.app-pair th:first-child { width: 8.5em; }
+.app-pair td { overflow-wrap: anywhere; }
 .app-pair th { text-align: left; font-weight: normal; color: var(--muted); }
 .app-pair th, .app-pair td { padding: 1px 12px 1px 0; }
 .app-pair tr.differs td:not(:first-child) { color: var(--error); font-weight: 600; }
-.app-link-delay { font-size: 12px; margin-bottom: 8px; }
 .app-link-place { all: unset; cursor: pointer; color: var(--accent, #2563eb); }
 .app-link-place:hover { text-decoration: underline; }
 .app-compare { display: block; margin-top: 4px; }

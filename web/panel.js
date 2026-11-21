@@ -202,13 +202,12 @@ export function updateAppLink(aside, queue, queues, now, jump,
         (group.length > 1 ? "these appsinks" : "another appsink too") +
         ": which one the program read them from is not known.");
     }
-    linkTable(body, linkRows({ pts: f.in_pts, segment: f.in_segment,
+    linkTable(body, [...linkRows({ pts: f.in_pts, segment: f.in_segment,
       pipeline: pipelineOf(f.path) }, { pts: f.out_pts,
-      segment: f.out_segment, pipeline: pipelineOf(queue.path) }, true));
-    const delay = add(body, "div", `in between: ${formatSpan(f.delay,
-      "auto")}`, "muted app-link-delay");
-    info(delay, "link-delay", "How long the buffer took from the appsink " +
-      "to leaving appsrc: the time in the program and in appsrc's queue.");
+      segment: f.out_segment, pipeline: pipelineOf(queue.path) }, true),
+    ["in between", "", formatSpan(f.delay, "auto"), false,
+      "How long the buffer took from the appsink to leaving appsrc: the " +
+      "time in the program and in appsrc's queue."]]);
   }
   if (!shown.length) {
     const none = add(body, "div", "none found", "muted");
