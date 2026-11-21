@@ -118,6 +118,9 @@ function segmentCell(s, key) {
 // [label, into appsink, out of appsrc, differs]: the same buffer at both
 // ends (link), or the appsink's last buffer and segment against the
 // appsrc's segment (chosen: not the same buffer, PTS not compared).
+// into.pipeline, out.pipeline: the two pipelines' entries of the "levels"
+// message, for their clocks and base times. A fifth item, when there, is
+// what the row means.
 export function linkRows(into, out, same) {
   const rows = [["PTS", clockTime(into.pts), same ? clockTime(out.pts) : "—",
     same && into.pts !== out.pts]];
@@ -125,6 +128,24 @@ export function linkRows(into, out, same) {
     const a = segmentCell(into.segment, key);
     const b = segmentCell(out.segment, key);
     rows.push([`segment ${key}`, a, b, a !== b]);
+  }
+  const p = into.pipeline;
+  const q = out.pipeline;
+  if (p || q) {
+    rows.push(["pipeline", p?.path ?? "—", q?.path ?? "—", false]);
+    const clockA = p?.clock ?? "none";
+    const clockB = q?.clock ?? "none";
+    rows.push(["clock", clockA, clockB, Boolean(p && q) && clockA !== clockB,
+      "The clock each pipeline runs on. Two different clocks drift apart, " +
+      "so timestamps cannot be carried from one pipeline to the other."]);
+    // Only a problem when the timestamps were carried over unchanged.
+    const carried = same && into.pts === out.pts;
+    rows.push(["base time", clockTime(p?.base_time), clockTime(q?.base_time),
+      carried && p?.base_time !== q?.base_time,
+      "Each pipeline's clock time at its start: running time = clock time " +
+      "- base time. When the timestamps are carried over unchanged (here " +
+      `${carried ? "they are" : "they are not"}), different base times ` +
+      "make the same timestamp a different moment in each pipeline."]);
   }
   return rows;
 }

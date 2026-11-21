@@ -96,9 +96,11 @@ function linkTable(parent, rows) {
   const head = add(table, "tr");
   for (const h of ["", "into appsink", "out of appsrc"])
     add(head, "th", h);
-  for (const [label, a, b, differs] of rows) {
+  for (const [label, a, b, differs, meaning] of rows) {
     const tr = add(table, "tr", undefined, differs ? "differs" : undefined);
-    add(tr, "td", label, "muted");
+    const name = add(tr, "td", label, "muted");
+    if (meaning)
+      info(name, `row:${label}`, meaning);
     add(tr, "td", a);
     add(tr, "td", b);
   }
@@ -112,7 +114,10 @@ function ago(us) {
 // "Data from appsink" (appsrc) and "Data to appsrc" (appsink), refreshed
 // with every "levels" message. now: the message's time; jump(id) shows
 // that element.
-export function updateAppLink(aside, queue, queues, now, jump) {
+export function updateAppLink(aside, queue, queues, now, jump,
+  pipelines = []) {
+  const pipelineOf = (path) => pipelines.find((p) => p.path ===
+    (path ?? "").split("/")[0]);
   const section = aside.querySelector(".app-link");
   if (!section || Number(section.dataset.element) !== queue?.element)
     return;
@@ -151,7 +156,7 @@ export function updateAppLink(aside, queue, queues, now, jump) {
     const select = add(compare, "select");
     select.addEventListener("change", () => {
       comparing.set(queue.element, Number(select.value) || null);
-      updateAppLink(aside, queue, queues, now, jump);
+      updateAppLink(aside, queue, queues, now, jump, pipelines);
     });
   }
   const select = compare.querySelector("select");
@@ -171,18 +176,35 @@ export function updateAppLink(aside, queue, queues, now, jump) {
   select.value = chosen ?? "";
 
   body.replaceChildren();
+  // Shared links of the same buffer (a tee): one table, all its appsinks.
+  const groups = [];
   for (const f of shown) {
+    const same = f.shared && groups.find((g) => g[0].shared &&
+      g[0].in_pts === f.in_pts && g[0].out_pts === f.out_pts);
+    if (same)
+      same.push(f);
+    else
+      groups.push([f]);
+  }
+  for (const group of groups) {
+    const f = group[0];
     const row = add(body, "div");
-    place(row, f.element, f.path);
+    group.forEach((g, i) => {
+      if (i)
+        add(row, "span", ", ");
+      place(row, g.element, g.path);
+    });
     add(row, "span", ` · detected from the data, seen ${ago(now - f.last)}`,
       "muted");
     if (f.shared) {
       add(row, "span", " · shared", "muted");
-      info(row, `shared:${f.element}`, "The same buffers also went into " +
-        "another appsink: which one the program read them from is not known.");
+      info(row, `shared:${f.element}`, "The same buffers went into " +
+        (group.length > 1 ? "these appsinks" : "another appsink too") +
+        ": which one the program read them from is not known.");
     }
-    linkTable(body, linkRows({ pts: f.in_pts, segment: f.in_segment },
-      { pts: f.out_pts, segment: f.out_segment }, true));
+    linkTable(body, linkRows({ pts: f.in_pts, segment: f.in_segment,
+      pipeline: pipelineOf(f.path) }, { pts: f.out_pts,
+      segment: f.out_segment, pipeline: pipelineOf(queue.path) }, true));
     const delay = add(body, "div", `in between: ${formatSpan(f.delay,
       "auto")}`, "muted app-link-delay");
     info(delay, "link-delay", "How long the buffer took from the appsink " +
@@ -201,8 +223,9 @@ export function updateAppLink(aside, queue, queues, now, jump) {
         "app-chosen");
       info(chosenRow, "chosen", "Its last buffer and segment against " +
         "appsrc's segment: not shown to be the same data.");
-      linkTable(body, linkRows({ pts: sink.last_pts, segment: sink.segment },
-        { segment: queue.segment }, false));
+      linkTable(body, linkRows({ pts: sink.last_pts, segment: sink.segment,
+        pipeline: pipelineOf(sink.path) }, { segment: queue.segment,
+        pipeline: pipelineOf(queue.path) }, false));
     }
   }
 }

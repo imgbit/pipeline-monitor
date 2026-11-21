@@ -832,7 +832,8 @@ async function layoutAndRender() {
     updateProblemsDetails($("details"), problemsOf(selection.element));
     updateAppStream($("details"), state.queues.get(selection.element.id));
     updateAppLink($("details"), state.queues.get(selection.element.id),
-      state.queues, state.levelsTime ?? 0, jumpTo);
+      state.queues, state.levelsTime ?? 0, jumpTo,
+      [...state.pipelineTimes.values()]);
   }
   // The panel was rebuilt: refill it from the last answer, or ask now for a
   // newly selected element.
@@ -1054,7 +1055,7 @@ function applyLevels(levels) {
   updateAppStream($("details"), state.queues.get(state.selected));
   state.levelsTime = levels.time;
   updateAppLink($("details"), state.queues.get(state.selected), state.queues,
-    levels.time, jumpTo);
+    levels.time, jumpTo, levels.pipelines);
 }
 
 // Shows the element with this id, in whichever pipeline holds it.

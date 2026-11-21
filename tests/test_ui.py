@@ -2432,7 +2432,15 @@ def check_app_details(browser, good):
     def segment(start):
         return {"format": "time", "start": start, "base": 0, "rate": 1}
     levels = {"type": "levels", "protocol": 1, "time": started + 1000000,
-              "pipelines": [], "queues": [
+              "pipelines": [{"element": 1, "path": "p", "state": "PLAYING",
+                             "clock": "GstSystemClock",
+                             "clock_type": "GstSystemClock",
+                             "clock_provider": None, "clock_time": 0,
+                             "base_time": 7000000000, "running_time": 0,
+                             "position": 0, "duration": None,
+                             "latency": {"live": True, "min": 0,
+                                         "max": None}}],
+              "queues": [
                   {"element": 2, "path": "p/src", "kind": "appsrc",
                    "at_limit": "signals", "leaky": "none",
                    "limits": {"buffers": 0, "bytes": 200000, "time": 0},
@@ -2525,11 +2533,19 @@ def check_app_details(browser, good):
                  "in between: 2.0 ms"):
         assert browser.wait(f"{link}.innerText.includes({json.dumps(text)})"),\
             browser.eval(f"{link}?.innerText")
-    assert browser.eval(f"{link}.textContent.includes('The same buffers also "
-                        "went into another appsink')")
+    assert browser.eval(f"{link}.textContent.includes('The same buffers "
+                        "went into another appsink too')")
     differs = (f"[...{link}.querySelectorAll('tr.differs')].map(r => "
                "r.firstChild.textContent).join()")
     assert browser.eval(differs) == "segment start", browser.eval(differs)
+    # Each end's pipeline, clock and base time: one pipeline here, so the
+    # same (the PTS carried over, but nothing to mark).
+    rows = (f"[...{link}.querySelectorAll('tr')].map(r => (r.firstChild"
+            ".firstChild?.textContent ?? '') + '=' + [...r.children].slice(1)"
+            ".map(c => c.textContent).join('/')).join(';')")
+    for row in ("pipeline=p/p", "clock=GstSystemClock/GstSystemClock",
+                "base time=0:00:07.000/0:00:07.000"):
+        assert row in browser.eval(rows), browser.eval(rows)
     assert browser.eval(f"{link}.querySelector('.app-compare').hidden")
     # Its name goes to it.
     browser.eval("document.querySelector('.app-link-place')"
