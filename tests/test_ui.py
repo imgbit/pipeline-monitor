@@ -1868,6 +1868,7 @@ def check_threads_view(browser, serve):
         browser.call("Input.dispatchMouseEvent", type="mouseMoved", x=2, y=2)
         # The header's buttons keep their whole label in a narrow window;
         # the times line gives way instead.
+        size = browser.eval("[innerWidth, innerHeight]")
         browser.call("Emulation.setDeviceMetricsOverride", width=1000,
                      height=700, deviceScaleFactor=1, mobile=False)
         cut = ("['performance-counter', 'recordings-counter', "
@@ -1876,9 +1877,14 @@ def check_threads_view(browser, serve):
                "b.clientWidth + 1; })")
         assert browser.wait(f"{cut}.length === 0"), \
             "header buttons cut off: " + str(browser.eval(cut))
+        # Back to its own size before the next click lands: set it back by
+        # name (clearing alone could be applied late on a busy machine),
+        # then clear, which then changes nothing.
+        browser.call("Emulation.setDeviceMetricsOverride", width=size[0],
+                     height=size[1], deviceScaleFactor=1, mobile=False)
+        assert browser.wait(f"innerWidth === {size[0]}"), \
+            f"the window kept {browser.eval('innerWidth')} px"
         browser.call("Emulation.clearDeviceMetricsOverride")
-        # Back to its own size before the next click lands.
-        assert browser.wait("innerWidth !== 1000"), "the window kept 1000 px"
         time.sleep(0.3)
         # The Performance panel: the streaming threads with the elements
         # each runs; a click on one selects it; other threads summed, or
