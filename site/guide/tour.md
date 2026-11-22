@@ -20,6 +20,14 @@
 - **Details:** click an element: its factory, state and path, a queue's
   level, its pads and what they link to, its errors and warnings, its
   latency, and all its properties (live when pinned).
+- **appsrc and appsink:** their details add their own queue and the
+  segment each sends or receives. **Data from appsink** names the appsink
+  that feeds an appsrc, found from the data, with the same buffer at both
+  ends: PTS, segment, running time, each pipeline's clock and base time,
+  and when each plays it. When the program copies the data, choose an
+  appsink to compare with.
+- **Explanations:** what is underlined with dots has one: hover it, or tap
+  it on a phone.
 ![Pinned pad and pinned properties: their cards, live](images/pins.png)
 
 - **Pinned pads:** click a pad to pin it: a card with buffers per second,

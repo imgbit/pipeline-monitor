@@ -32,8 +32,14 @@ variable, without changing your application, and open http://127.0.0.1:8765/.
   limits, overruns, underruns and buffering
 - Threads: one button colours every element and link by the thread that
   runs it, so you see where a queue hands over to a new thread; CPU per
-  thread, the program's CPU and memory in the header, and a Performance
-  panel with the last minute of each
+  thread (the program's main thread marked), the program's CPU and memory
+  in the header, and a Performance panel with the last minute of each
+- appsrc and appsink: their own queue (level against each limit, what
+  reaching a limit does, buffers in, out and dropped), the segment each
+  sends or receives, and which appsink feeds which appsrc, found from the
+  data: the same buffer at both ends (PTS, segment, running time, each
+  pipeline's clock and base time, when each plays it); when the program
+  copies the data, compare by hand
 - Pipeline clock and times in the header: clock and its provider, running
   time, position and duration, latency
 - Element properties in the details panel, with values changed from the
@@ -48,12 +54,15 @@ variable, without changing your application, and open http://127.0.0.1:8765/.
   negotiation and links, a pipeline stuck in a state (with sinks that have
   not prerolled), missing decoders, full or dropping queues, sinks dropping
   late buffers, sources sending nothing, a thread using a whole core where
-  the pipeline must keep up, and elements still alive after leaving their
-  pipeline
+  the pipeline must keep up, elements still alive after leaving their
+  pipeline, and appsrc and appsink settings that cause trouble (a segment
+  in bytes, no latency room, a queue past its limit, a segment lost
+  between appsink and appsrc)
 - GStreamer's `.dot` files: save one of a running pipeline from the page,
   or open the ones your program dumped (`GST_DEBUG_DUMP_DOT_DIR`) in the
   viewer, drawn like a live pipeline, without Graphviz
-- Element details, collapsible bins, light and dark theme
+- Element details, collapsible bins, light and dark theme, a layout for
+  phones
 - Local only: listens on 127.0.0.1 and loads nothing from the internet
 
 ## Install

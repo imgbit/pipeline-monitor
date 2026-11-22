@@ -191,7 +191,8 @@ jobs:
 
           To open recordings without a program:
             ./pipeline-monitor              (the recordings folder)
-            ./pipeline-monitor open FILE    (that recording)
+            ./pipeline-monitor open FILE    (that recording, or a GStreamer .dot)
+            ./pipeline-monitor status       (a running program, as text)
 
           Files downloaded with a browser are marked as quarantined, and
           macOS may refuse to load or run them. Remove the mark with:
@@ -346,7 +347,8 @@ jobs:
           To open recordings without a program (GStreamer's bin folder in
           PATH):
             pipeline-monitor.exe              (the recordings folder)
-            pipeline-monitor.exe open FILE    (that recording)
+            pipeline-monitor.exe open FILE    (that recording, or a GStreamer .dot)
+            pipeline-monitor.exe status       (a running program, as text)
 
           These files are not signed. Windows may warn before running
           pipeline-monitor.exe; if the files are blocked, run Unblock-File
