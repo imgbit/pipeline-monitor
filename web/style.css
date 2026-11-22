@@ -183,6 +183,9 @@ main {
   bottom: 16px;
   display: flex;
   gap: 4px;
+  /* A second row on a narrow screen, not a page wider than the screen. */
+  flex-wrap: wrap;
+  max-width: calc(100% - 32px);
 }
 
 .threads-legend {
@@ -992,17 +995,17 @@ body.viewing-dot #log-counter, body.viewing-dot #threads,
 body.viewing-dot #process-perf { display: none; }
 
 /* appsrc and appsink settings: the value, then what it does. */
-.info-toggle { all: unset; cursor: pointer; color: var(--muted);
-  font-size: 12px; margin-left: 4px; }
-.info-toggle:hover, .info-toggle[aria-expanded="true"] { color: var(--accent); }
-.info-text { font-size: 12px; color: var(--muted); margin: 2px 0 4px; }
+/* Has an explanation (see tip() in tooltip.js). */
+[data-tip] { text-decoration: underline dotted; text-decoration-color:
+  var(--muted); text-underline-offset: 3px; cursor: help; }
+.tip-pop { white-space: pre-line; }
 #details .app-stream dl { margin: 0; }
 /* Fixed columns, digits of one width: values changing every second do not
    move them. */
 .app-pair { border-collapse: collapse; margin: 4px 0 10px; font-size: 12px;
   table-layout: fixed; width: 100%; font-variant-numeric: tabular-nums; }
 .app-pair th:first-child { width: 8.5em; }
-.app-pair td { overflow-wrap: anywhere; }
+#details .app-pair td { overflow-wrap: anywhere; white-space: normal; }
 .app-pair th { text-align: left; font-weight: normal; color: var(--muted); }
 .app-pair th, .app-pair td { padding: 1px 12px 1px 0; }
 .app-pair tr.differs td:not(:first-child) { color: var(--error); font-weight: 600; }

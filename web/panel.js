@@ -5,7 +5,7 @@
 
 import { countElements } from "./render.js";
 import { summarizeCaps } from "./caps.js";
-import { capsList } from "./tooltip.js";
+import { capsList, tip } from "./tooltip.js";
 import { formatSpan } from "./units.js";
 import { appStreamRows, appsinkLinks, appsrcLinks, linkRows }
   from "./levels.js";
@@ -40,7 +40,7 @@ function showLog(aside, log) {
     const li = add(list, "li", undefined, e.level);
     li.textContent = `${new Date(e.last / 1000).toLocaleTimeString()} ${e.text}` +
       (e.count > 1 ? ` ×${e.count}` : "");
-    li.title = e.debug || "";
+    tip(li, e.debug);
   }
 }
 
@@ -96,15 +96,13 @@ function linkTable(parent, rows, sink, src) {
   const table = add(parent, "table", undefined, "app-pair");
   const head = add(table, "tr");
   add(head, "th", "");
-  add(head, "th", "into appsink").title = "As the buffer went into " +
-    `${sink ?? "the appsink"}: read as it was pushed into its sink pad.`;
-  add(head, "th", "out of appsrc").title = "As the same buffer left " +
-    `${src ?? "the appsrc"}: read as appsrc pushed it out of its src pad.`;
+  tip(add(head, "th", "into appsink"), "As the buffer went into " +
+    `${sink ?? "the appsink"}: read as it was pushed into its sink pad.`);
+  tip(add(head, "th", "out of appsrc"), "As the same buffer left " +
+    `${src ?? "the appsrc"}: read as appsrc pushed it out of its src pad.`);
   for (const [label, a, b, differs, meaning] of rows) {
     const tr = add(table, "tr", undefined, differs ? "differs" : undefined);
-    const name = add(tr, "td", label, "muted");
-    if (meaning)
-      name.title = meaning;
+    tip(add(tr, "td", label, "muted"), meaning);
     add(tr, "td", a);
     add(tr, "td", b);
   }
@@ -138,11 +136,10 @@ export function updateAppLink(aside, queue, queues, now, jump,
   if (section.dataset.kind === "appsink") {
     body.replaceChildren();
     const found = appsinkLinks(queue.element, queues, now);
-    if (!found.length) {
-      const row = add(body, "div", "none found", "muted");
-      info(row, "feeds-none", "No appsrc was seen sending this appsink's " +
-        "buffers on: the program may copy the data, or not pass it on.");
-    }
+    if (!found.length)
+      tip(add(body, "div", "none found", "muted"), "No appsrc was seen " +
+        "sending this appsink's buffers on: the program may copy the data, " +
+        "or not pass it on.");
     for (const f of found) {
       const row = add(body, "div");
       place(row, f.element, f.path);
@@ -201,9 +198,9 @@ export function updateAppLink(aside, queue, queues, now, jump,
     add(row, "span", ` · detected from the data, seen ${ago(now - f.last)}`,
       "muted");
     if (f.shared) {
-      add(row, "span", " · shared", "muted");
-      info(row, `shared:${f.element}`, "The same buffers went into " +
-        (group.length > 1 ? "these appsinks" : "another appsink too") +
+      add(row, "span", " · ", "muted");
+      tip(add(row, "span", "shared", "muted"), "The same buffers went " +
+        `into ${group.length > 1 ? "these appsinks" : "another appsink too"}` +
         ": which one the program read them from is not known.");
     }
     linkTable(body, [...linkRows({ pts: f.in_pts, segment: f.in_segment,
@@ -215,18 +212,17 @@ export function updateAppLink(aside, queue, queues, now, jump,
     group.map((g) => g.path).join(", "), queue.path);
   }
   if (!shown.length) {
-    const none = add(body, "div", "none found", "muted");
-    info(none, "fed-none", sinks.length
+    const none = add(body, "div", undefined, "muted");
+    tip(add(none, "span", "none found"), sinks.length
       ? "No appsink's buffers were seen leaving this appsrc: the program " +
         "may copy the data, or make its own. Choose an appsink below to " +
         "compare with it."
       : "This program has no appsink.");
     const sink = chosen && queues.get(chosen);
     if (sink && queue.segment !== undefined) {
-      const chosenRow = add(body, "div", `${sink.path} · chosen by you`,
-        "app-chosen");
-      info(chosenRow, "chosen", "Its last buffer and segment against " +
-        "appsrc's segment: not shown to be the same data.");
+      const chosenRow = add(body, "div", `${sink.path} · `, "app-chosen");
+      tip(add(chosenRow, "span", "chosen by you"), "Its last buffer and " +
+        "segment against appsrc's segment: not shown to be the same data.");
       linkTable(body, linkRows({ pts: sink.last_pts, segment: sink.segment,
         pipeline: pipelineOf(sink.path) }, { segment: queue.segment,
         pipeline: pipelineOf(queue.path) }, false), sink.path, queue.path);
@@ -478,28 +474,6 @@ const APP_SETTINGS = {
 };
 
 // The appsrc or appsink settings section, from the element's properties.
-// An ⓘ after a short line: its explanation, shown on hover and opened by
-// a click (also on phones). Open ones stay open while the panel is rebuilt.
-const openInfo = new Set();
-
-function info(parent, key, text) {
-  const button = add(parent, "button", "ⓘ", "info-toggle");
-  button.title = text;
-  button.setAttribute("aria-label", "What this means");
-  const box = add(parent, "div", text, "info-text");
-  const show = () => {
-    box.hidden = !openInfo.has(key);
-    button.setAttribute("aria-expanded", String(!box.hidden));
-  };
-  show();
-  onPress(button, () => {
-    if (openInfo.has(key))
-      openInfo.delete(key);
-    else
-      openInfo.add(key);
-    show();
-  });
-}
 
 
 export function updateProperties(aside, id, data, pinning) {
@@ -537,14 +511,14 @@ export function updateProperties(aside, id, data, pinning) {
     // what this value does, in the same tooltip.
     const meaning = !p.not_answering && APP_SETTINGS[section.dataset.factory]
       ?.find(([n]) => n === p.name)?.[1];
-    name.title = propertyTitle(p) + (p.changed ? "\nchanged from default"
+    tip(name, propertyTitle(p) + (p.changed ? "\nchanged from default"
       : "") + (meaning ? `\n\n${p.name} ${propertyText(p)}: ` +
-      meaning(propertyText(p), p.value) : "");
+      meaning(propertyText(p), p.value) : ""));
     const cell = add(tr, "td");
     if (p.not_answering) {
       cell.textContent = "not answering";
       cell.className = "muted";
-      cell.title = "Its getter did not return in time; skipped from now on";
+      tip(cell, "Its getter did not return in time; skipped from now on");
       continue;
     }
     const text = valueText(p.value);
@@ -565,9 +539,9 @@ export function updateProperties(aside, id, data, pinning) {
     } else {
       cell.textContent = propertyText(p);
       if (isTimeProperty(p))
-        cell.title = `${p.value} ns`;
+        tip(cell, `${p.value} ns`);
       else if (typeof p.value === "object" && p.value?.caps)
-        cell.title = p.value.caps;
+        tip(cell, p.value.caps);
     }
     // Flash what changed since the last refresh.
     const full = JSON.stringify(p.value);
@@ -603,7 +577,7 @@ function showPads(aside, element, index) {
     if (!pad.caps) {
       cell.textContent = "—";
       if (pad.mode === "pull")
-        cell.title = "No caps: data is pulled";
+        tip(cell, "No caps: data is pulled");
       continue;
     }
     const toggle = add(cell, "button", summarizeCaps(pad.caps), "caps-toggle");

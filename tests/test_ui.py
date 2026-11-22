@@ -1421,7 +1421,8 @@ def check_pull_mode(browser, serve):
                  "r.cells[0]?.textContent === 'sink')")
         assert browser.wait(f"{cells}?.cells[2].textContent === 'pull'"), \
             "no mode in the details panel"
-        assert browser.eval(f"{cells}.cells[5].title.includes('pulled')")
+        assert browser.eval(f"{cells}.cells[5].dataset.tip.includes("
+                            "'pulled')")
         close_details(browser)
     finally:
         server.terminate()
@@ -1623,12 +1624,15 @@ def check_phone(browser, serve):
         browser.call("Page.navigate", url=url)
         assert browser.wait(f"!!{element_selector('ph-q')}", timeout=15)
         time.sleep(1)
+        # Against the screen: on a phone, innerWidth grows with a page that
+        # is too wide.
         wide = ("[...document.querySelectorAll('header > *:not([hidden]), "
                 ".toolbar > *')].filter(e => e.getBoundingClientRect().right "
-                "> innerWidth + 1).map(e => e.id || e.className)")
+                "> visualViewport.width + 1).map(e => e.id || e.className)")
         assert browser.eval(f"document.documentElement.scrollWidth <= "
-                            f"innerWidth && {wide}.length === 0"), \
-            "wider than the screen: " + str(browser.eval(wide))
+                            f"visualViewport.width + 1 && {wide}.length === 0"),\
+            "wider than the screen: " + str(browser.eval(wide)) + " page " + \
+            str(browser.eval("document.documentElement.scrollWidth"))
         scale = ("(t => t ? Number(t.match(/scale\\(([\\d.]+)\\)/)"
                  f"?.[1] ?? 1) : 1)({TRANSFORM})")
         before = browser.eval(scale)
@@ -2566,7 +2570,7 @@ def check_app_details(browser, good):
                        ("min-latency", "not set: it reports a latency of 0")):
         title = ("[...document.querySelectorAll('#details .props tr')].find("
                  f"r => r.children[1]?.textContent === {json.dumps(name)})"
-                 "?.children[1].title ?? ''")
+                 "?.children[1].dataset.tip ?? ''")
         assert browser.wait(f"({title}).includes({json.dumps(text)})"), \
             f"{name}: {browser.eval(title)!r}"
         assert not browser.eval(f"{details}.includes({json.dumps(text)})"), \
@@ -2581,8 +2585,18 @@ def check_app_details(browser, good):
                  "in between\t\t2.0 ms"):
         assert browser.wait(f"{link}.innerText.includes({json.dumps(text)})"),\
             browser.eval(f"{link}?.innerText")
-    assert browser.eval(f"{link}.textContent.includes('The same buffers "
-                        "went into another appsink too')")
+    # Explanations: underlined, their text shown on hover or a tap.
+    shared = f"{link}.querySelector('[data-tip^=\"The same buffers\"]')"
+    assert browser.eval(f"{shared}?.textContent") == "shared"
+    assert not browser.eval(f"{link}.querySelector('.info-toggle')")
+    browser.eval(f"{shared}.scrollIntoView({{block: 'center'}})")
+    pop = "document.querySelector('.tip-pop')"
+    assert browser.click_until(
+        f"#details [data-tip^='The same buffers']",
+        f"!{pop}.hidden && {pop}.textContent.startsWith('The same buffers')"),\
+        "a tap on 'shared' did not show its explanation"
+    browser.call("Input.dispatchKeyEvent", type="keyDown", key="Escape")
+    assert browser.wait(f"{pop}.hidden"), "Escape did not hide it"
     differs = (f"[...{link}.querySelectorAll('tr.differs')].map(r => "
                "r.firstChild.textContent).join()")
     assert browser.eval(differs) == "segment start", browser.eval(differs)
@@ -2598,10 +2612,10 @@ def check_app_details(browser, good):
                 "plays at=0:00:00.000/0:00:05.000 (+5.000 s)"):
         assert row in browser.eval(rows), browser.eval(rows)
     plays = (f"[...{link}.querySelectorAll('tr')].find(r => r.firstChild"
-             ".textContent === 'plays at')?.firstChild.title ?? ''")
+             ".textContent === 'plays at')?.firstChild.dataset.tip ?? ''")
     assert "base time + the buffer's running time" in browser.eval(plays), \
         browser.eval(plays)
-    heads = (f"[...{link}.querySelectorAll('th')].map(h => h.title)"
+    heads = (f"[...{link}.querySelectorAll('th')].map(h => h.dataset.tip)"
              ".join('|')")
     assert "As the buffer went into p/sink" in browser.eval(heads), \
         browser.eval(heads)

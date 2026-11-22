@@ -9,7 +9,7 @@ import { isTimeProperty, propertyText, showDetails, updateLatencyDetails,
   updateAppStream, updateAppLink }
   from "./panel.js";
 import { LogView } from "./log.js";
-import { Tooltip } from "./tooltip.js";
+import { Tooltip, initTips } from "./tooltip.js";
 import { linkCaps } from "./caps.js";
 import { ElementPins, Pins } from "./pins.js";
 import { TIME_UNITS, formatBytes, formatSpan } from "./units.js";
@@ -280,6 +280,8 @@ const recordings = new RecordingsView({
 }, { send, view: pageView,
   open: (name) => viewerMode ? openStored(name) : openInViewer(name),
   openFile, openDemo, viewer: viewerMode, site: siteList !== null });
+
+initTips();
 
 const findings = new FindingsView({
   counter: $("problems-counter"),
