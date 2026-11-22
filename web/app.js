@@ -9,7 +9,7 @@ import { isTimeProperty, propertyText, showDetails, updateLatencyDetails,
   updateAppStream, updateAppLink }
   from "./panel.js";
 import { LogView } from "./log.js";
-import { Tooltip, initTips } from "./tooltip.js";
+import { Tooltip, initTips, tip } from "./tooltip.js";
 import { linkCaps } from "./caps.js";
 import { ElementPins, Pins } from "./pins.js";
 import { TIME_UNITS, formatBytes, formatSpan } from "./units.js";
@@ -555,8 +555,8 @@ function showThreads(pipeline) {
       swatch.style.background = SEVERAL_THREADS.line;
       const label = document.createElement("span");
       label.textContent = "several threads at once";
-      label.title = "Data comes through from more than one thread at a " +
-        "time (a funnel's output): hover one for their names";
+      tip(label, "Data comes through from more than one thread at a " +
+        "time (a funnel's output): hover one for their names");
       row.append(swatch, label);
       legend.append(row);
     }
@@ -566,8 +566,8 @@ function showThreads(pipeline) {
     main.hidden = true;
     const mainLabel = document.createElement("span");
     mainLabel.textContent = "main thread";
-    mainLabel.title = "The program's main thread: its own work (a user " +
-      "interface, an event loop); it moves no data through a pad";
+    tip(mainLabel, "The program's main thread: its own work (a user " +
+      "interface, an event loop); it moves no data through a pad");
     const mainCpu = document.createElement("span");
     mainCpu.className = "cpu";
     mainCpu.dataset.thread = "main";
@@ -577,8 +577,8 @@ function showThreads(pipeline) {
     others.className = "row others";
     const label = document.createElement("span");
     label.textContent = "other threads";
-    label.title = "Threads that move no data through a pad: a program's " +
-      "own, or an element's helpers (x264enc encodes in its own threads)";
+    tip(label, "Threads that move no data through a pad: a program's " +
+      "own, or an element's helpers (x264enc encodes in its own threads)");
     const cpu = document.createElement("span");
     cpu.className = "cpu";
     cpu.dataset.thread = "other";
@@ -713,10 +713,10 @@ function showProcess() {
   const cpu = process.cpu === null ? "" : `CPU ${Math.round(process.cpu *
     100)} % · `;
   node.textContent = `${cpu}${formatBytes(process.memory)}`;
-  node.title = `The whole program: CPU as a share of one core (${
+  tip(node, `The whole program: CPU as a share of one core (${
     state.performance.cores} cores: up to ${state.performance.cores * 100
   } %), memory as the operating system counts it, ${process.threads ??
-    "?"} threads`;
+    "?"} threads`);
 }
 
 function showTimes(pipeline) {
@@ -726,7 +726,7 @@ function showTimes(pipeline) {
   if (times) {
     const { text, title } = pipelineTimes(times, pins.unit);
     node.textContent = text;
-    node.title = title;
+    tip(node, title);
   }
 }
 

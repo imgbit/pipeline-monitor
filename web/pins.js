@@ -5,6 +5,7 @@
 // or detached (fixed on screen). Pins are kept per pad path, so they come
 // back after a reload or when the pad is created again.
 
+import { tip } from "./tooltip.js";
 import { formatBytes, formatSpan, formatStamp, rawNs } from "./units.js";
 
 const PINS_KEY = "pipeline-monitor.pins";
@@ -336,8 +337,7 @@ export class Pins {
         continue;
       }
       const dt = add(dl, "dt", group ? "group" : undefined, label);
-      if (title)
-        dt.title = title;
+      tip(dt, title);
       pin.labels[key] = dt;
       pin.cells[key] = add(dl, "dd", group ? "group" : undefined);
       group = false;
@@ -353,9 +353,9 @@ export class Pins {
       if (!row)
         continue;
       pin.labels[key].textContent = row.label;
-      pin.labels[key].title = row.labelTitle || "";
+      tip(pin.labels[key], row.labelTitle);
       pin.cells[key].textContent = row.text;
-      pin.cells[key].title = row.title || "";
+      tip(pin.cells[key], row.title);
     }
   }
 
@@ -439,7 +439,7 @@ export class Pins {
 
     const set = (key, content, title = "") => {
       c[key].textContent = content;
-      c[key].title = title;
+      tip(c[key], title);
     };
     const w = s.window;
     const l = s.last;
@@ -740,7 +740,7 @@ export class ElementPins extends Pins {
       pin.cells = {};
       for (const r of rows) {
         const dt = add(pin.dl, "dt", r.field ? "field" : undefined, r.label);
-        dt.title = r.title || "";
+        tip(dt, r.title);
         if (r.prop) {
           const x = button(dt, "pin-prop-close", "close", "Unpin this property");
           x.addEventListener("click", () => this.toggleProperty(pin.path,

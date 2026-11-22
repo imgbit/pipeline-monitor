@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 import { setCounter } from "./dock.js";
+import { tip } from "./tooltip.js";
 import { DotError, dotToRecording, factories, looksLikeDot } from "./dot.js";
 
 const COMMANDS = ["record-start", "record-stop", "snapshot", "record-delete"];
@@ -180,7 +181,6 @@ export class RecordingsView {
       return;
     row.classList.add("shown");
     row.setAttribute("aria-current", "true");
-    row.title += " (shown now)";
     open.textContent = "Reload";
     open.title = "Read it again";
   }
@@ -230,11 +230,11 @@ export class RecordingsView {
   fileRow(fragment, f) {
     const row = add(fragment, "div", undefined, "rec-row added");
     row.dataset.file = f.file.name;
-    row.title = f.link ? `${f.file.name}, opened from ${f.link}`
-      : `${f.file.name}, added from this computer (not uploaded)`;
     add(add(row, "span", undefined, "rec-source"), "span", "file", "rec-tag");
     add(row, "span", f.dot ? ".dot" : f.kind ?? "?", "rec-kind");
-    add(row, "span", new Date(f.started / 1000).toLocaleString(), "rec-time");
+    tip(add(row, "span", new Date(f.started / 1000).toLocaleString(),
+      "rec-time"), f.link ? `${f.file.name}, opened from ${f.link}`
+      : `${f.file.name}, added from this computer (not uploaded)`);
     add(row, "span", f.kind === "snapshot" ? "–"
       : duration(f.last - f.started), "rec-duration");
     add(row, "span", size(f.file.size), "rec-size");
@@ -257,10 +257,9 @@ export class RecordingsView {
   demoRow(fragment, d) {
     const row = add(fragment, "div", undefined, "rec-row demo");
     row.dataset.demo = d.url;
-    row.title = d.title;
     add(add(row, "span", undefined, "rec-source"), "span", "demo", "rec-tag");
     add(row, "span", d.kind ?? "?", "rec-kind");
-    add(row, "span", d.title, "rec-time rec-title");
+    tip(add(row, "span", d.title, "rec-time rec-title"), d.title);
     add(row, "span", d.kind === "snapshot" ? "–"
       : d.started && d.last ? duration(d.last - d.started) : "",
     "rec-duration");
@@ -314,11 +313,11 @@ export class RecordingsView {
       const row = add(fragment, "div", undefined,
         `rec-row${r.running ? " running" : ""}`);
       row.dataset.name = r.name;
-      row.title = r.name;
       add(row, "span", undefined, "rec-source");
       add(row, "span", r.kind ?? "?", "rec-kind");
-      add(row, "span", r.started
-        ? new Date(r.started / 1000).toLocaleString() : "?", "rec-time");
+      tip(add(row, "span", r.started
+        ? new Date(r.started / 1000).toLocaleString() : "?", "rec-time"),
+      r.name);
       add(row, "span", r.kind === "snapshot" ? "–"
         : duration(r.last - r.started), "rec-duration");
       add(row, "span", size(r.size), "rec-size");

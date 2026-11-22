@@ -962,9 +962,9 @@ def check_levels(browser):
                         ".length >= 2"), "no fill bars on queues"
     # The clock's name in the tooltip, not the header's text.
     assert browser.eval(f"!{times}.textContent.includes('clock') && "
-                        f"{times}.title.startsWith('clock ')"), \
+                        f"{times}.dataset.tip.startsWith('clock ')"), \
         "clock: " + str(browser.eval(f"{times}.textContent + ' | ' + "
-                                     f"{times}.title"))
+                                     f"{times}.dataset.tip"))
 
     queue = element_selector("queue0")
     tip = "document.querySelector('.tooltip')"
@@ -2575,6 +2575,7 @@ def check_app_details(browser, good):
             f"{name}: {browser.eval(title)!r}"
         assert not browser.eval(f"{details}.includes({json.dumps(text)})"), \
             f"{text!r} shown on the page"
+    assert_no_value_titles(browser)
     # caps have no known default: not called one.
     assert browser.eval(f"!/caps\\s+video\\/x-raw \\(default\\)/"
                         f".test({details})"), browser.eval(details)
@@ -3840,6 +3841,18 @@ def watched():
             ".then(j => j.pads.length)")
 
 
+# Explanations of names and values are the page's own (underlined, on
+# hover or a tap); the browser's tooltips are left to controls: buttons,
+# fields, a pinned card's title (click or drag) and resize handles.
+def assert_no_value_titles(browser):
+    found = browser.eval(
+        "JSON.stringify([...document.querySelectorAll('[title]')].filter(n "
+        "=> n.getAttribute('title') && !n.closest('button, select, input, "
+        "a, label, summary, .pin-title, .panel-resize')).map(n => n.tagName "
+        "+ '.' + n.className + ': ' + n.getAttribute('title').slice(0, 40)))")
+    assert found == "[]", f"browser tooltips on names or values: {found}"
+
+
 def check_pins(browser):
     cards = "document.querySelectorAll('.pin-card').length"
     card = "document.querySelector('.pin-card')"
@@ -3865,6 +3878,7 @@ def check_pins(browser):
                                f"!{tip}.hidden && "
                                f"{tip}.textContent.includes('buffers/s')"), \
         "no rate in the tooltip of a pinned pad\n" + browser.history()
+    assert_no_value_titles(browser)
     browser.call("Input.dispatchMouseEvent", type="mouseMoved", x=2, y=2)
 
     browser.click("#time-unit")

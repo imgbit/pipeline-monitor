@@ -5,6 +5,7 @@
 // the log panel. Clear and mute only affect this browser.
 
 import { setCounter } from "./dock.js";
+import { tip } from "./tooltip.js";
 
 const MAX_ENTRIES = 500;
 const MUTED_KEY = "pipeline-monitor.muted";
@@ -172,10 +173,6 @@ export class LogView {
     const row = document.createElement("div");
     row.className = `log-row ${e.level}`;
     row.dataset.id = e.id;
-    row.title = [e.debug, e.domain && `${e.domain} ${e.code}`,
-      `${e.source}, first at ` +
-      new Date(e.first / 1000).toLocaleTimeString()]
-      .filter(Boolean).join("\n");
 
     add(row, "span", new Date(e.last / 1000).toLocaleTimeString(),
       "log-time");
@@ -183,7 +180,11 @@ export class LogView {
     const where = add(row, "button", e.path.split("/").pop(), "log-path");
     where.title = `${e.path}\nShow in the graph`;
     where.addEventListener("click", () => this.handlers.select(e.element));
-    add(row, "span", e.text, "log-text");
+    // GStreamer's details: on the message.
+    tip(add(row, "span", e.text, "log-text"), [e.debug,
+      e.domain && `${e.domain} ${e.code}`, `${e.source}, first at ` +
+      new Date(e.first / 1000).toLocaleTimeString()].filter(Boolean)
+      .join("\n"));
     const n = this.newCount(e);
     add(row, "span", n > 1 ? `×${n}` : "", "log-count");
     const mute = add(row, "button", "mute", "log-mute");
