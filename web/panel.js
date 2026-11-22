@@ -177,18 +177,16 @@ export function updateAppLink(aside, queue, queues, now, jump,
   select.value = chosen ?? "";
 
   body.replaceChildren();
-  // Shared links of the same buffer (a tee): one table, all its appsinks.
-  const groups = [];
-  for (const f of shown) {
-    const same = f.shared && groups.find((g) => g[0].shared &&
-      g[0].in_pts === f.in_pts && g[0].out_pts === f.out_pts);
-    if (same)
-      same.push(f);
-    else
-      groups.push([f]);
-  }
+  // Shared links (one buffer into several appsinks, a tee): one table for
+  // all of them, with the newest buffer, in name order. Grouped by the
+  // flag, not by the buffer: each is matched a moment apart, so their last
+  // buffers differ from one refresh to the next.
+  const sharedLinks = shown.filter((f) => f.shared);
+  const groups = shown.filter((f) => !f.shared).map((f) => [f]);
+  if (sharedLinks.length)
+    groups.unshift(sharedLinks);
   for (const group of groups) {
-    const f = group[0];
+    const f = group.reduce((a, b) => (b.last > a.last ? b : a));
     const row = add(body, "div");
     group.forEach((g, i) => {
       if (i)

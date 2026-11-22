@@ -2528,7 +2528,10 @@ def check_app_details(browser, good):
                      element(2, "src", "appsrc", "GstAppSrc",
                              [pad(3, "src", "src", "src")]),
                      element(4, "sink", "appsink", "GstAppSink",
-                             [pad(5, "sink", "sink", "sink")])]}]}
+                             [pad(5, "sink", "sink", "sink")]),
+                     # The same buffers go into it too (a tee).
+                     element(6, "tap", "appsink", "GstAppSink",
+                             [pad(7, "tap", "sink", "sink")])]}]}
     def segment(start):
         return {"format": "time", "start": start, "base": 0, "rate": 1}
     levels = {"type": "levels", "protocol": 1, "time": started + 1000000,
@@ -2553,6 +2556,14 @@ def check_app_details(browser, good):
                                "last": started, "shared": True,
                                "in_pts": 5000000000, "out_pts": 5000000000,
                                "delay": 2000000,
+                               "in_segment": segment(5000000000),
+                               "out_segment": segment(0)},
+                              # Matched 0.1 s earlier, on an older buffer:
+                              # still one table with the newest.
+                              {"element": 6, "path": "p/tap", "samples": 7,
+                               "last": started - 100000, "shared": True,
+                               "in_pts": 4900000000, "out_pts": 4900000000,
+                               "delay": 3000000,
                                "in_segment": segment(5000000000),
                                "out_segment": segment(0)}]},
                   {"element": 4, "path": "p/sink", "kind": "appsink",
@@ -2630,7 +2641,10 @@ def check_app_details(browser, good):
     # The appsink it is fed by, found from the data: the segment lost on the
     # way marked, no manual choice offered.
     link = "document.querySelector('.app-link')"
-    for text in ("p/sink · detected from the data, seen 1.0 s ago · shared",
+    assert browser.wait(f"{link}.querySelectorAll('.app-pair').length === 1"),\
+        "shared links not in one table: " + browser.eval(f"{link}.innerText")
+    for text in ("p/sink, p/tap · detected from the data, seen 1.0 s ago · "
+                 "shared",
                  "in between\t\t2.0 ms"):
         assert browser.wait(f"{link}.innerText.includes({json.dumps(text)})"),\
             browser.eval(f"{link}?.innerText")
