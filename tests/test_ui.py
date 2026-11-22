@@ -1613,6 +1613,54 @@ def check_dot_viewer(browser):
 
 # A phone: the page as wide as the screen, the header in two rows; a pinch
 # zooms the graph, a tap on an element shows its details.
+# Property times follow the "time:" button, in the details and on a pinned
+# property, and are back as they were with the button back on auto.
+def check_property_units(browser, serve):
+    server, url = start_server(serve, "videotestsrc is-live=true ! "
+                               "queue name=pu-q ! fakesink")
+    unit = "document.getElementById('time-unit')"
+    row = ("[...document.querySelectorAll('#details .props tr')].find(r => "
+           "r.children[1]?.textContent === 'max-size-time')")
+    card = ("[...document.querySelectorAll('.pin-card')].find(c => c"
+            ".textContent.includes('max-size-time'))")
+    try:
+        browser.call("Page.navigate", url=url)
+        assert browser.wait(f"!!{element_selector('pu-q')}", timeout=15)
+        assert browser.eval(f"{unit}.textContent") == "time: auto"
+        node = browser.eval(f"{element_selector('pu-q')}?.dataset.id")
+        assert browser.click_until(
+            f'#graph .node[data-id="{node}"] > rect.box',
+            "document.querySelector('#details h2')?.textContent === 'pu-q'")
+        assert browser.wait(f"{row}?.children[2].textContent === '1.000 s'"), \
+            browser.eval(f"{row}?.children[2].textContent")
+        browser.eval(f"{row}.scrollIntoView({{block: 'center'}})")
+        browser.eval(f"{row}.querySelector('.pin-prop').id = 'pu-pin'")
+        assert browser.click_until("#pu-pin", f"!!{card}"), "did not pin"
+        assert browser.wait(f"{card}?.textContent.includes('1.000 s')"), \
+            browser.eval(f"{card}?.textContent")
+        # auto -> ns -> ms
+        for _ in range(2):
+            browser.eval(f"{unit}.click()")
+        assert browser.eval(f"{unit}.textContent") == "time: ms"
+        assert browser.wait(f"{row}?.children[2].textContent === "
+                            "'1000.000 ms'"), \
+            browser.eval(f"{row}?.children[2].textContent")
+        assert browser.wait(f"{card}?.textContent.includes('1000.000 ms')"), \
+            browser.eval(f"{card}?.textContent")
+        # ms -> s -> auto
+        for _ in range(2):
+            browser.eval(f"{unit}.click()")
+        assert browser.eval(f"{unit}.textContent") == "time: auto"
+        assert browser.wait(f"{card}?.textContent.includes('1.000 s')")
+        browser.eval(f"{card}.querySelector('.pin-prop-close').click()")
+        assert browser.wait(f"!{card}"), "the pin did not go"
+        browser.eval("document.getElementById('details').scrollTop = 0")
+        close_details(browser)
+    finally:
+        server.terminate()
+        server.wait()
+
+
 def check_phone(browser, serve):
     server, url = start_server(serve, "videotestsrc is-live=true ! "
                                "queue name=ph-q ! fakesink name=ph-sink")
@@ -4065,6 +4113,7 @@ def main():
             check_threads_view(browser, serve)
             check_funnel_threads(browser, serve)
             check_pin_cards_apart(browser, serve)
+            check_property_units(browser, serve)
             check_phone(browser, serve)
             check_dot_reading(browser, serve)
     finally:

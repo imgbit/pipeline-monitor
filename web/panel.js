@@ -382,14 +382,21 @@ export function isTimeProperty(p) {
     TIME_NAME.test(p.name) && typeof p.value === "number";
 }
 
-// A property's value as text; times in a readable unit.
+// The unit of the "time:" button, for property times too.
+let propertyUnit = "auto";
+
+export function setPropertyUnit(unit) {
+  propertyUnit = unit;
+}
+
+// A property's value as text; times in the unit chosen.
 export function propertyText(p) {
   if (!isTimeProperty(p))
     return valueText(p.value);
   // -1 and the largest value both mean "none" (GST_CLOCK_TIME_NONE).
   if (p.value === -1 || p.value >= 1.8e19)
     return "none";
-  return formatSpan(p.value, "auto");
+  return formatSpan(p.value, propertyUnit);
 }
 
 // The fields of a structure, one per line, nested ones indented.

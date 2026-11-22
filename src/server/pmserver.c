@@ -877,55 +877,39 @@ add_name (GHashTable * by_element, gint64 id, const gchar * name)
     g_ptr_array_add (names, g_strdup (name));
 }
 
-/* The values of only the properties one page watches: result (from
- * pm_props_read, parsed) with its "properties" filtered to names. */
-static gchar *
-watched_values (JsonNode * result, GPtrArray * names)
-{
-  JsonObject *in = json_node_get_object (result);
-  JsonObject *out = json_object_new ();
-  GList *members = json_object_get_members (in), *l;
-  JsonNode *node;
-  gchar *text;
-
-  for (l = members; l != NULL; l = l->next) {
-    const gchar *member = l->data;
-    JsonNode *value = json_object_get_member (in, member);
-    JsonArray *all, *mine;
-    guint i;
-
-    if (g_strcmp0 (member, "properties") != 0 ||
-        !JSON_NODE_HOLDS_ARRAY (value)) {
-      json_object_set_member (out, member, json_node_copy (value));
-      continue;
-    }
-    all = json_node_get_array (value);
-    mine = json_array_new ();
-    for (i = 0; i < json_array_get_length (all); i++) {
-      JsonObject *p = json_array_get_object_element (all, i);
-      const gchar *name = json_object_get_string_member_with_default (p,
-          "name", "");
-
-      if (g_ptr_array_find_with_equal_func (names, name, g_str_equal, NULL))
-        json_array_add_element (mine,
-            json_node_copy (json_array_get_element (all, i)));
-    }
-    json_object_set_array_member (out, member, mine);
-  }
-  g_list_free (members);
-  node = json_node_init_object (json_node_alloc (), out);
-  text = json_to_string (node, FALSE);
-  json_node_unref (node);
-  json_object_unref (out);
-  return text;
-}
 
 /* Sends one page the properties it watches, and only those; results:
  * element id -> pm_props_read result (parsed), or NULL if the element is
  * gone (its watches are then dropped). */
+/* The JSON text of an element's properties named in names (no NULL at
+ * its end): results' text when it read exactly these, or read again. The
+ * text is passed on as it is: parsed and written again, json-glib would
+ * turn integers above G_MAXINT64 (GST_CLOCK_TIME_NONE) into G_MAXINT64. */
+static gchar *
+watched_values (PmServer * self, gint64 id, GPtrArray * names,
+    GHashTable * results, GHashTable * by_element)
+{
+  GPtrArray *all = g_hash_table_lookup (by_element, &id);
+  GstElement *element;
+  gchar *read;
+
+  /* by_element's lists end with NULL. */
+  if (all == NULL || names->len == all->len - 1)
+    return g_strdup (g_hash_table_lookup (results, &id));
+  element = pm_model_get_element (self->model, id);
+  if (element == NULL)
+    return g_strdup (g_hash_table_lookup (results, &id));
+  g_ptr_array_add (names, NULL);
+  read = pm_props_read (element, (const gchar * const *) names->pdata,
+      PROPERTIES_TIMEOUT_US);
+  g_ptr_array_remove_index (names, names->len - 1);
+  gst_object_unref (element);
+  return read;
+}
+
 static void
 send_watched (PmServer * self, SoupWebsocketConnection * conn,
-    GHashTable * set, GHashTable * results)
+    GHashTable * set, GHashTable * results, GHashTable * by_element)
 {
   GHashTable *mine = g_hash_table_new_full (g_int64_hash, g_int64_equal,
       g_free, (GDestroyNotify) g_ptr_array_unref);
@@ -950,7 +934,7 @@ send_watched (PmServer * self, SoupWebsocketConnection * conn,
   g_hash_table_iter_init (&iter, mine);
   while (g_hash_table_iter_next (&iter, &key, &value)) {
     gint64 id = *(gint64 *) key;
-    JsonNode *result = g_hash_table_lookup (results, &id);
+    const gchar *result = g_hash_table_lookup (results, &id);
 
     if (json->str[json->len - 1] != '[')
       g_string_append_c (json, ',');
@@ -958,7 +942,7 @@ send_watched (PmServer * self, SoupWebsocketConnection * conn,
       g_string_append_printf (json, "{\"element\":%" G_GINT64_FORMAT
           ",\"gone\":true}", id);
     } else {
-      gchar *values = watched_values (result, value);
+      gchar *values = watched_values (self, id, value, results, by_element);
       gchar *path = pm_model_path (self->model, id);
 
       /* {"element":12,"path":"...","properties":[...]} */
@@ -981,10 +965,9 @@ send_watched (PmServer * self, SoupWebsocketConnection * conn,
 }
 
 static void
-result_free (JsonNode * node)
+result_free (gchar * text)
 {
-  if (node != NULL)
-    json_node_unref (node);
+  g_free (text);
 }
 
 /* Adds a message to the running recording; it may end at its limit. */
@@ -1158,19 +1141,12 @@ record_properties (PmServer * self, GHashTable * by_element,
 
   g_hash_table_iter_init (&iter, by_element);
   while (g_hash_table_iter_next (&iter, &key, &value)) {
-    JsonNode *result = g_hash_table_lookup (results, key);
-    GPtrArray *names = g_ptr_array_new ();
-    gchar *values, *path;
-    guint i;
+    const gchar *values = g_hash_table_lookup (results, key);
+    gchar *path;
 
-    if (result == NULL) {
-      g_ptr_array_unref (names);
+    /* Read for exactly these names: as read. */
+    if (values == NULL)
       continue;
-    }
-    for (i = 0; i < ((GPtrArray *) value)->len; i++)
-      if (g_ptr_array_index ((GPtrArray *) value, i) != NULL)
-        g_ptr_array_add (names, g_ptr_array_index ((GPtrArray *) value, i));
-    values = watched_values (result, names);
     path = pm_model_path (self->model, *(gint64 *) key);
     if (json->str[json->len - 1] != '[')
       g_string_append_c (json, ',');
@@ -1179,8 +1155,6 @@ record_properties (PmServer * self, GHashTable * by_element,
     pm_json_append_member_string (json, "path", path);
     g_string_append (json, values + 1);
     g_free (path);
-    g_free (values);
-    g_ptr_array_unref (names);
   }
   g_string_append (json, "]}");
   if (json->str[json->len - 3] != '[') {
@@ -1229,14 +1203,13 @@ send_properties (PmServer * self, gboolean to_recording)
     g_ptr_array_add (names, NULL);
     read = pm_props_read (element, (const gchar * const *) names->pdata,
         PROPERTIES_TIMEOUT_US);
-    g_hash_table_insert (results, key, json_from_string (read, NULL));
-    g_free (read);
+    g_hash_table_insert (results, key, read);
     gst_object_unref (element);
   }
 
   g_hash_table_iter_init (&iter, self->watches);
   while (g_hash_table_iter_next (&iter, &key, &value))
-    send_watched (self, key, value, results);
+    send_watched (self, key, value, results, by_element);
   if (to_recording)
     record_properties (self, by_element, results);
   g_hash_table_unref (results);

@@ -1540,6 +1540,90 @@ test_levels_lone_queue (void)
   gst_object_unref (queue);
 }
 
+/* GST_CLOCK_TIME_NONE (the largest guint64) arrives as it is in watched
+ * properties and in recordings: parsed and written again, json-glib would
+ * make it G_MAXINT64 (and the page "9223372036.855 s" instead of "none"). */
+static void
+test_watched_uint64 (void)
+{
+  SoupSession *session = soup_session_new ();
+  gchar *url = server_url ("ws");
+  GstElement *pipeline = start_pipeline ("appsrc name=wu-src format=time "
+      "is-live=true ! fakesink sync=false async=false");
+  gint64 id = element_id ("wu-src");
+  gchar *message, *name = NULL, *path, *body;
+  gboolean running = FALSE;
+  WsClient a, b;
+
+  ws_connect (&a, session, url, NULL);
+  ws_send (&a, "{\"type\":\"watch-property\",\"element\":%"
+      G_GINT64_FORMAT ",\"property\":\"duration\"}", id);
+  message = ws_next (&a, "properties");
+  g_assert_nonnull (strstr (message, "\"name\":\"duration\""));
+  g_assert_nonnull (strstr (message, "\"value\":18446744073709551615"));
+  g_free (message);
+
+  /* Another page watching more of it: the first gets its one, read again,
+   * still as it is. */
+  ws_connect (&b, session, url, NULL);
+  ws_send (&b, "{\"type\":\"watch-property\",\"element\":%"
+      G_GINT64_FORMAT ",\"property\":\"duration\"}", id);
+  ws_send (&b, "{\"type\":\"watch-property\",\"element\":%"
+      G_GINT64_FORMAT ",\"property\":\"min-latency\"}", id);
+  message = ws_next (&b, "properties");
+  while (strstr (message, "min-latency") == NULL) {
+    g_free (message);
+    message = ws_next (&b, "properties");
+  }
+  g_free (message);
+  message = ws_next (&a, "properties");
+  g_assert_nonnull (strstr (message, "\"value\":18446744073709551615"));
+  g_assert_null (strstr (message, "min-latency"));
+  g_free (message);
+
+  /* Recorded as it is too. */
+  ws_send (&a, "{\"type\":\"record-start\"}");
+  do {
+    g_clear_pointer (&name, g_free);
+    g_assert_true (next_recording (&a, &name, NULL, &running));
+  } while (!running);
+  count_messages (&a, "properties", 1200);
+  ws_send (&a, "{\"type\":\"record-stop\"}");
+  do {
+    g_clear_pointer (&name, g_free);
+    g_assert_true (next_recording (&a, &name, NULL, &running));
+  } while (running);
+  path = g_strconcat ("api/recordings/", name, NULL);
+  g_assert_cmpuint (get_status (path, "GET", NULL, &body, NULL), ==,
+      SOUP_STATUS_OK);
+  /* Every duration recorded (size's own maximum is G_MAXINT64). */
+  {
+    const gchar *at = body;
+    gint found = 0;
+
+    while ((at = strstr (at, "\"name\":\"duration\"")) != NULL) {
+      const gchar *end = strchr (at, '}');
+      gchar *entry = g_strndup (at, end ? (gsize) (end - at) : strlen (at));
+
+      g_assert_nonnull (strstr (entry, "\"value\":18446744073709551615"));
+      g_free (entry);
+      found++;
+      at++;
+    }
+    g_assert_cmpint (found, >, 0);
+  }
+  g_free (body);
+  g_free (path);
+  ws_send (&a, "{\"type\":\"record-delete\",\"name\":\"%s\"}", name);
+  g_free (name);
+
+  ws_disconnect (&a);
+  ws_disconnect (&b);
+  stop_pipeline (pipeline);
+  g_free (url);
+  g_object_unref (session);
+}
+
 /* Record, stop, snapshot, download and delete, as the page does. */
 static void
 test_recordings (void)
@@ -4701,6 +4785,7 @@ main (int argc, char **argv)
   g_test_add_func ("/server/app-levels", test_app_levels);
   g_test_add_func ("/server/findings-apps", test_findings_apps);
   g_test_add_func ("/server/app-link", test_app_link);
+  g_test_add_func ("/server/watched-uint64", test_watched_uint64);
   g_test_add_func ("/server/app-link-shared", test_app_link_shared);
   g_test_add_func ("/server/levels-multiqueue", test_levels_multiqueue);
   g_test_add_func ("/server/levels-buffering-clock",

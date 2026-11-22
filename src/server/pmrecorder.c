@@ -127,15 +127,18 @@ uri_login (void)
   return regex;
 }
 
-static void
+/* Hides secrets in node; TRUE if anything was changed. */
+static gboolean
 hide_in (JsonNode * node)
 {
+  gboolean changed = FALSE;
+
   if (JSON_NODE_HOLDS_ARRAY (node)) {
     JsonArray *array = json_node_get_array (node);
     guint i;
 
     for (i = 0; i < json_array_get_length (array); i++)
-      hide_in (json_array_get_element (array, i));
+      changed |= hide_in (json_array_get_element (array, i));
   } else if (JSON_NODE_HOLDS_OBJECT (node)) {
     JsonObject *object = json_node_get_object (node);
     JsonNode *name = json_object_get_member (object, "name");
@@ -150,10 +153,12 @@ hide_in (JsonNode * node)
           (g_str_equal (l->data, "value") || g_str_equal (l->data, "default"))
           && JSON_NODE_HOLDS_VALUE (member) &&
           json_node_get_value_type (member) == G_TYPE_STRING &&
-          secret_name (json_node_get_string (name)))
+          secret_name (json_node_get_string (name))) {
         json_node_set_string (member, "(hidden)");
-      else
-        hide_in (member);
+        changed = TRUE;
+      } else {
+        changed |= hide_in (member);
+      }
     }
     g_list_free (members);
   } else if (JSON_NODE_HOLDS_VALUE (node) &&
@@ -162,8 +167,10 @@ hide_in (JsonNode * node)
     gchar *hidden = g_regex_replace (uri_login (), text, -1, 0,
         "\\1(hidden)@", 0, NULL);
 
-    if (hidden != NULL && strcmp (hidden, text) != 0)
+    if (hidden != NULL && strcmp (hidden, text) != 0) {
       json_node_set_string (node, hidden);
+      changed = TRUE;
+    }
     g_free (hidden);
   } else if (JSON_NODE_HOLDS_VALUE (node) &&
       json_node_get_value_type (node) == G_TYPE_DOUBLE &&
@@ -171,7 +178,9 @@ hide_in (JsonNode * node)
     /* A number too large to read (1e999) would be written back as "inf",
      * which is not JSON: the whole file could not be read. */
     json_node_init_null (node);
+    changed = TRUE;
   }
+  return changed;
 }
 
 /* The message (JSON text) with passwords in URIs and the values of
@@ -184,7 +193,13 @@ pm_recorder_hide_secrets (const gchar * message)
 
   if (root == NULL)
     return g_strdup (message);
-  hide_in (root);
+  /* Nothing to hide: the message as it is. Written again, numbers above
+   * G_MAXINT64 (GST_CLOCK_TIME_NONE) would come out as G_MAXINT64, as
+   * json-glib keeps integers signed. */
+  if (!hide_in (root)) {
+    json_node_unref (root);
+    return g_strdup (message);
+  }
   text = json_to_string (root, FALSE);
   json_node_unref (root);
   /* Some json-glib versions turn escapes like \777 into bytes that are not

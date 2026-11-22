@@ -4,7 +4,8 @@
 import { buildElkGraph, keepPlaces } from "./layout.js";
 import { GraphView, countElements, threadColours, threadText }
   from "./render.js";
-import { isTimeProperty, propertyText, showDetails, updateLatencyDetails,
+import { isTimeProperty, propertyText, setPropertyUnit, showDetails,
+  updateLatencyDetails,
   updateProblemsDetails, updateProperties, updateQueueDetails, valueText,
   updateAppStream, updateAppLink }
   from "./panel.js";
@@ -1966,10 +1967,18 @@ $("measure-all").addEventListener("click", () => {
     buildIndex(state.graph).elements.get(state.selected)));
 });
 $("time-unit").textContent = `time: ${pins.unit}`;
+setPropertyUnit(pins.unit);
 $("time-unit").addEventListener("click", () => {
   const unit = TIME_UNITS[(TIME_UNITS.indexOf(pins.unit) + 1) %
     TIME_UNITS.length];
   pins.setUnit(unit);
+  // Property times too: in the details and on pinned properties.
+  setPropertyUnit(unit);
+  elementPins.setUnit(unit);
+  if (propsLast.id !== null && propsLast.id === state.selected &&
+      !detailsFrozen())
+    updateProperties($("details"), propsLast.id, propsLast.data,
+      pinningFor(propsLast.id));
   saveFlag(TIME_UNIT_KEY, unit);
   $("time-unit").textContent = `time: ${unit}`;
 });
