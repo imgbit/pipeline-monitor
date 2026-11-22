@@ -245,12 +245,21 @@ class Browser:
         return False
 
     def click(self, selector):
-        point = self.eval(
-            f"(() => {{ const n = document.querySelector({json.dumps(selector)});"
-            " if (!n) return null; const r = n.getBoundingClientRect();"
-            " return [r.x + r.width / 2, r.y + r.height / 2]; })()")
+        where = (f"(() => {{ const n = document.querySelector("
+                 f"{json.dumps(selector)}); if (!n) return null; const r = "
+                 "n.getBoundingClientRect(); const x = r.x + r.width / 2, "
+                 "y = r.y + r.height / 2; const top = document"
+                 ".elementFromPoint(x, y); return [x, y, !!top && (top === n "
+                 "|| n.contains(top))]; })()")
+        point = self.eval(where)
+        # Not on top yet (a panel still being drawn there): wait for it, or
+        # the click lands on what is under it.
+        end = time.time() + 3
+        while point and not point[2] and time.time() < end:
+            time.sleep(0.05)
+            point = self.eval(where)
         assert point, f"nothing matches {selector}\n{self.history()}"
-        self.press(selector, point)
+        self.press(selector, point[:2])
 
     # Clicks at point, noting what was there.
     def press(self, what, point):
