@@ -4022,9 +4022,16 @@ test_findings_apps (void)
       "ab-sink has no room for its processing deadline");
   expect_app_finding ("app-grows", "ag-src", 10,
       "has held more than its max-bytes");
-  if (major > 1 || minor >= 28)
+  if (major > 1 || minor >= 28) {
     expect_app_finding ("app-full", "af-sink", 10,
         "has been at its max-buffers");
+  } else {
+    /* appsink's level cannot be read before 1.28: never reported, past the
+     * 5 s it would take. */
+    id = element_finding ("app-full", "af-sink");
+    g_assert_null (wait_finding (id, 6));
+    g_free (id);
+  }
   id = element_finding ("app-bytes", "ag-src");
   g_assert_null (wait_finding (id, 1));
   g_free (id);
