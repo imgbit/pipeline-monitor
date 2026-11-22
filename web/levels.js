@@ -122,13 +122,13 @@ function segmentCell(s, key) {
 // message, for their clocks and base times. A fifth item, when there, is
 // what the row means.
 export function linkRows(into, out, same) {
-  const rows = [["PTS", clockTime(into.pts), same ? clockTime(out.pts) : "—",
+  const rows = [["PTS", clockTime(into.pts), clockTime(out.pts),
     same && into.pts !== out.pts, same
       ? "The same buffer's timestamp (its PTS) as it went into the appsink " +
         "and as it left the appsrc, read by the tracer at each push. The " +
         "program or appsrc (do-timestamp) may change it on the way."
-      : "The appsink's last buffer's timestamp; appsrc's buffers are not " +
-        "known to be the same, so theirs is not shown."]];
+      : "The appsink's last buffer's timestamp, and appsrc's last buffer's " +
+        "out: the newest at each end, not known to be the same buffer."]];
   for (const key of ["format", "start", "base", "rate"]) {
     const a = segmentCell(into.segment, key);
     const b = segmentCell(out.segment, key);
@@ -136,7 +136,7 @@ export function linkRows(into, out, same) {
   }
   // The buffer's running time at each end, from its PTS and segment.
   const runA = runningTime(into.pts, into.segment);
-  const runB = same ? runningTime(out.pts, out.segment) : null;
+  const runB = runningTime(out.pts, out.segment);
   rows.push(["running time", clockTime(runA), clockTime(runB), false]);
   const p = into.pipeline;
   const q = out.pipeline;

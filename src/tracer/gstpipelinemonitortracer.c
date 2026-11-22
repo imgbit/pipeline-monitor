@@ -422,6 +422,8 @@ typedef struct
   gboolean has_segment;
   gint64 last_mark;
   guint64 last_slot;
+  /* The pad's own timing record (it holds this one). */
+  PmPushTiming *timing;
 } PmPadRole;
 
 /* The appsinks one buffer went into (a tee: several), its PTS and the
@@ -473,6 +475,7 @@ pad_role (GstPipelineMonitorTracer * self, GstPad * pad, PmPushTiming * t)
     return r;
   if (r == NULL)
     t->pairing = r = g_new0 (PmPadRole, 1);
+  r->timing = t;
   r->peer = peer;
   parent = gst_pad_get_parent (pad);
   into = peer ? gst_pad_get_parent (peer) : NULL;
@@ -587,6 +590,12 @@ pair_buffer (GstPipelineMonitorTracer * self, PmPadRole * r, GstBuffer * b,
     PmMark *found, copy;
     guint k;
 
+#if GLIB_SIZEOF_VOID_P == 8
+    /* The last PTS out, for comparing with an appsink by hand. */
+    g_atomic_pointer_set (&r->timing->last_pts,
+        GSIZE_TO_POINTER (GST_BUFFER_PTS_IS_VALID (b) ?
+            GST_BUFFER_PTS (b) + 1 : 0));
+#endif
     if (!g_atomic_int_get (&live_marks))
       return;
     for (i = 0; i < n && mem == NULL; i++)

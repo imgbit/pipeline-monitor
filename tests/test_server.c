@@ -3880,6 +3880,9 @@ test_app_link (void)
   q = levels_entry ("/al-copy", &root);
   g_assert_nonnull (q);
   g_assert_false (json_object_has_member (q, "fed_by"));
+  /* Its last PTS out, for comparing by hand (on 64-bit systems). */
+  if (GLIB_SIZEOF_VOID_P == 8)
+    g_assert_false (json_object_get_null_member (q, "last_out_pts"));
   json_node_unref (root);
 
   expect_app_finding ("app-segment", "al-in", 5,

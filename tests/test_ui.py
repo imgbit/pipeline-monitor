@@ -2213,6 +2213,7 @@ def check_viewer(browser, rows, url):
     check_stream_levels(browser, os.path.join(RECORDINGS, name))
     check_unknown_cpu(browser, os.path.join(RECORDINGS, name))
     check_app_details(browser, os.path.join(RECORDINGS, name))
+    check_app_compare(browser, os.path.join(RECORDINGS, name))
     check_dot_viewer(browser)
     check_snapshot(browser, os.path.join(RECORDINGS, name))
     check_finding_age(browser, os.path.join(RECORDINGS, name))
@@ -2726,6 +2727,90 @@ def check_app_details(browser, good):
                  "in / out / dropped\nnot available before GStreamer 1.28"):
         assert browser.wait(f"{details}.includes({json.dumps(text)})"), \
             f"no {text!r} in: {browser.eval(details)}"
+    close_details(browser)
+    browser.click("#viewing-close")
+
+
+# No appsink found from the data (the program copies it): "Compare with"
+# right under the heading; an appsink chosen, both ends' newest buffer side
+# by side, nothing marked as they are not shown to be the same.
+def check_app_compare(browser, good):
+    with open(good) as f:
+        header = json.loads(f.readline())
+    started = header["started"]
+
+    def element(element_id, name, factory, kind, pads):
+        return {"id": element_id, "name": name, "path": f"p/{name}",
+                "factory": factory, "type": kind, "bin": False,
+                "state": "PLAYING", "pads": pads, "children": []}
+
+    def pad(pad_id, owner, name, direction):
+        return {"id": pad_id, "name": name, "path": f"p/{owner}:{name}",
+                "direction": direction, "presence": "always",
+                "ghost": False, "mode": "push"}
+
+    def segment(start):
+        return {"format": "time", "start": start, "base": 0, "rate": 1}
+
+    graph = {"type": "graph", "protocol": 1, "time": started, "links": [],
+             "threads": [], "pipelines": [{
+                 "id": 1, "name": "p", "path": "p", "factory": "pipeline",
+                 "type": "GstPipeline", "bin": True, "state": "PLAYING",
+                 "pads": [], "children": [
+                     element(2, "src", "appsrc", "GstAppSrc",
+                             [pad(3, "src", "src", "src")]),
+                     element(4, "sink", "appsink", "GstAppSink",
+                             [pad(5, "sink", "sink", "sink")])]}]}
+    levels = {"type": "levels", "protocol": 1, "time": started + 1000000,
+              "pipelines": [{"element": 1, "path": "p", "state": "PLAYING",
+                             "clock": "GstSystemClock",
+                             "base_time": 7000000000}],
+              "queues": [
+                  {"element": 2, "path": "p/src", "kind": "appsrc",
+                   "at_limit": "signals", "leaky": "none",
+                   "limits": {"buffers": 0, "bytes": 200000, "time": 0},
+                   "counts": {"in": 5, "out": 5, "dropped": 0},
+                   "levels": [{"buffers": 0, "bytes": 0, "time": 0}],
+                   "segment": segment(0), "last_out_pts": 3020000000},
+                  {"element": 4, "path": "p/sink", "kind": "appsink",
+                   "at_limit": "drops",
+                   "limits": {"buffers": 4, "bytes": 0, "time": 0},
+                   "counts": {"in": 5, "out": 5, "dropped": 0},
+                   "levels": [{"buffers": 0, "bytes": 0, "time": 0}],
+                   "segment": segment(0), "last_pts": 3000000000}]}
+    open_messages(browser, header, [graph, levels, {
+        "type": "end", "protocol": 1, "time": started + 2000000,
+        "reason": "stopped"}], "app-compare.jsonl")
+    assert browser.wait(f"!!{element_selector('src')}")
+    browser.eval("(s => { s.value = s.max; s.dispatchEvent(new Event("
+                 "'input')); })(document.getElementById('seek'))")
+    node = browser.eval(f"{element_selector('src')}?.dataset.id")
+    assert browser.click_until(
+        f'#graph .node[data-id="{node}"] > rect.box',
+        "document.querySelector('#details h2')?.textContent === 'src'")
+    link = "document.querySelector('.app-link')"
+    assert browser.wait(f"{link}?.innerText.includes('none found')"), \
+        browser.eval(f"{link}?.innerText")
+    # The list first, right under the heading.
+    assert browser.eval(f"{link}.firstElementChild.classList.contains("
+                        "'app-compare') && !"
+                        f"{link}.firstElementChild.hidden")
+    browser.eval(f"(s => {{ s.value = '4'; s.dispatchEvent(new Event("
+                 f"'change', {{bubbles: true}})); }})({link}"
+                 ".querySelector('.app-compare select'))")
+    rows = (f"[...{link}.querySelectorAll('tr')].map(r => (r.firstChild"
+            ".firstChild?.textContent ?? '') + '=' + [...r.children].slice(1)"
+            ".map(c => c.textContent).join('/')).join(';')")
+    assert browser.wait(f"{rows}.includes('PTS=')"), \
+        browser.eval(f"{link}.innerText")
+    for row in ("PTS=0:00:03.000/0:00:03.020",
+                "running time=0:00:03.000/0:00:03.020",
+                "plays at=0:00:03.000/0:00:03.020 (+0.020 s)"):
+        assert row in browser.eval(rows), browser.eval(rows)
+    assert browser.eval(f"{link}.querySelectorAll('tr.differs').length") \
+        == 0, "a chosen comparison marks differences"
+    assert browser.eval(f"{link}.innerText.includes('p/sink · chosen by "
+                        "you')")
     close_details(browser)
     browser.click("#viewing-close")
 

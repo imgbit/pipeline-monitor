@@ -288,10 +288,17 @@ append_app (GString * json, PmModel * model, PmElementRef * ref)
     pm_json_append_member_string (json, "leaky", leaky);
   if (g_str_equal (kind, "appsrc")) {
     gchar *fed = pm_model_fed_by_json (model, ref->id);
+    GstPad *src = gst_element_get_static_pad (element, "src");
+    guint64 last = src ? GPOINTER_TO_SIZE (g_atomic_pointer_get
+        (&pm_push_timing (src)->last_pts)) : 0;
 
     if (fed)
       g_string_append (json, fed);
     g_free (fed);
+    /* The last PTS out (noted while an appsink exists too). */
+    pm_json_append_value (json, "last_out_pts", last ? last - 1 :
+        GST_CLOCK_TIME_NONE);
+    gst_clear_object (&src);
   }
   append_app_segment (json, element, g_str_equal (kind, "appsrc") ? "src" :
       "sink");

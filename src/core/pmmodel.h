@@ -174,6 +174,9 @@ typedef struct
   /* The tracer's appsink -> appsrc data for this pad (freed with g_free),
    * or NULL. */
   gpointer pairing;
+  /* An appsrc's src pad: the last buffer's PTS + 1 (0: none), atomic; on
+   * 64-bit systems only (a pointer holds it). */
+  gpointer last_pts;
 } PmPushTiming;
 
 typedef struct

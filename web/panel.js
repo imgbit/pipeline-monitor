@@ -154,6 +154,8 @@ export function updateAppLink(aside, queue, queues, now, jump,
   let compare = section.querySelector(".app-compare");
   if (!compare) {
     compare = add(section, "label", "Compare with ", "app-compare");
+    // Right under the heading, before what it compares.
+    section.insertBefore(compare, body);
     const select = add(compare, "select");
     select.addEventListener("change", () => {
       comparing.set(queue.element, Number(select.value) || null);
@@ -219,11 +221,13 @@ export function updateAppLink(aside, queue, queues, now, jump,
     const sink = chosen && queues.get(chosen);
     if (sink && queue.segment !== undefined) {
       const chosenRow = add(body, "div", `${sink.path} · `, "app-chosen");
-      tip(add(chosenRow, "span", "chosen by you"), "Its last buffer and " +
-        "segment against appsrc's segment: not shown to be the same data.");
+      tip(add(chosenRow, "span", "chosen by you"), "Its last buffer " +
+        "against appsrc's last buffer out: the newest at each end, not " +
+        "shown to be the same data, so nothing is marked.");
       linkTable(body, linkRows({ pts: sink.last_pts, segment: sink.segment,
-        pipeline: pipelineOf(sink.path) }, { segment: queue.segment,
-        pipeline: pipelineOf(queue.path) }, false), sink.path, queue.path);
+        pipeline: pipelineOf(sink.path) }, { pts: queue.last_out_pts,
+        segment: queue.segment, pipeline: pipelineOf(queue.path) }, false),
+      sink.path, queue.path);
     }
   }
 }

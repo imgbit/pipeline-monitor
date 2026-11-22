@@ -265,7 +265,9 @@ the task has ended.
   "in_segment","out_segment"}`. `last`: when the last marked buffer left
   (µs, as `time`); the rest is about that buffer: its PTS and segment
   into the appsink and out of the appsrc, and the time between. Absent
-  until one is seen.
+  until one is seen. In the same programs an appsrc also has
+  `last_out_pts`, the PTS of its last buffer out (`null` before one, and
+  on 32-bit systems), for comparing with an appsink by hand.
 - `clock_provider`: the path of the element that gives the clock, or
   `null`.
 
