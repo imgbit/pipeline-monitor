@@ -1400,14 +1400,14 @@ pm_status_main (gint argc, gchar ** argv)
 
   if (!o.watch)
     return show_programs (&o);
+  /* Until Ctrl+C: no exit code to give. */
   for (;;) {
 #ifdef G_OS_UNIX
     if (isatty (1))
       g_print ("\033[H\033[2J");
 #endif
-    code = show_programs (&o);
+    show_programs (&o);
     fflush (stdout);
     g_usleep (G_USEC_PER_SEC);
   }
-  return code;
 }
