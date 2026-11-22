@@ -74,7 +74,7 @@ On Ubuntu 24.04 or Debian 12 (amd64, arm64), download the `.deb` for your
 system, then:
 
 ```sh
-sudo apt install ./pipeline-monitor_0.12.0-1.ubuntu24.04_amd64.deb
+sudo apt install ./pipeline-monitor_0.13.0-1.ubuntu24.04_amd64.deb
 ```
 
 It goes where the system's GStreamer finds it. To update, install a newer
@@ -253,14 +253,16 @@ Say so in [Discussions](https://github.com/imgbit/pipeline-monitor/discussions).
 
 ## Status
 
-Version 0.12 shows the pipeline graph, errors and warnings, negotiated
+Version 0.13 shows the pipeline graph, errors and warnings, negotiated
 caps, live values of pinned pads, queue fill, the pipeline's clock and
 times, element properties, live when pinned, latency per element and
 between pads, which thread runs each element and what each thread costs,
-and detects pipeline issues. It records what it shows to
-files you can play back later or share, also without the program (the
-`pipeline-monitor` command) and on the web, with demo recordings and a
-guide. Each open page is independent, and the
+what passes between appsink and appsrc, and detects pipeline issues. It
+records what it shows to files you can play back later or share, also
+without the program (the `pipeline-monitor` command) and on the web, with
+demo recordings and a guide. It opens GStreamer's `.dot` files, and
+`pipeline-monitor status` prints what it sees as text, for people and AI
+assistants. Each open page is independent, and the
 interface it uses is documented for other tools
 ([docs/protocol.md](docs/protocol.md), protocol 1).
 It is tested on macOS (Apple Silicon) with GStreamer 1.28.8, and in CI on
