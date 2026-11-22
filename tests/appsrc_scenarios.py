@@ -34,6 +34,8 @@ Which appsink feeds which appsrc (display1/in1 is a second display):
   switch             one camera into display, then display1, every 3 s
   tee                one camera teed into two appsinks (out0, spare0);
                      the program reads only out0
+  other-clock        the display pipeline on its own clock (wall-clock
+                     time), the camera on the system clock
 """
 
 import argparse
@@ -87,6 +89,7 @@ SCENARIOS = {
                "strip": True, "displays": 2, "route": "switch"},
     "tee": {"display": "format=time is-live=true do-timestamp=true",
             "strip": True, "tee": True},
+    "other-clock": {"display": "format=time is-live=true", "clock": True},
 }
 
 
@@ -192,6 +195,11 @@ def main():
         camera.set_state(Gst.State.PLAYING)
     if s.get("late"):
         GLib.usleep(int(s["late"] * 1000000))
+    if s.get("clock"):
+        # Another clock, as an audio sink's would be: wall-clock time.
+        clock = Gst.SystemClock(clock_type=Gst.ClockType.REALTIME,
+                                name="wall-clock")
+        display.use_clock(clock)
     if s.get("share"):
         # One clock and one base time: running times mean the same.
         camera = cameras[0]
