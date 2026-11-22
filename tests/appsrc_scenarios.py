@@ -101,6 +101,8 @@ def main():
                         help="print what leaves appsrc and when it plays")
     args = parser.parse_args()
     s = SCENARIOS[args.scenario]
+    # Its name in the page and in pipeline-monitor status.
+    GLib.set_prgname("appsrc-scenarios")
     Gst.init(None)
 
     seek = s.get("seek")

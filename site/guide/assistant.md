@@ -8,16 +8,23 @@ the page: run your program with the tracer, then ask the assistant to run
 ### What it prints
 
 ```
-my-player (pid 4242) at http://127.0.0.1:8765/
+appsrc-scenarios (pid 15777) at http://127.0.0.1:8765/
   GStreamer 1.28.8, pipeline-monitor 0.13.0
-display  PLAYING  live  running 0:00:04.602  latency 0 ns  clock GstSystemClock
+camera0  PLAYING  live  running 0:00:08.233  latency 0 ns  clock GstSystemClock
+  3 elements; queues, fullest first: out0 0 %
+display  PLAYING  live  running 0:00:08.232  latency 0 ns  clock GstSystemClock
   3 elements; queues, fullest first: in 8582 % bytes
-Process: CPU 1 % of a core, memory 40.9 MiB, 6 threads
+Process: CPU 1 % of a core, memory 43.1 MiB, 6 threads
 Problems
   warning  display/in has held more than its max-bytes for 8 s (86×), and keeps queueing
-           More is pushed into it than leaves it. Past its limits appsrc
-           only emits enough-data; to stop there, set block=true (the push
-           waits) or leaky-type (it drops).
+           More is pushed into it than leaves it. Past its limits
+           appsrc only emits enough-data; to stop there, set
+           block=true (the push waits) or leaky-type (it drops).
+  warning  display/in sends camera0/out0's buffers in a segment from 0:00:00.000, not the one they arrived in (from 0:00:05.000)
+           Their timestamps are read against another start, so they
+           play at another time. appsrc keeps its own segment
+           unless samples are pushed (push-sample) with
+           handle-segment-change=true and format=time.
 Log: no errors or warnings
 ```
 
