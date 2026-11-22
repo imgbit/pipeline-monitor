@@ -852,6 +852,12 @@ async function layoutAndRender() {
 let detailsHeld = false;
 let detailsDeferred = false;
 
+// A choice list in the panel, open or being used: rebuilt, it would close.
+function choosingInDetails() {
+  const active = document.activeElement;
+  return active?.tagName === "SELECT" && $("details").contains(active);
+}
+
 function selectingInDetails() {
   const s = document.getSelection();
   return Boolean(s && !s.isCollapsed && s.rangeCount &&
@@ -861,17 +867,26 @@ function selectingInDetails() {
 // Whether the panel is to be left as it is now; if so, it is brought up to
 // date later.
 function detailsFrozen() {
-  if (!detailsHeld && !selectingInDetails())
+  if (!detailsHeld && !selectingInDetails() && !choosingInDetails())
     return false;
   detailsDeferred = true;
   return true;
 }
 
-document.addEventListener("selectionchange", () => {
-  if (detailsDeferred && !detailsHeld && !selectingInDetails()) {
+function catchUp() {
+  if (detailsDeferred && !detailsHeld && !selectingInDetails() &&
+      !choosingInDetails()) {
     detailsDeferred = false;
     update();
   }
+}
+
+document.addEventListener("selectionchange", catchUp);
+// After a choice, or leaving the list: once it no longer has the focus.
+$("details").addEventListener("focusout", () => setTimeout(catchUp, 0));
+$("details").addEventListener("change", (e) => {
+  if (e.target.tagName === "SELECT")
+    e.target.blur();
 });
 $("details").addEventListener("pointerdown", () => {
   detailsHeld = true;

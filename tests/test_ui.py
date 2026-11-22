@@ -1356,6 +1356,22 @@ def check_two_pipelines(browser, serve):
         browser.eval("getSelection().removeAllRanges()")
         assert browser.wait("!window.selectedNode.isConnected"), \
             "the panel did not catch up after the selection"
+        # A choice list in the details panel, focused (open), survives
+        # redraws: rebuilt, it would close under the pointer. Once left, the
+        # panel catches up.
+        browser.eval("(d => { const s = document.createElement('select'); "
+                     "s.append(new Option('a'), new Option('b')); "
+                     "d.querySelector('h2').after(s); s.focus(); "
+                     "window.testList = s; })(document.getElementById("
+                     "'details'))")
+        for _ in range(2):
+            browser.eval("document.getElementById('caps-labels').click()")
+        time.sleep(0.5)
+        assert browser.eval("window.testList.isConnected"), \
+            "the panel was rebuilt under an open choice list"
+        browser.eval("window.testList.blur()")
+        assert browser.wait("!window.testList.isConnected"), \
+            "the panel did not catch up after the list"
         # A redraw keeps the list's options: replacing them would close the
         # list while it is open.
         browser.eval(f"window.keptOption = {select}.options[0]")
