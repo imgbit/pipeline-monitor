@@ -3,11 +3,13 @@
 #include <gst/gst.h>
 #include <string.h>
 
-/* Usage: serve [--warnings] [--flow-log] [--set-caps NAME=CAPS]...
+/* Usage: serve [--warnings] [--warn-often] [--flow-log]
+ *   [--set-caps NAME=CAPS]...
  *   [--second DESCRIPTION] [pipeline description]
  * Runs a pipeline until it ends. If it has a tee named "t", a branch is
  * added and removed every two seconds to produce live updates; with
- * --warnings the tee also posts a warning each time. An appsrc named
+ * --warnings the tee also posts a warning each time; with --warn-often the
+ * pipeline posts one every 250 ms, nothing else changing. An appsrc named
  * "subs" gets a subtitle every two seconds, with a GAP event in between.
  * Without a description (or an empty one) it runs video, audio and
  * subtitles; the audio sink plays 300 ms late, so its queue stays about
@@ -135,6 +137,14 @@ toggle_branch (gpointer user_data)
   return G_SOURCE_CONTINUE;
 }
 
+static gboolean
+warn_often (gpointer user_data)
+{
+  GST_ELEMENT_WARNING (user_data, STREAM, FAILED, ("example warning, again"),
+      (NULL));
+  return G_SOURCE_CONTINUE;
+}
+
 /* Every second: a one second subtitle, then a GAP of one second. */
 static gboolean
 push_subtitle (gpointer user_data)
@@ -191,12 +201,15 @@ main (int argc, char **argv)
   GError *error = NULL;
   GMainLoop *loop;
   GstBus *bus;
+  gboolean often = FALSE;
 
   g_setenv ("GST_TRACERS", "pipeline-monitor", FALSE);
   gst_init (&argc, &argv);
   while (argc > 1 && g_str_has_prefix (argv[1], "--")) {
     if (g_strcmp0 (argv[1], "--warnings") == 0) {
       branch.warnings = TRUE;
+    } else if (g_strcmp0 (argv[1], "--warn-often") == 0) {
+      often = TRUE;
     } else if (g_strcmp0 (argv[1], "--flow-log") == 0) {
       flow_log_start = g_get_monotonic_time ();
     } else if (g_strcmp0 (argv[1], "--set-caps") == 0 && argc > 2) {
@@ -251,6 +264,8 @@ main (int argc, char **argv)
   bus = gst_element_get_bus (branch.pipeline);
   gst_bus_add_watch (bus, on_message, loop);
 
+  if (often)
+    g_timeout_add (250, warn_often, branch.pipeline);
   branch.tee = gst_bin_get_by_name (GST_BIN (branch.pipeline), "t");
   if (branch.tee != NULL)
     g_timeout_add_seconds (2, toggle_branch, &branch);

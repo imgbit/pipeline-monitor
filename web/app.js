@@ -770,6 +770,8 @@ async function update() {
   }
 }
 
+let layoutCache = { key: null, layout: null };
+
 async function layoutAndRender() {
   const pipeline = currentPipeline();
   const index = buildIndex(state.graph);
@@ -795,8 +797,19 @@ async function layoutAndRender() {
 
   const { graph, info } = buildElkGraph(pipeline, state.graph.links,
     state.collapsed, state.capsLabels);
-  const layout = await elk.layout(graph);
-  keepPlaces(layout, state.places);
+  // The same structure (only counts or states changed, as when a program
+  // keeps warning): the last layout again, not a new one.
+  const key = JSON.stringify(graph);
+  let layout;
+  if (layoutCache.key === key) {
+    layout = layoutCache.layout;
+  } else {
+    layout = await elk.layout(graph);
+    keepPlaces(layout, state.places);
+    layoutCache = { key, layout };
+    // Counted for the tests.
+    $("graph").dataset.layouts = Number($("graph").dataset.layouts ?? 0) + 1;
+  }
   const selectedPads = new Set(selection
     ? selection.element.pads.map((p) => `p${p.id}`) : []);
   const badges = new Map();

@@ -37,6 +37,12 @@ jobs:
       - name: Install dependencies
         timeout-minutes: 15
         run: |
+          # Ubuntu on amd64: GitHub's own copy of the archive, which is fast
+          # from its machines (archive.ubuntu.com was slow there for hours).
+          src=/etc/apt/sources.list.d/ubuntu.sources
+          if [ -f $src ] && [ "$(dpkg --print-architecture)" = amd64 ]; then
+            sed -i 's|http://archive.ubuntu.com|http://azure.archive.ubuntu.com|g; s|http://security.ubuntu.com|http://azure.archive.ubuntu.com|g' $src
+          fi
           apt() { timeout 480 apt-get -o Acquire::Retries=3 \
             -o Acquire::http::Timeout=30 "$@"; }
           for try in 1 2; do
@@ -83,6 +89,12 @@ jobs:
       - name: Install tools
         timeout-minutes: 10
         run: |
+          # Ubuntu on amd64: GitHub's own copy of the archive, which is fast
+          # from its machines (archive.ubuntu.com was slow there for hours).
+          src=/etc/apt/sources.list.d/ubuntu.sources
+          if [ -f $src ] && [ "$(dpkg --print-architecture)" = amd64 ]; then
+            sed -i 's|http://archive.ubuntu.com|http://azure.archive.ubuntu.com|g; s|http://security.ubuntu.com|http://azure.archive.ubuntu.com|g' $src
+          fi
           apt-get update
           apt-get install -y --no-install-recommends ca-certificates curl git \
             gstreamer1.0-tools

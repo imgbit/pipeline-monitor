@@ -346,6 +346,8 @@ export function showDetails(aside, selection, index, onClose, log, queue) {
   const lat = add(aside, "div", undefined, "latency-section");
   lat.dataset.element = element.id;
   add(aside, "h3", "Properties");
+  add(aside, "div", "Only values that differ from the defaults: GStreamer " +
+    "writes no others into a .dot file.", "dot-note");
   const props = add(aside, "div", "loading…", "properties");
   props.dataset.element = element.id;
   props.dataset.factory = element.factory ?? "";

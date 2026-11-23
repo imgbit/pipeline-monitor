@@ -1046,3 +1046,7 @@ body.viewing-dot #process-perf { display: none; }
 /* A pad or element shown from its pin card */
 @keyframes flash { 0%, 60% { stroke: var(--accent); stroke-width: 6; } 100% { stroke-width: 1; } }
 .pad.flash, .node.flash > rect.box { animation: flash 1s ease-out; }
+
+/* Under Properties, for a .dot file only */
+.dot-note { display: none; color: var(--muted); font-size: 12px; margin: -2px 0 4px; }
+body.viewing-dot .dot-note { display: block; }

@@ -567,6 +567,9 @@ def check(browser, url):
         f'#graph .node[data-id="{mq}"] > rect.box',
         "document.querySelector('#details h2')?.textContent === 'multiqueue0'"), \
         "details panel did not open"
+    assert browser.wait("(n => n && getComputedStyle(n).display === 'none')("
+                        "document.querySelector('#details .dot-note'))"), \
+        "the .dot note shows for a live program"
 
     assert browser.eval(AUTO_FIT) == "false", "auto-fit still on after a click"
     view = browser.eval(TRANSFORM)
@@ -1504,6 +1507,27 @@ def check_audio_meters(browser, serve):
         server.wait()
 
 
+# A program that keeps warning: the graph comes again with new counts, the
+# page draws it without a new layout.
+def check_warn_often(browser, serve):
+    server, url = start_server(serve, "videotestsrc is-live=true ! "
+                               "queue name=wo-queue ! fakesink sync=true",
+                               "--warn-often")
+    layouts = "Number(document.getElementById('graph').dataset.layouts ?? 0)"
+    try:
+        browser.call("Page.navigate", url=url)
+        assert browser.wait(f"!!{element_selector('wo-queue')}", timeout=10)
+        time.sleep(1)
+        before = browser.eval(layouts)
+        time.sleep(2)
+        after = browser.eval(layouts)
+        assert after == before, f"{after - before} new layouts in 2 s"
+        assert not browser.errors, browser.errors
+    finally:
+        server.terminate()
+        server.wait()
+
+
 # Pictures in pinned pads: a white picture, a still black one, and
 # compressed video with its reason.
 PICTURE_PIPELINE = (
@@ -1843,6 +1867,10 @@ def check_dot_viewer(browser):
                "d.textContent === 'factory')?.nextElementSibling.textContent")
     assert browser.eval(factory) == "identity (looked up from the type)", \
         browser.eval(factory)
+    # Why the list of properties is short.
+    assert browser.eval("(n => n && getComputedStyle(n).display !== 'none')("
+                        "document.querySelector('#details .dot-note'))"), \
+        "no note on a .dot's properties"
     close_details(browser)
     browser.click("#viewing-close")
     assert browser.wait(f"{banner}.hidden")
@@ -4502,6 +4530,7 @@ def main():
             check_dot_reading(browser, serve)
             check_audio_meters(browser, serve)
             check_pictures(browser, serve)
+            check_warn_often(browser, serve)
     finally:
         if browser:
             browser.close()
