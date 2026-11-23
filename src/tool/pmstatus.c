@@ -1492,8 +1492,9 @@ print_audio (JsonNode * merged)
     if (isinf (peak))
       g_print ("no signal");
     else
-      g_print ("peak %.1f dBFS, RMS %.1f dBFS", peak,
-          10 * log10 (power / n));
+      /* + 0.0 and the rounding: no "-0.0" for a peak just under 0 dB. */
+      g_print ("peak %.1f dBFS, RMS %.1f dBFS", peak > -0.05 ? 0.0 : peak,
+          10 * log10 (power / n) > -0.05 ? 0.0 : 10 * log10 (power / n));
     g_print (", clipped %" G_GINT64_FORMAT, inum (l, "clipped_total"));
     if (has_number (l, "silent_for")) {
       gchar *t = span_text (num (l, "silent_for"));

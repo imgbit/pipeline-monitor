@@ -51,7 +51,11 @@ function percent(db) {
 }
 
 function db(value) {
-  return value === null ? "−∞" : value.toFixed(1).replace("-", "−");
+  if (value === null)
+    return "−∞";
+  // -0.0003 dB rounds to 0.0, not to "−0.0".
+  const text = value.toFixed(1);
+  return text === "-0.0" ? "0.0" : text.replace("-", "−");
 }
 
 // 12 s, or 5:05 past a minute.
