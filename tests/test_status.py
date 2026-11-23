@@ -95,6 +95,62 @@ def live(serve, tool):
     check(code == 3, f"nothing at the address exits 3, not {code}", err)
 
 
+def pads(serve, tool):
+    proc, url = start(serve,
+                      "audiotestsrc is-live=true volume=0.5 ! audio/x-raw,"
+                      "format=S16LE,channels=2 ! identity name=st ! "
+                      "fakesink sync=true "
+                      "audiotestsrc is-live=true wave=silence ! audio/x-raw,"
+                      "format=F32LE,channels=6,channel-mask=(bitmask)0x3f ! "
+                      "identity name=six ! fakesink sync=true "
+                      "videotestsrc is-live=true ! identity name=vid ! "
+                      "fakesink sync=true")
+    try:
+        end = time.time() + 20
+        while True:
+            code, out, err = status(tool, "--url", url, "--pad", "st:src")
+            if "Audio:" in out or time.time() > end:
+                break
+            time.sleep(0.25)
+        check(code == 0, f"--pad exits 0, not {code} ({err})", out)
+        for text in ("pipeline0/st:src, watched for 2.5 s",
+                     "src -> fakesink0:sink", "Flow: ", " buffers/s",
+                     "Last buffer: PTS ",
+                     "Audio: S16LE, 44.1 kHz, 2 channels\n",
+                     "  FL   peak -6.0 dBFS, RMS -9.0 dBFS, clipped 0\n",
+                     "  FR   peak -6.0 dBFS, RMS -9.0 dBFS, clipped 0\n"):
+            check(text in out, f"--pad has {text!r}", out)
+
+        code, out, _ = status(tool, "--url", url, "--pad",
+                              "pipeline0/six:src")
+        for text in ("Audio: F32LE, 44.1 kHz, 6 channels (FL FR measured)",
+                     "  FL   no signal, clipped 0, silent for ",
+                     "(digital silence: every sample 0)"):
+            check(text in out, f"--pad of 5.1 has {text!r}", out)
+
+        code, out, _ = status(tool, "--url", url, "--pad", "vid:src")
+        check(code == 0 and "Flow: " in out and "Audio" not in out,
+              "a video pad has flow and no audio", out)
+
+        code, out, _ = status(tool, "--url", url, "--pad", "st:src", "--json")
+        lines = [json.loads(line) for line in out.splitlines()]
+        check([m["type"] for m in lines] == ["pads", "audio"],
+              "--pad --json: pads and audio", out)
+        audio = lines[1]["audio"][0]
+        check(len(audio["levels"][0]["peak"]) >= 20,
+              "--pad --json merges the windows", out)
+
+        code, _, err = status(tool, "--url", url, "--pad", "nothing:src")
+        check(code == 2 and "no pad nothing:src" in err,
+              "an unknown pad exits 2", err)
+        code, _, err = status(tool, "--url", url, "--pad", "st:src",
+                              "--graph")
+        check(code == 2, "--pad with --graph is wrong use", err)
+    finally:
+        proc.terminate()
+        proc.wait()
+
+
 def recording(tool, folder):
     started = 1_000_000_000_000_000
 
@@ -108,7 +164,10 @@ def recording(tool, folder):
                  "pads": [], "children": [{
                      "id": 2, "name": "src", "path": "p/src",
                      "factory": "videotestsrc", "type": "GstVideoTestSrc",
-                     "bin": False, "state": "PLAYING", "pads": [],
+                     "bin": False, "state": "PLAYING", "pads": [{
+                         "id": 3, "name": "src", "path": "p/src:src",
+                         "direction": "src", "presence": "always",
+                         "caps": "audio/x-raw, format=(string)S16LE"}],
                      "children": []}]}]}
     error = {"id": "flow:p/src:src", "severity": "error", "element": 2,
              "path": "p/src", "text": "Data stopped at p/src:src: "
@@ -121,6 +180,19 @@ def recording(tool, folder):
         graph,
         {"type": "findings", "protocol": 1, "time": at(0.2),
          "findings": []},
+        {"type": "pads", "protocol": 1, "time": at(0.5), "pads": [{
+            "pad": 3, "pad_path": "p/src:src", "buffers": 20,
+            "bytes": 80000, "lists": 0, "list_buffers": 0,
+            "last": {"pts": 480000000, "dts": None, "duration": 23000000,
+                     "running_time": 480000000, "delay": 2000000,
+                     "size": 4000, "offset": None, "offset_end": None,
+                     "flags": [], "age": 1000000},
+            "segment": None,
+            "window": {"seconds": 0.5, "buffers_per_s": 40.0,
+                       "bytes_per_s": 160000.0, "gap_min": 20000000,
+                       "gap_avg": 25000000, "gap_max": 30000000},
+            "events": {"segment": 0, "flush": 0, "eos": 0, "caps": 0,
+                       "gap": 0}}]},
         {"type": "findings", "protocol": 1, "time": at(1),
          "findings": [error]},
         {"type": "log", "protocol": 1, "time": at(1), "entries": [
@@ -154,6 +226,16 @@ def recording(tool, folder):
 
     code, out, _ = status(tool, path, "--log")
     check("error   p/src: Internal data stream error." in out, "--log", out)
+
+    code, out, _ = status(tool, path, "--pad", "src:src")
+    for text in ("p/src:src\n", "Flow: 40.0 buffers/s, 156.2 KiB/s; gaps "
+                 "20 ms / 25 ms / 30 ms (min / avg / max)",
+                 "Last buffer: PTS 0:00:00.480, 3.9 KiB, 2 ms late",
+                 "Audio levels: not kept in recordings"):
+        check(text in out, f"--pad in a recording has {text!r}", out)
+    code, out, _ = status(tool, path, "--pad", "src:src", "--at", "0.3")
+    check("Flow: the pad was not watched while recording" in out,
+          "--pad before the pad was watched", out)
 
     code, _, err = status(tool, path, "--at", "soon")
     check(code == 2, "a wrong --at exits 2", err)
@@ -355,6 +437,7 @@ def main():
         recording(tool, folder)
         details(tool, folder)
     live(serve, tool)
+    pads(serve, tool)
     watch(serve, tool)
     print("status: all checks passed")
 

@@ -37,6 +37,9 @@ Hints explain what an observation means; none is a guess.
 - `--element NAME`: one element's pads with their caps and links, its
   queue, the latency it reports, the properties changed from their
   defaults, its problems and log entries.
+- `--pad ELEMENT:PAD`: one pad, watched for 2.5 s: buffers per second,
+  bytes, gaps, the last buffer, and for raw audio the peak and RMS level
+  of each channel in dBFS, clipped samples and silence.
 - `--graph`: every element, link and negotiated format.
 - `--log` (`--last N`): errors and warnings with GStreamer's details.
 - `--watch`: again every second.
@@ -55,6 +58,7 @@ not count), 3 when no program is running with the tracer.
   seconds?"
 - "Run `pipeline-monitor status --element mysink` and tell me why it
   drops frames."
+- "Run `pipeline-monitor status --pad mixer:src`. Why is there no sound?"
 - "Here is a recording of the failure: `pipeline-monitor status
   bug.jsonl`. What stopped the data?"
 

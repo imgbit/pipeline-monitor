@@ -10,6 +10,7 @@
 #include <gio/gio.h>
 #include <json-glib/json-glib.h>
 #include <libsoup/soup.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,12 +20,16 @@
 
 #define FIRST_PORT 8765
 #define PORTS 10
+/* How long --pad watches a pad of a running program. */
+#define PAD_WATCH_MS 2500
 
 /* One program's state: the latest message of each type. */
 typedef struct
 {
   gchar *source;
   JsonNode *hello, *graph, *levels, *findings, *perf;
+  /* Recordings only: the last values of the pads watched while recording. */
+  JsonNode *pads;
   /* The last graph with pipelines, and its time (recordings: from the
    * start, µs). */
   JsonNode *seen_graph;
@@ -48,6 +53,7 @@ status_free (Status * s)
   g_clear_pointer (&s->levels, json_node_unref);
   g_clear_pointer (&s->findings, json_node_unref);
   g_clear_pointer (&s->perf, json_node_unref);
+  g_clear_pointer (&s->pads, json_node_unref);
   g_clear_pointer (&s->props, g_hash_table_unref);
   g_hash_table_unref (s->log);
   g_free (s->end);
@@ -138,6 +144,8 @@ keep (Status * s, JsonNode * node)
     slot = &s->findings;
   else if (g_str_equal (type, "performance"))
     slot = &s->perf;
+  else if (g_str_equal (type, "pads"))
+    slot = &s->pads;
   if (slot != NULL) {
     g_clear_pointer (slot, json_node_unref);
     *slot = json_node_ref (node);
@@ -1176,6 +1184,423 @@ print_element (Status * s, const gchar * name)
   return 0;
 }
 
+
+/* One pad */
+
+static void
+find_pads (JsonObject * e, const gchar * name, GPtrArray * found)
+{
+  JsonArray *pads = arr (e, "pads"), *children = arr (e, "children");
+  guint i;
+
+  for (i = 0; pads && i < json_array_get_length (pads); i++) {
+    JsonObject *p = json_array_get_object_element (pads, i);
+    const gchar *path = str (p, "path");
+    gchar *short_path = g_strdup_printf ("%s:%s", str (e, "name"),
+        str (p, "name"));
+
+    if (g_strcmp0 (path, name) == 0 || g_strcmp0 (short_path, name) == 0 ||
+        (path && strchr (name, '/') && g_str_has_suffix (path, name) &&
+            path[strlen (path) - strlen (name) - 1] == '/'))
+      g_ptr_array_add (found, p);
+    g_free (short_path);
+  }
+  for (i = 0; children && i < json_array_get_length (children); i++)
+    find_pads (json_array_get_object_element (children, i), name, found);
+}
+
+typedef struct
+{
+  GMainLoop *loop;
+  SoupWebsocketConnection *conn;
+  gint64 pad;
+  JsonNode *pads;
+  GPtrArray *audio;
+} PadWatch;
+
+/* The entry for the watched pad in a message's list, or NULL. */
+static JsonNode *
+entry_for (JsonObject * m, const gchar * list, gint64 pad)
+{
+  JsonArray *a = arr (m, list);
+  guint i;
+
+  for (i = 0; a && i < json_array_get_length (a); i++)
+    if (inum (json_array_get_object_element (a, i), "pad") == pad)
+      return json_array_get_element (a, i);
+  return NULL;
+}
+
+static void
+on_watch_message (SoupWebsocketConnection * conn, gint kind, GBytes * bytes,
+    PadWatch * w)
+{
+  gsize size;
+  const gchar *data = g_bytes_get_data (bytes, &size);
+  gchar *text = g_strndup (data, size);
+  JsonNode *root = json_from_string (text, NULL);
+  JsonObject *m = obj (root);
+  JsonNode *e;
+
+  g_free (text);
+  if (m && g_strcmp0 (str (m, "type"), "pads") == 0 &&
+      (e = entry_for (m, "pads", w->pad))) {
+    g_clear_pointer (&w->pads, json_node_unref);
+    w->pads = json_node_copy (e);
+  } else if (m && g_strcmp0 (str (m, "type"), "audio") == 0 &&
+      (e = entry_for (m, "audio", w->pad))) {
+    g_ptr_array_add (w->audio, json_node_copy (e));
+  }
+  g_clear_pointer (&root, json_node_unref);
+}
+
+static void
+on_watch_connected (GObject * source, GAsyncResult * result, gpointer data)
+{
+  PadWatch *w = data;
+
+  w->conn = soup_session_websocket_connect_finish (SOUP_SESSION (source),
+      result, NULL);
+  if (w->conn) {
+    gchar *command = g_strdup_printf ("{\"type\":\"watch-pad\",\"pad\":%"
+        G_GINT64_FORMAT "}", w->pad);
+
+    g_signal_connect (w->conn, "message", G_CALLBACK (on_watch_message), w);
+    soup_websocket_connection_send_text (w->conn, command);
+    g_free (command);
+  } else {
+    g_main_loop_quit (w->loop);
+  }
+}
+
+static gboolean
+watch_done (gpointer data)
+{
+  g_main_loop_quit (((PadWatch *) data)->loop);
+  return G_SOURCE_REMOVE;
+}
+
+/* Watches the pad for PAD_WATCH_MS over the program's WebSocket. */
+static gboolean
+watch_pad (const gchar * base, gint64 pad, PadWatch * w)
+{
+  gchar *url = g_strconcat (g_str_has_prefix (base, "https") ? "wss" : "ws",
+      strchr (base, ':'), "ws", NULL);
+  SoupMessage *msg = soup_message_new ("GET", url);
+
+  g_free (url);
+  w->loop = g_main_loop_new (NULL, FALSE);
+  w->pad = pad;
+  w->audio = g_ptr_array_new_with_free_func ((GDestroyNotify)
+      json_node_unref);
+  if (msg == NULL)
+    return FALSE;
+  soup_session_websocket_connect_async (session_get (), msg, NULL, NULL,
+      G_PRIORITY_DEFAULT, NULL, on_watch_connected, w);
+  g_timeout_add (PAD_WATCH_MS, watch_done, w);
+  g_main_loop_run (w->loop);
+  g_object_unref (msg);
+  if (w->conn) {
+    soup_websocket_connection_close (w->conn, SOUP_WEBSOCKET_CLOSE_NORMAL,
+        NULL);
+    g_clear_object (&w->conn);
+    return TRUE;
+  }
+  return FALSE;
+}
+
+static void
+pad_watch_clear (PadWatch * w)
+{
+  g_clear_pointer (&w->loop, g_main_loop_unref);
+  g_clear_pointer (&w->pads, json_node_unref);
+  g_clear_pointer (&w->audio, g_ptr_array_unref);
+}
+
+/* KiB, MiB…, with a plain space: GLib puts a no-break space there. */
+static gchar *
+size_text (guint64 bytes)
+{
+  gchar *text = g_format_size_full (bytes, G_FORMAT_SIZE_IEC_UNITS);
+  gchar **parts = g_strsplit (text, "\u00a0", -1);
+
+  g_free (text);
+  text = g_strjoinv (" ", parts);
+  g_strfreev (parts);
+  return text;
+}
+
+static void
+print_flow (JsonObject * p)
+{
+  JsonObject *win = child_obj (p, "window"), *last = child_obj (p, "last");
+
+  if (win) {
+    gchar *bytes = size_text ((guint64) num (win, "bytes_per_s"));
+
+    g_print ("Flow: %.1f buffers/s, %s/s", num (win, "buffers_per_s"), bytes);
+    if (has_number (win, "gap_avg")) {
+      gchar *a = span_text (num (win, "gap_min"));
+      gchar *b = span_text (num (win, "gap_avg"));
+      gchar *c = span_text (num (win, "gap_max"));
+
+      g_print ("; gaps %s / %s / %s (min / avg / max)", a, b, c);
+      g_free (a);
+      g_free (b);
+      g_free (c);
+    }
+    g_print ("\n");
+    g_free (bytes);
+  }
+  if (last) {
+    gchar *size = size_text (inum (last, "size"));
+
+    g_print ("Last buffer: ");
+    if (has_number (last, "pts")) {
+      gchar *pts = clock_text (inum (last, "pts"));
+
+      g_print ("PTS %s, ", pts);
+      g_free (pts);
+    }
+    g_print ("%s", size);
+    if (has_number (last, "delay")) {
+      gint64 delay = inum (last, "delay");
+      gchar *d = span_text (ABS (delay));
+
+      g_print (", %s %s", d, delay >= 0 ? "late" : "early");
+      g_free (d);
+    }
+    g_print ("\n");
+    g_free (size);
+  } else {
+    g_print ("Last buffer: none yet\n");
+  }
+}
+
+/* All "audio" entries of the watch as one, like a recording holds them:
+ * the newest format and counts, every window's peak and RMS in the lists.
+ * NULL if none came; the reason alone if the pad has no levels. */
+static JsonNode *
+merge_audio (GPtrArray * audio)
+{
+  JsonNode *newest = NULL, *merged;
+  JsonArray *levels;
+  guint i, c;
+
+  for (i = 0; i < audio->len; i++) {
+    JsonObject *a = obj (g_ptr_array_index (audio, i));
+
+    if (str (a, "unavailable"))
+      return json_node_copy (g_ptr_array_index (audio, i));
+    if (arr (a, "levels"))
+      newest = g_ptr_array_index (audio, i);
+    else if (newest == NULL && str (a, "format"))
+      newest = g_ptr_array_index (audio, i);
+  }
+  if (newest == NULL)
+    return NULL;
+  merged = json_node_copy (newest);
+  levels = arr (obj (merged), "levels");
+  for (c = 0; levels && c < json_array_get_length (levels); c++) {
+    JsonObject *out = json_array_get_object_element (levels, c);
+    JsonArray *peaks = json_array_new (), *rms = json_array_new ();
+    gint64 clipped = 0;
+
+    for (i = 0; i < audio->len; i++) {
+      JsonArray *l = arr (obj (g_ptr_array_index (audio, i)), "levels");
+      JsonObject *one;
+      guint k;
+
+      if (l == NULL || c >= json_array_get_length (l))
+        continue;
+      one = json_array_get_object_element (l, c);
+      for (k = 0; k < json_array_get_length (arr (one, "peak")); k++) {
+        json_array_add_element (peaks, json_node_copy
+            (json_array_get_element (arr (one, "peak"), k)));
+        json_array_add_element (rms, json_node_copy
+            (json_array_get_element (arr (one, "rms"), k)));
+      }
+      clipped += inum (one, "clipped");
+    }
+    json_object_set_array_member (out, "peak", peaks);
+    json_object_set_array_member (out, "rms", rms);
+    json_object_set_int_member (out, "clipped", clipped);
+  }
+  return merged;
+}
+
+/* Levels over the whole watch: the highest peak, the RMS of all windows. */
+static void
+print_audio (JsonNode * merged)
+{
+  JsonObject *a = obj (merged);
+  JsonArray *positions, *levels;
+  guint c, shown, channels;
+
+  if (a == NULL)
+    return;
+  if (str (a, "unavailable")) {
+    g_print ("Audio: %s\n", str (a, "unavailable"));
+    return;
+  }
+  positions = arr (a, "positions");
+  shown = inum (a, "shown");
+  channels = inum (a, "channels");
+  g_print ("Audio: %s, %g kHz, %u channel%s", str (a, "format"),
+      num (a, "rate") / 1000, channels, channels == 1 ? "" : "s");
+  if (channels > shown) {
+    g_print (" (");
+    for (c = 0; c < shown; c++)
+      g_print ("%s%s", c ? " " : "",
+          json_array_get_string_element (positions, c));
+    g_print (" measured)");
+  }
+  g_print ("\n");
+  levels = arr (a, "levels");
+  if (levels == NULL) {
+    g_print ("  no samples while watching\n");
+    return;
+  }
+  for (c = 0; c < shown && c < json_array_get_length (levels); c++) {
+    JsonObject *l = json_array_get_object_element (levels, c);
+    JsonArray *p = arr (l, "peak"), *r = arr (l, "rms");
+    gdouble peak = -INFINITY, power = 0;
+    guint k, n = json_array_get_length (r);
+
+    for (k = 0; k < n; k++) {
+      JsonNode *pv = json_array_get_element (p, k);
+      JsonNode *rv = json_array_get_element (r, k);
+
+      if (!JSON_NODE_HOLDS_NULL (pv))
+        peak = MAX (peak, json_node_get_double (pv));
+      if (!JSON_NODE_HOLDS_NULL (rv))
+        power += pow (10, json_node_get_double (rv) / 10);
+    }
+    g_print ("  %-4s ", json_array_get_string_element (positions, c));
+    if (isinf (peak))
+      g_print ("no signal");
+    else
+      g_print ("peak %.1f dBFS, RMS %.1f dBFS", peak,
+          10 * log10 (power / n));
+    g_print (", clipped %" G_GINT64_FORMAT, inum (l, "clipped_total"));
+    if (has_number (l, "silent_for")) {
+      gchar *t = span_text (num (l, "silent_for"));
+
+      g_print (", silent for %s%s", t,
+          json_object_get_boolean_member_with_default (l, "digital_silence",
+              FALSE) ? " (digital silence: every sample 0)" : "");
+      g_free (t);
+    }
+    g_print ("\n");
+  }
+}
+
+static gint
+print_one_pad (Status * s, const gchar * name, gboolean json)
+{
+  JsonArray *pipelines = arr (obj (s->graph), "pipelines");
+  GPtrArray *found = g_ptr_array_new ();
+  JsonObject *p;
+  gint64 id;
+  guint i;
+  Index x;
+
+  /* A recording that ended after its pipelines: as last seen. */
+  if (s->recording && s->seen_graph && (pipelines == NULL ||
+          json_array_get_length (pipelines) == 0))
+    pipelines = arr (obj (s->seen_graph), "pipelines");
+
+  for (i = 0; pipelines && i < json_array_get_length (pipelines); i++)
+    find_pads (json_array_get_object_element (pipelines, i), name, found);
+  if (found->len != 1) {
+    if (found->len == 0)
+      g_printerr ("pipeline-monitor: no pad %s in %s (give element:pad or "
+          "its path)\n", name, s->source);
+    else {
+      g_printerr ("pipeline-monitor: %u pads named %s; give the path:\n",
+          found->len, name);
+      for (i = 0; i < found->len; i++)
+        g_printerr ("  %s\n", str (g_ptr_array_index (found, i), "path"));
+    }
+    g_ptr_array_unref (found);
+    return 2;
+  }
+  p = g_ptr_array_index (found, 0);
+  g_ptr_array_unref (found);
+  id = inum (p, "id");
+
+  if (s->recording) {
+    JsonNode *e = s->pads ? entry_for (obj (s->pads), "pads", id) : NULL;
+
+    if (json) {
+      if (e) {
+        gchar *text = json_to_string (e, FALSE);
+
+        g_print ("%s\n", text);
+        g_free (text);
+      }
+      return 0;
+    }
+    g_print ("%s\n", str (p, "path"));
+    index_build (&x, s);
+    print_pad (&x, p, "  ");
+    index_clear (&x);
+    if (e && !json_object_get_boolean_member_with_default (obj (e), "gone",
+            FALSE))
+      print_flow (obj (e));
+    else
+      g_print ("Flow: the pad was not watched while recording\n");
+    if (str (p, "caps") && g_str_has_prefix (str (p, "caps"), "audio/"))
+      g_print ("Audio levels: not kept in recordings\n");
+    return 0;
+  } else {
+    PadWatch w = { 0, };
+    gint code = 0;
+
+    if (!watch_pad (s->source, id, &w)) {
+      g_printerr ("pipeline-monitor: could not watch %s at %s\n", name,
+          s->source);
+      pad_watch_clear (&w);
+      return 3;
+    }
+    JsonNode *merged = merge_audio (w.audio);
+
+    if (json) {
+      gchar *text;
+
+      if (w.pads) {
+        text = json_to_string (w.pads, FALSE);
+        g_print ("{\"type\":\"pads\",\"pads\":[%s]}\n", text);
+        g_free (text);
+      }
+      if (merged) {
+        text = json_to_string (merged, FALSE);
+        g_print ("{\"type\":\"audio\",\"audio\":[%s]}\n", text);
+        g_free (text);
+      }
+    } else {
+      g_print ("%s, watched for %.1f s\n", str (p, "path"),
+          PAD_WATCH_MS / 1000.0);
+      index_build (&x, s);
+      print_pad (&x, p, "  ");
+      index_clear (&x);
+      if (w.pads && json_object_get_boolean_member_with_default (obj
+              (w.pads), "gone", FALSE)) {
+        g_print ("The pad is gone\n");
+        code = 3;
+      } else if (w.pads) {
+        print_flow (obj (w.pads));
+      } else {
+        g_print ("Flow: no values while watching\n");
+      }
+      print_audio (merged);
+    }
+    g_clear_pointer (&merged, json_node_unref);
+    pad_watch_clear (&w);
+    return code;
+  }
+}
+
 static void
 print_json (Status * s)
 {
@@ -1216,7 +1641,7 @@ typedef struct
 {
   gboolean graph, json, watch;
   gint log;
-  gchar *element, *url, *at;
+  gchar *element, *pad, *url, *at;
 } Options;
 
 /* One program or recording, as asked; the exit code it gives. */
@@ -1225,6 +1650,14 @@ show (Status * s, Options * o)
 {
   gint errors = count_errors (s);
 
+  if (o->pad) {
+    gint code;
+
+    if (!o->json)
+      print_header (s);
+    code = print_one_pad (s, o->pad, o->json);
+    return code ? code : errors ? 1 : 0;
+  }
   if (o->json) {
     print_json (s);
     return errors ? 1 : 0;
@@ -1333,6 +1766,9 @@ pm_status_main (gint argc, gchar ** argv)
     {"element", 0, 0, G_OPTION_ARG_STRING, &o.element,
           "One element (name or path): pads, queue, changed properties, "
           "problems, log", "NAME"},
+    {"pad", 0, 0, G_OPTION_ARG_STRING, &o.pad,
+          "One pad (element:pad or its path): its flow, and audio levels "
+          "(watched for 2.5 s)", "PAD"},
     {"log", 0, 0, G_OPTION_ARG_NONE, &log_flag,
         "The errors and warnings logged", NULL},
     {"last", 0, 0, G_OPTION_ARG_STRING, &log_text,
@@ -1367,7 +1803,8 @@ pm_status_main (gint argc, gchar ** argv)
   if (log_flag)
     o.log = log_text ? atoi (log_text) : 0;
   if (argc > 2 || (argc == 2 && (o.url || o.watch)) || (o.at && argc != 2) ||
-      (log_text && !log_flag) || (log_text && atoi (log_text) <= 0)) {
+      (log_text && !log_flag) || (log_text && atoi (log_text) <= 0) ||
+      (o.pad && (o.element || o.graph || log_flag || o.watch))) {
     g_printerr ("pipeline-monitor: see pipeline-monitor status --help\n");
     return 2;
   }
