@@ -22,15 +22,16 @@ const ROWS_MS = 250;
 const STALE_MS = 400;
 
 const TIPS = {
-  peak: "The highest sample over the last quarter second, in dBFS (0 = " +
-    "full scale). The real peak between samples can be a little higher.",
-  rms: "The average level (root mean square) over the last quarter " +
-    "second, in dBFS. Plain RMS: a full-scale sine reads -3.0 dBFS.",
-  clipped: "Samples at full scale since the pad was pinned: there, the " +
-    "signal was cut off.",
-  silent: "Channels below -60 dBFS for 2 s or more. Digital silence: every " +
-    "sample exactly 0, so nothing is producing sound.",
-  audio: "The format of the pad's caps.",
+  audio: "The format of the pad's caps: sample format, rate, channels, and " +
+    "how many of them are measured here.",
+  channel: "Peak / RMS, in dBFS. " +
+    "Peak: the highest sample over the last quarter second, in dBFS " +
+    "(0 = full scale); the real peak between samples can be a little " +
+    "higher. RMS: the average level (root mean square) over the same time; " +
+    "a full-scale sine reads -3.0 dBFS. Clipped: samples at full scale " +
+    "since the pad was pinned, where the signal was cut off. Silent: below " +
+    "-60 dBFS for 2 s or more; all 0: every sample exactly 0 (digital " +
+    "silence), so nothing is producing sound.",
 };
 
 function add(parent, tag, cls, text) {
@@ -53,10 +54,11 @@ function db(value) {
   return value === null ? "−∞" : value.toFixed(1).replace("-", "−");
 }
 
+// 12 s, or 5:05 past a minute.
 function seconds(ns) {
-  const s = ns / 1e9;
-  return s < 60 ? `${Math.floor(s)} s`
-    : `${Math.floor(s / 60)} min ${Math.floor(s % 60)} s`;
+  const s = Math.floor(ns / 1e9);
+  return s < 60 ? `${s} s`
+    : `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
 export class AudioMeter {
@@ -72,12 +74,8 @@ export class AudioMeter {
       add(ticks, "span", undefined, String(d).replace("-", "−"))
         .style.left = `${percent(d)}%`;
     this.rows = add(this.box, "dl", "pin-rows");
-    this.cells = {};
-    for (const key of ["audio", "peak", "rms", "clipped", "silent"]) {
-      tip(add(this.rows, "dt", undefined, key === "rms" ? "RMS" : key),
-        TIPS[key]);
-      this.cells[key] = add(this.rows, "dd");
-    }
+    tip(add(this.rows, "dt", undefined, "audio"), TIPS.audio);
+    this.format = add(this.rows, "dd");
     this.mini = null;
     this.channels = [];
     this.rowsAt = 0;
@@ -137,16 +135,18 @@ export class AudioMeter {
     this.info = entry;
     this.note.hidden = true;
     this.bars.hidden = this.scale.hidden = this.rows.hidden = false;
-    const more = entry.channels > entry.shown
-      ? ` (${entry.positions.slice(0, entry.shown).join(" ")} shown)` : "";
+    const more = entry.channels > entry.shown ? `, ${entry.shown} shown` : "";
     const layout = entry.interleaved || entry.channels === 1 ? ""
-      : ", planar";
-    this.cells.audio.textContent = `${entry.format}, ${entry.rate / 1000} ` +
-      `kHz, ${entry.channels} channel${entry.channels === 1 ? "" : "s"}` +
-      `${layout}${more}`;
+      : " · planar";
+    this.format.textContent = `${entry.format} · ${entry.rate / 1000} kHz` +
+      ` · ${entry.channels} ch${more}${layout}`;
     if (same)
       return false;
     this.bars.replaceChildren();
+    for (const ch of this.channels) {
+      ch.dt.remove();
+      ch.dd.remove();
+    }
     this.channels = [];
     if (this.mini)
       this.mini.replaceChildren();
@@ -159,7 +159,10 @@ export class AudioMeter {
       const hold = add(bar, "span", "meter-hold");
       const mini = this.mini ? add(this.mini, "span", "meter-bar") : null;
       const miniOff = mini ? add(mini, "span", "meter-off") : null;
-      this.channels.push({ row, bar, off, peak, hold, miniOff,
+      const dt = tip(add(this.rows, "dt", undefined, entry.positions[i]),
+        TIPS.channel);
+      const dd = add(this.rows, "dd");
+      this.channels.push({ row, bar, off, peak, hold, miniOff, dt, dd,
         label: entry.positions[i], held: null, heldAt: 0, clipAt: 0,
         rowPeak: null, rowPower: 0, rowWindows: 0 });
     }
@@ -232,28 +235,26 @@ export class AudioMeter {
     }
   }
 
+  // One row per channel: its level, or how long it has been silent, and
+  // what clipped.
   fillRows(levels) {
     if (selectingIn(this.rows))
       return;
-    const named = (f) => this.channels.map((ch, i) =>
-      `${ch.label} ${f(levels[i], ch)}`).join(" · ");
-    if (!levels) {
-      for (const key of ["peak", "rms"])
-        this.cells[key].textContent = "no samples";
-      return;
-    }
-    this.cells.peak.textContent = `${named((l, ch) => db(ch.rowPeak))} dBFS`;
-    this.cells.rms.textContent = `${named((l, ch) => db(ch.rowWindows &&
-      ch.rowPower > 0 ? 10 * Math.log10(ch.rowPower / ch.rowWindows) : null))}` +
-      " dBFS";
-    const clipped = levels.reduce((n, l) => n + l.clipped_total, 0);
-    this.cells.clipped.textContent = clipped === 0 ? "0"
-      : named((l) => l.clipped_total);
-    this.cells.clipped.classList.toggle("bad", clipped > 0);
-    const silent = this.channels.map((ch, i) => [ch.label, levels[i]])
-      .filter(([, l]) => l.silent_for !== null);
-    this.cells.silent.textContent = silent.length === 0 ? "—"
-      : silent.map(([label, l]) => `${label} ${seconds(l.silent_for)}` +
-        (l.digital_silence ? " (digital silence)" : "")).join(" · ");
+    this.channels.forEach((ch, i) => {
+      const l = levels?.[i];
+      let text;
+      if (!l)
+        text = "no samples";
+      else if (l.silent_for !== null)
+        text = `silent ${seconds(l.silent_for)}` +
+          (l.digital_silence ? ", all 0" : "");
+      else
+        text = `${db(ch.rowPeak)} / ${db(ch.rowWindows && ch.rowPower > 0
+          ? 10 * Math.log10(ch.rowPower / ch.rowWindows) : null)} dBFS`;
+      const clipped = l ? l.clipped_total : 0;
+      ch.dd.textContent = text;
+      if (clipped > 0)
+        add(ch.dd, "span", "bad", ` · ${clipped} clipped`);
+    });
   }
 }

@@ -10,7 +10,7 @@ import { isTimeProperty, propertyText, setPropertyUnit, showDetails,
   updateAppStream, updateAppLink }
   from "./panel.js";
 import { LogView } from "./log.js";
-import { Tooltip, initTips, tip } from "./tooltip.js";
+import { Tooltip, initTips, selectingIn, tip } from "./tooltip.js";
 import { linkCaps } from "./caps.js";
 import { ElementPins, Pins } from "./pins.js";
 import { TIME_UNITS, formatBytes, formatSpan } from "./units.js";
@@ -663,6 +663,12 @@ function buildIndex(graph) {
   };
 }
 
+// Writes text only when it changed: rewriting clears a selection in it.
+function setText(node, text) {
+  if (node.textContent !== text)
+    node.textContent = text;
+}
+
 function updateHeader(pipeline) {
   const select = $("pipeline-select");
   const { pipelines } = state.graph;
@@ -685,15 +691,15 @@ function updateHeader(pipeline) {
   if (pipelines.length >= 2 && pipeline &&
       select.value !== String(pipeline.id))
     select.value = String(pipeline.id);
-  $("pipeline-name").textContent = pipeline ? pipeline.name : "";
+  setText($("pipeline-name"), pipeline ? pipeline.name : "");
   // Without a connection it is the last state known, not the current one.
-  $("pipeline-state").textContent = pipeline
+  setText($("pipeline-state"), pipeline
     ? `${pipeline.state}${state.connected || state.viewing ? ""
-      : " (last known)"}` : "";
+      : " (last known)"}` : "");
   $("pipeline-state").className = `state ${pipeline ? pipeline.state : ""}` +
     (state.connected ? "" : " stale");
-  $("element-count").textContent = pipeline
-    ? `${countElements(pipeline)} elements` : "";
+  setText($("element-count"), pipeline
+    ? `${countElements(pipeline)} elements` : "");
   showTimes(pipeline);
   // On the site, with nothing open: the welcome instead of the empty text.
   $("welcome").hidden = siteList === null || Boolean(state.viewing);
@@ -709,7 +715,8 @@ function showProcess() {
   const process = state.performance?.process;
   const node = $("process-perf");
   node.hidden = !process || Boolean(state.viewing);
-  if (node.hidden)
+  // Selected text there stays as it is, to be copied.
+  if (node.hidden || selectingIn(document.querySelector("header")))
     return;
   const cpu = process.cpu === null ? "" : `CPU ${Math.round(process.cpu *
     100)} % · `;
@@ -724,7 +731,7 @@ function showTimes(pipeline) {
   const times = pipeline && state.pipelineTimes.get(pipeline.id);
   const node = $("pipeline-times");
   node.hidden = !times;
-  if (times) {
+  if (times && !selectingIn(document.querySelector("header"))) {
     const { text, title } = pipelineTimes(times, pins.unit);
     node.textContent = text;
     tip(node, title);

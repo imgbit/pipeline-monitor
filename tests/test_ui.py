@@ -1460,15 +1460,13 @@ def check_audio_meters(browser, serve):
                             "=== 2"), "no meters for stereo"
         assert browser.eval(f"[...{stereo}.querySelectorAll('.meter-label')]"
                             ".map(l => l.textContent).join()") == "FL,FR"
-        assert browser.wait(f"/^FL −6\\.0 · FR −6\\.0 dBFS$/.test("
-                            f"{audio_row('au-stereo:src', 'peak')})"), \
-            f"peak: {browser.eval(audio_row('au-stereo:src', 'peak'))}"
-        assert browser.wait(f"/^FL −9\\.0 · FR −9\\.0 dBFS$/.test("
-                            f"{audio_row('au-stereo:src', 'RMS')})"), \
-            f"RMS: {browser.eval(audio_row('au-stereo:src', 'RMS'))}"
+        assert browser.wait(f"/^−6\\.0 \\/ −9\\.0 dBFS$/.test("
+                            f"{audio_row('au-stereo:src', 'FL')})"), \
+            f"FL: {browser.eval(audio_row('au-stereo:src', 'FL'))}"
+        assert browser.eval(audio_row("au-stereo:src", "FR")) == \
+            "−6.0 / −9.0 dBFS"
         assert browser.eval(audio_row("au-stereo:src", "audio")) == \
-            "S16LE, 44.1 kHz, 2 channels"
-        assert browser.eval(audio_row("au-stereo:src", "clipped")) == "0"
+            "S16LE · 44.1 kHz · 2 ch"
         # -6 dBFS on a -60..0 scale: the bar ends at 90 %.
         left = browser.eval(f"parseFloat({stereo}.querySelector("
                             "'.meter-off').style.left)")
@@ -1477,14 +1475,13 @@ def check_audio_meters(browser, serve):
                             ".every(d => d.dataset.tip)"), "rows without tips"
 
         pin("au-surround")
-        assert browser.wait(f"{json.dumps('F32LE, 44.1 kHz, 6 channels (FL FR shown)')}"
+        assert browser.wait(f"{json.dumps('F32LE · 44.1 kHz · 6 ch, 2 shown')}"
                             f" === {audio_row('au-surround:src', 'audio')}"), \
             browser.eval(audio_row("au-surround:src", "audio"))
-        assert browser.wait(f"/^FL [2-9] s \\(digital silence\\) · FR [2-9] s"
-                            f" \\(digital silence\\)$/.test("
-                            f"{audio_row('au-surround:src', 'silent')})",
-                            timeout=6), \
-            browser.eval(audio_row("au-surround:src", "silent"))
+        for channel in ("FL", "FR"):
+            row = audio_row("au-surround:src", channel)
+            assert browser.wait(f"/^silent [2-9] s, all 0$/.test({row})",
+                                timeout=6), browser.eval(row)
 
         pin("au-opus")
         opus = card("au-opus:src")
@@ -4277,13 +4274,30 @@ def check_pins(browser):
     assert_no_value_titles(browser)
     browser.call("Input.dispatchMouseEvent", type="mouseMoved", x=2, y=2)
 
+    times_tip = "document.getElementById('pipeline-times').dataset.tip"
+    assert browser.wait(f"/running time: [0-9]+:[0-9]{{2}}:[0-9]{{2}}\\./"
+                        f".test({times_tip})"), browser.eval(times_tip)
     browser.click("#time-unit")
     assert browser.wait(f"{pin_row('duration')}?.endsWith(' ns')"), \
         "time unit did not change"
+    # The header's explanation follows the unit too.
+    assert browser.wait(f"/running time: [0-9]+ ns/.test({times_tip})"), \
+        "the header's times ignore the unit: " + browser.eval(times_tip)
     for _ in range(3):
         browser.click("#time-unit")
     assert browser.wait(f"{pin_row('duration')} === '33.3 ms'"), \
         "time unit did not return to auto"
+
+    # Text selected in the header stays selected while it updates.
+    for node in ("process-perf", "pipeline-times"):
+        browser.eval(f"(d => {{ const r = document.createRange(); "
+                     f"r.selectNodeContents(d); const s = getSelection(); "
+                     f"s.removeAllRanges(); s.addRange(r); }})("
+                     f"document.getElementById('{node}'))")
+        time.sleep(1.5)
+        assert browser.eval("getSelection().toString().length > 0"), \
+            f"an update cleared the selection in {node}"
+    browser.eval("getSelection().removeAllRanges()")
 
     browser.hover(f"{card}.querySelector('.pin-head')")
     assert browser.wait("!!document.querySelector('#graph .pad.highlight')"), \

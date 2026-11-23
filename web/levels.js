@@ -3,7 +3,7 @@
 
 // Queue levels and pipeline times from the "levels" message.
 
-import { formatBytes, formatSpan } from "./units.js";
+import { formatBytes, formatSpan, formatStamp } from "./units.js";
 
 const LIMITS = [["buffers", "buffers"], ["bytes", "bytes"], ["time", "time"]];
 
@@ -257,9 +257,9 @@ export function pipelineTimes(p, unit) {
     clock,
     `clock type: ${p.clock_type || "—"}`,
     `clock provider: ${p.clock_provider || "system"}`,
-    `clock time: ${p.clock_time ?? "—"} ns`,
-    `base time: ${p.base_time ?? "—"} ns`,
-    `running time: ${p.running_time ?? "—"} ns`,
+    `clock time: ${formatStamp(p.clock_time, unit)}`,
+    `base time: ${formatStamp(p.base_time, unit)}`,
+    `running time: ${formatStamp(p.running_time, unit)}`,
     p.latency ? `latency: min ${formatSpan(p.latency.min, unit)}, max ` +
       `${p.latency.max === null ? "none" : formatSpan(p.latency.max, unit)}`
       : "latency: not answered",

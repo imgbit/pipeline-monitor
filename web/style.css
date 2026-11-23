@@ -1031,7 +1031,7 @@ body.viewing-dot #process-perf { display: none; }
 .meter-scale::before { content: ""; }
 .meter-ticks { position: relative; height: 12px; margin: 0 6px 0 4px; }
 .meter-ticks span { position: absolute; transform: translateX(-50%); font-variant-numeric: tabular-nums; }
-.pin-audio dd.bad { color: var(--error); font-weight: 600; }
+.pin-audio .bad { color: var(--error); font-weight: 600; }
 .meter-mini { display: inline-flex; flex-direction: column; gap: 2px; width: 40px; flex: none; }
 .meter-mini .meter-bar { height: 4px; border-radius: 1px; }
 .pin-card.folded .pin-audio { display: none; }
