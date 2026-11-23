@@ -41,7 +41,8 @@ jobs:
           for try in 1 2; do
             apt update && apt install -y --no-install-recommends \
               meson ninja-build pkg-config libglib2.0-dev-bin \
-              libgstreamer1.0-dev gstreamer1.0-plugins-base \
+              libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+              gstreamer1.0-plugins-base \
               gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
               libsoup-3.0-dev libjson-glib-dev python3 python3-markdown clang \
               graphviz &&
@@ -117,6 +118,7 @@ jobs:
             apt update && apt install -y --no-install-recommends \
               git ca-certificates meson ninja-build pkg-config gcc \
               libglib2.0-dev-bin libgstreamer1.0-dev \
+              libgstreamer-plugins-base1.0-dev \
               gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
               gstreamer1.0-plugins-bad libsoup-3.0-dev libjson-glib-dev \
               python3 && exit 0

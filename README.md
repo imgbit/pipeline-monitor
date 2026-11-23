@@ -114,6 +114,7 @@ On Ubuntu 24.04 or Debian 12:
 
 ```sh
 sudo apt install meson ninja-build pkg-config libgstreamer1.0-dev \
+  libgstreamer-plugins-base1.0-dev \
   libsoup-3.0-dev libjson-glib-dev gstreamer1.0-plugins-base \
   gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
 ```

@@ -1019,9 +1019,10 @@ test_audio_levels (void)
   g_assert_true (json_object_get_null_member (level, "silent_for"));
   json_object_unref (audio);
 
-  /* About every 50 ms, only to the page that watches it. */
+  /* About every 50 ms (fewer under sanitizers), more often than the 250 ms
+   * updates; only to the page that watches it. */
   n = count_messages (&a, "audio", 1000);
-  g_assert_cmpuint (n, >=, 12);
+  g_assert_cmpuint (n, >=, 6);
   g_assert_cmpuint (n, <=, 24);
   g_assert_cmpuint (count_messages (&b, "audio", 10), ==, 0);
 

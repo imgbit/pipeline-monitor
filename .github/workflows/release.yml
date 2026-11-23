@@ -43,6 +43,7 @@ jobs:
             apt update && apt install -y --no-install-recommends \
               git ca-certificates meson ninja-build pkg-config gcc \
               dpkg-dev libglib2.0-dev-bin libgstreamer1.0-dev \
+              libgstreamer-plugins-base1.0-dev \
               libsoup-3.0-dev libjson-glib-dev python3 && exit 0
             echo "apt-get failed or hung (try $try)"
           done
