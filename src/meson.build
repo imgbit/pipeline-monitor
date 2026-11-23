@@ -31,7 +31,7 @@ gstpipelinemonitor = shared_module('gstpipelinemonitor',
   plugin_sources, ui_resources,
   c_args : plugin_c_args,
   include_directories : include_directories('core', 'server'),
-  dependencies : [gst_dep, gst_audio_dep, gst_video_dep, soup_dep, json_glib_dep],
+  dependencies : [gst_dep, gst_audio_dep, gst_video_dep, m_dep, soup_dep, json_glib_dep],
   install : true,
   install_dir : plugins_install_dir)
 
@@ -46,5 +46,5 @@ pipeline_monitor_tool = executable('pipeline-monitor',
   ui_resources,
   c_args : plugin_c_args,
   include_directories : include_directories('core', 'server'),
-  dependencies : [gst_dep, gst_audio_dep, gst_video_dep, soup_dep, json_glib_dep],
+  dependencies : [gst_dep, gst_audio_dep, gst_video_dep, m_dep, soup_dep, json_glib_dep],
   install : true)

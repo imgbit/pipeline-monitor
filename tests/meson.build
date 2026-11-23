@@ -39,21 +39,21 @@ test_core = executable('test_core',
   '../src/core/pmfindings.c',
   c_args : core_args,
   include_directories : include_directories('../src/core'),
-  dependencies : [gst_dep, gst_audio_dep, gst_video_dep, json_glib_dep])
+  dependencies : [gst_dep, gst_audio_dep, gst_video_dep, m_dep, json_glib_dep])
 
 test('core', test_core, timeout : 60)
 
 test_audio = executable('test_audio',
   'test_audio.c', '../src/core/pmaudio.c',
   include_directories : include_directories('../src/core'),
-  dependencies : [gst_dep, gst_audio_dep])
+  dependencies : [gst_dep, gst_audio_dep, m_dep])
 
 test('audio', test_audio, timeout : 60)
 
 test_video = executable('test_video',
   'test_video.c', '../src/core/pmvideo.c',
   include_directories : include_directories('../src/core'),
-  dependencies : [gst_dep, gst_video_dep])
+  dependencies : [gst_dep, gst_video_dep, m_dep])
 
 test('video', test_video, timeout : 120)
 
@@ -68,7 +68,7 @@ test_server = executable('test_server',
   c_args : ['-DGST_USE_UNSTABLE_API',
     '-DVERSION="@0@"'.format(meson.project_version())],
   include_directories : include_directories('../src/core', '../src/server'),
-  dependencies : [gst_dep, gst_audio_dep, gst_video_dep, soup_dep, json_glib_dep])
+  dependencies : [gst_dep, gst_audio_dep, gst_video_dep, m_dep, soup_dep, json_glib_dep])
 
 test('server', test_server,
   env : test_env,
@@ -114,7 +114,7 @@ fuzz_command = executable('fuzz_command',
     '-DVERSION="@0@"'.format(meson.project_version())] + fuzz_args,
   link_args : fuzz_args,
   include_directories : include_directories('../src/core', '../src/server'),
-  dependencies : [gst_dep, gst_audio_dep, gst_video_dep, soup_dep, json_glib_dep])
+  dependencies : [gst_dep, gst_audio_dep, gst_video_dep, m_dep, soup_dep, json_glib_dep])
 
 fuzz_recording = executable('fuzz_recording',
   'fuzz/fuzz_recording.c', fuzz_main,

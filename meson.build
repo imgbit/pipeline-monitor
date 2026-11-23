@@ -12,6 +12,8 @@ gst_req = '>= 1.22'
 gst_dep = dependency('gstreamer-1.0', version : gst_req)
 gst_audio_dep = dependency('gstreamer-audio-1.0', version : gst_req)
 gst_video_dep = dependency('gstreamer-video-1.0', version : gst_req)
+# log10, sqrt: a separate library on Linux.
+m_dep = cc.find_library('m', required : false)
 soup_dep = dependency('libsoup-3.0', version : '>= 3.0')
 json_glib_dep = dependency('json-glib-1.0')
 
