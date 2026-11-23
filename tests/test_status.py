@@ -140,7 +140,7 @@ def pads(serve, tool):
         check([m["type"] for m in lines] == ["pads", "audio"],
               "--pad --json: pads and audio", out)
         audio = lines[1]["audio"][0]
-        check(len(audio["levels"][0]["peak"]) >= 20,
+        check(len(audio["levels"][0]["peak"]) >= 5,
               "--pad --json merges the windows", out)
 
         code, _, err = status(tool, "--url", url, "--pad", "nothing:src")

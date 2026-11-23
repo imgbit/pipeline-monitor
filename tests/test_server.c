@@ -840,6 +840,33 @@ test_monitor (void)
 static guint count_messages (WsClient * client, const gchar * type, gint ms);
 static gint64 element_id (const gchar * name);
 
+/* Runs the main loop for ms, then counts the messages of two types that
+ * came in that time, and drops all of them. */
+static void
+count_pair (WsClient * client, const gchar * a, const gchar * b, gint ms,
+    guint * na, guint * nb)
+{
+  gchar *pa = g_strdup_printf ("{\"type\":\"%s\",", a);
+  gchar *pb = g_strdup_printf ("{\"type\":\"%s\",", b);
+  gint64 end;
+
+  g_queue_clear_full (&client->messages, g_free);
+  end = g_get_monotonic_time () + ms * G_TIME_SPAN_MILLISECOND;
+  while (g_get_monotonic_time () < end)
+    if (!g_main_context_iteration (NULL, FALSE))
+      g_usleep (1000);
+  *na = *nb = 0;
+  while (!g_queue_is_empty (&client->messages)) {
+    gchar *message = g_queue_pop_head (&client->messages);
+
+    *na += g_str_has_prefix (message, pa);
+    *nb += g_str_has_prefix (message, pb);
+    g_free (message);
+  }
+  g_free (pa);
+  g_free (pb);
+}
+
 /* The audio levels of a watched pad, from its next "audio" message. */
 static JsonObject *
 next_audio (WsClient * client, gint64 pad)
@@ -980,7 +1007,7 @@ test_audio_levels (void)
   WsClient a, b;
   JsonObject *audio, *level;
   JsonArray *positions, *levels;
-  guint n;
+  guint n, pads;
 
   ws_connect (&a, session, url, NULL);
   ws_connect (&b, session, url, NULL);
@@ -1019,11 +1046,12 @@ test_audio_levels (void)
   g_assert_true (json_object_get_null_member (level, "silent_for"));
   json_object_unref (audio);
 
-  /* About every 50 ms (fewer under sanitizers), more often than the 250 ms
-   * updates; only to the page that watches it. */
-  n = count_messages (&a, "audio", 1000);
-  g_assert_cmpuint (n, >=, 6);
-  g_assert_cmpuint (n, <=, 24);
+  /* About every 50 ms: more often than the 250 ms "pads", counted over the
+   * same time (a slow machine slows both); only to the page that watches
+   * it. */
+  count_pair (&a, "audio", "pads", 2000, &n, &pads);
+  g_assert_cmpuint (n, >, pads);
+  g_assert_cmpuint (n, <=, 48);
   g_assert_cmpuint (count_messages (&b, "audio", 10), ==, 0);
 
   /* A second page is told the format too. */
