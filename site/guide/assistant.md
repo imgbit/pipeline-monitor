@@ -38,8 +38,10 @@ Hints explain what an observation means; none is a guess.
   queue, the latency it reports, the properties changed from their
   defaults, its problems and log entries.
 - `--pad ELEMENT:PAD`: one pad, watched for 2.5 s: buffers per second,
-  bytes, gaps, the last buffer, and for raw audio the peak and RMS level
-  of each channel in dBFS, clipped samples and silence.
+  bytes, gaps, the last buffer; for raw audio the peak and RMS level of
+  each channel in dBFS, clipped samples and silence; for raw video the
+  picture's brightness, whether it is black, and how long it has not
+  changed.
 - `--graph`: every element, link and negotiated format.
 - `--log` (`--last N`): errors and warnings with GStreamer's details.
 - `--watch`: again every second.

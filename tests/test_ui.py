@@ -1488,11 +1488,11 @@ def check_audio_meters(browser, serve):
 
         pin("au-opus")
         opus = card("au-opus:src")
-        assert browser.wait(f"{opus}.querySelector('.pin-audio-note')"
-                            ".textContent === 'compressed (audio/x-opus): no "
-                            "levels without decoding'"), "no reason for opus"
-        assert browser.eval(f"{opus}.querySelector('.pin-audio .pin-rows')"
-                            ".hidden"), "meter rows shown for opus"
+        # Compressed audio: no meter and nothing about it.
+        assert browser.wait(f"!{opus}.querySelector(':scope > .pin-rows')"
+                            ".hidden"), "no values for opus"
+        assert browser.eval(f"{opus}.querySelector('.pin-audio').hidden"), \
+            "a meter block for opus"
         assert browser.wait(f"!{opus}.querySelector(':scope > .pin-rows')"
                             ".hidden"), "pad rows hidden for opus"
 
@@ -1500,6 +1500,107 @@ def check_audio_meters(browser, serve):
         assert browser.wait(f"!{stereo}.querySelector('.meter-mini').hidden"
                             f" && {stereo}.querySelector('.pin-audio')"
                             ".offsetParent === null"), "no small bars folded"
+        assert_no_value_titles(browser)
+        assert not browser.errors, browser.errors
+    finally:
+        server.terminate()
+        server.wait()
+
+
+# Pictures in pinned pads: a white picture, a still black one, and
+# compressed video with its reason.
+PICTURE_PIPELINE = (
+    "videotestsrc is-live=true pattern=white ! video/x-raw,format=I420,"
+    "width=320,height=240,framerate=30/1 ! identity name=pic-white ! "
+    "fakesink sync=true "
+    "videotestsrc is-live=true pattern=black ! video/x-raw,format=NV12,"
+    "width=640,height=360,framerate=30/1 ! identity name=pic-black ! "
+    "fakesink sync=true "
+    "videotestsrc is-live=true ! video/x-raw,width=320,height=240 ! "
+    "jpegenc ! identity name=pic-jpeg ! fakesink sync=true")
+
+
+def check_pictures(browser, serve):
+    server, url = start_server(serve, PICTURE_PIPELINE)
+
+    def card(name):
+        return ("[...document.querySelectorAll('.pin-card')].find(c => "
+                "c.querySelector('.pin-title').textContent === "
+                f"{json.dumps(name)})")
+
+    def row(name, label):
+        return (f"[...{card(name)}.querySelectorAll('.pin-video dt')]"
+                f".find(d => d.textContent === {json.dumps(label)})"
+                "?.nextElementSibling.textContent")
+
+    def pin(element):
+        browser.eval("document.querySelectorAll('.pin-card:not(.folded) "
+                     ".pin-fold').forEach(b => b.click())")
+        port = browser.eval(pad_id_expression(element, "src"))
+        cards = "document.querySelectorAll('.pin-card').length"
+        n = browser.eval(cards)
+        assert browser.click_until(f"#graph [data-port=\"p{port}\"]",
+                                   f"{cards} === {n + 1}"), \
+            f"click did not pin {element}"
+
+    try:
+        browser.call("Page.navigate", url=url)
+        assert browser.wait(f"!!{element_selector('pic-jpeg')}", timeout=10)
+        pin("pic-white")
+        white = card("pic-white:src")
+        canvas = f"{white}.querySelector('.pin-picture')"
+        assert browser.wait(f"!{canvas}.hidden && {canvas}.width === 160 "
+                            f"&& {canvas}.height === 120"), "no picture"
+        pixel = browser.eval(f"[...{canvas}.getContext('2d').getImageData("
+                             "80, 60, 1, 1).data].join()")
+        assert all(int(v) > 240 for v in pixel.split(",")), pixel
+        assert browser.eval(row("pic-white:src", "picture")) == \
+            "320×240 I420, 1 per second"
+        # Limited-range white is RGB 254: 99 %.
+        assert re.fullmatch(r"avg (99|100) % · max (99|100) %", browser.eval(
+            row("pic-white:src", "brightness"))), \
+            browser.eval(row("pic-white:src", "brightness"))
+        assert browser.eval(f"[...{white}.querySelectorAll('.pin-video dt')]"
+                            ".every(d => d.dataset.tip)"), "rows without tips"
+
+        pin("pic-black")
+        brightness = row("pic-black:src", "brightness")
+        unchanged = row("pic-black:src", "unchanged")
+        assert browser.wait(f"/ · black$/.test({brightness})"), \
+            browser.eval(brightness)
+        assert browser.wait(f"/^[2-9] s$/.test({unchanged})", timeout=6), \
+            browser.eval(unchanged)
+        assert browser.eval(f"{card('pic-black:src')}.querySelector("
+                            "'.pin-picture').height") == 90
+
+        pin("pic-jpeg")
+        # Compressed video: no picture and nothing about it.
+        jpeg = card("pic-jpeg:src")
+        assert browser.wait(f"!{jpeg}.querySelector(':scope > .pin-rows')"
+                            ".hidden"), "no values for JPEG"
+        assert browser.eval(f"{jpeg}.querySelector('.pin-video').hidden"), \
+            "a picture block for JPEG"
+
+        # A drag the browser cancels (as touch scrolling or its own drag
+        # can) ends there: later moves do not move the card.
+        moved = browser.eval(f"""(h => {{
+          h.setPointerCapture = () => {{}};
+          const ev = (type, x, y, buttons) => h.dispatchEvent(new
+            PointerEvent(type, {{bubbles: true, pointerId: 7,
+              pointerType: 'touch', clientX: x, clientY: y, buttons,
+              button: 0}}));
+          const r = h.getBoundingClientRect();
+          const x = r.x + 20, y = r.y + r.height / 2;
+          ev('pointerdown', x, y, 1);
+          for (let i = 1; i < 6; i++)
+            ev('pointermove', x + 30 * i, y + 10 * i, 1);
+          ev('pointercancel', x + 150, y + 50, 0);
+          const left = h.parentElement.getBoundingClientRect().x;
+          for (let i = 6; i < 12; i++)
+            ev('pointermove', x + 30 * i, y + 10 * i, 1);
+          return h.parentElement.getBoundingClientRect().x - left;
+        }})({white}.querySelector('.pin-head'))""")
+        assert moved == 0, f"the card kept following after a cancel ({moved})"
         assert_no_value_titles(browser)
         assert not browser.errors, browser.errors
     finally:
@@ -3684,7 +3785,7 @@ def check_site(browser, serve):
         browser.eval(seek.format(0))
         pad_card = ("[...document.querySelectorAll('.pin-card')].find(c => "
                     "c.querySelector('.pin-title').textContent.includes(':'))")
-        assert browser.wait(f"{pad_card}.querySelector('dl').hidden && "
+        assert browser.wait(f"{pad_card}.querySelector(':scope > .pin-rows').hidden && "
                             f"{pad_card}.textContent.includes('waiting')"), \
             "a pad card shows values before the first were recorded"
         assert browser.eval("!document.querySelector('.pin-card .pin-from')"
@@ -4160,7 +4261,7 @@ def check_pins(browser):
     assert browser.wait(f"{pin_row('duration')} === '33.3 ms'"), \
         "time unit did not return to auto"
 
-    browser.hover(f"{card}.querySelector(':scope > .pin-rows')")
+    browser.hover(f"{card}.querySelector('.pin-head')")
     assert browser.wait("!!document.querySelector('#graph .pad.highlight')"), \
         "hovering a card did not highlight its pad"
 
@@ -4340,6 +4441,7 @@ def main():
             check_phone(browser, serve)
             check_dot_reading(browser, serve)
             check_audio_meters(browser, serve)
+            check_pictures(browser, serve)
     finally:
         if browser:
             browser.close()

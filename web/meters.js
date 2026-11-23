@@ -13,16 +13,19 @@ const YELLOW = -18;
 const RED = -6;
 const HOLD_MS = 1500;
 const FALL_DB_PER_S = 20;
+// Bars rise at once and fall like a peak meter (IEC 60268-10: 20 dB in
+// 1.7 s), so short sounds stay readable. The rows show the true values.
+const BAR_FALL_DB_PER_S = 20 / 1.7;
 // Rows change at most this often, to stay readable; bars every message.
 const ROWS_MS = 250;
 // No new levels for this long: the bars go empty.
 const STALE_MS = 400;
 
 const TIPS = {
-  peak: "The highest sample in the last 50 ms, in dBFS (0 = full scale). " +
-    "The real peak between samples can be a little higher.",
-  rms: "The average level (root mean square) over the last 50 ms, in " +
-    "dBFS. Plain RMS: a full-scale sine reads -3.0 dBFS.",
+  peak: "The highest sample over the last quarter second, in dBFS (0 = " +
+    "full scale). The real peak between samples can be a little higher.",
+  rms: "The average level (root mean square) over the last quarter " +
+    "second, in dBFS. Plain RMS: a full-scale sine reads -3.0 dBFS.",
   clipped: "Samples at full scale since the pad was pinned: there, the " +
     "signal was cut off.",
   silent: "Channels below -60 dBFS for 2 s or more. Digital silence: every " +
@@ -157,7 +160,8 @@ export class AudioMeter {
       const mini = this.mini ? add(this.mini, "span", "meter-bar") : null;
       const miniOff = mini ? add(mini, "span", "meter-off") : null;
       this.channels.push({ row, bar, off, peak, hold, miniOff,
-        label: entry.positions[i], held: null, heldAt: 0, clipAt: 0 });
+        label: entry.positions[i], held: null, heldAt: 0, clipAt: 0,
+        rowPeak: null, rowPower: 0, rowWindows: 0 });
     }
     return true;
   }
@@ -182,34 +186,64 @@ export class AudioMeter {
       }
       if (l && l.clipped > 0)
         ch.clipAt = now;
+      const fallen = (shown, value) => {
+        const lower = shown === undefined || shown === null ? null
+          : shown - BAR_FALL_DB_PER_S * (now - ch.shownAt) / 1000;
+        if (value === null)
+          return lower !== null && lower > FLOOR ? lower : null;
+        return lower !== null && lower > value ? lower : value;
+      };
+      const barPeak = levels ? fallen(ch.barPeak, peak) : null;
+      const barRms = levels ? Math.min(fallen(ch.barRms, rms) ?? FLOOR,
+        barPeak ?? FLOOR) : null;
+      ch.barPeak = barPeak;
+      ch.barRms = barRms;
+      ch.shownAt = now;
       // Solid to the RMS, paler from there to the peak.
-      ch.off.style.left = `${percent(peak)}%`;
-      ch.peak.style.left = `${percent(rms)}%`;
-      ch.peak.style.width = `${percent(peak) - percent(rms)}%`;
+      ch.off.style.left = `${percent(barPeak)}%`;
+      ch.peak.style.left = `${percent(barRms)}%`;
+      ch.peak.style.width = `${percent(barPeak) - percent(barRms)}%`;
       ch.hold.hidden = ch.held === null;
       ch.hold.style.left = `calc(${percent(ch.held)}% - 1px)`;
       ch.bar.classList.toggle("clipping", now - ch.clipAt < 1000);
       if (ch.miniOff)
-        ch.miniOff.style.left = `${percent(peak)}%`;
+        ch.miniOff.style.left = `${percent(barPeak)}%`;
       ch.level = l;
+      // For the rows: the highest peak and the mean power since they were
+      // last filled.
+      if (l) {
+        for (const v of l.peak)
+          if (v !== null && (ch.rowPeak === null || v > ch.rowPeak))
+            ch.rowPeak = v;
+        for (const v of l.rms) {
+          ch.rowPower += v === null ? 0 : 10 ** (v / 10);
+          ch.rowWindows++;
+        }
+      }
     });
     if (now - this.rowsAt >= ROWS_MS || !levels) {
       this.rowsAt = now;
       this.fillRows(levels);
+      for (const ch of this.channels) {
+        ch.rowPeak = null;
+        ch.rowPower = 0;
+        ch.rowWindows = 0;
+      }
     }
   }
 
   fillRows(levels) {
     const named = (f) => this.channels.map((ch, i) =>
-      `${ch.label} ${f(levels[i])}`).join(" · ");
-    const last = (list) => list[list.length - 1];
+      `${ch.label} ${f(levels[i], ch)}`).join(" · ");
     if (!levels) {
       for (const key of ["peak", "rms"])
         this.cells[key].textContent = "no samples";
       return;
     }
-    this.cells.peak.textContent = `${named((l) => db(last(l.peak)))} dBFS`;
-    this.cells.rms.textContent = `${named((l) => db(last(l.rms)))} dBFS`;
+    this.cells.peak.textContent = `${named((l, ch) => db(ch.rowPeak))} dBFS`;
+    this.cells.rms.textContent = `${named((l, ch) => db(ch.rowWindows &&
+      ch.rowPower > 0 ? 10 * Math.log10(ch.rowPower / ch.rowWindows) : null))}` +
+      " dBFS";
     const clipped = levels.reduce((n, l) => n + l.clipped_total, 0);
     this.cells.clipped.textContent = clipped === 0 ? "0"
       : named((l) => l.clipped_total);

@@ -6,6 +6,7 @@
 // back after a reload or when the pad is created again.
 
 import { AudioMeter } from "./meters.js";
+import { PictureView } from "./picture.js";
 import { tip } from "./tooltip.js";
 import { formatBytes, formatSpan, formatStamp, rawNs } from "./units.js";
 
@@ -210,12 +211,26 @@ export class Pins {
     for (const pin of this.pins.values()) {
       pin.sent = false;
       pin.audio?.clear();
+      pin.picture?.clear();
     }
   }
 
   buildMedia(pin, head) {
     pin.audio = new AudioMeter(pin.card, head);
     pin.audio.attachMini(pin.summary);
+    pin.picture = new PictureView(pin.card, head);
+  }
+
+  // A "video" message.
+  applyVideo(message) {
+    let resized = false;
+    for (const entry of message.video) {
+      const pin = [...this.pins.values()].find((p) => p.id === entry.pad);
+      if (pin?.picture)
+        resized = pin.picture.apply(entry) || resized;
+    }
+    if (resized)
+      this.place();
   }
 
   // An "audio" message.
@@ -241,10 +256,12 @@ export class Pins {
       }
       pin.video = (entry.caps || "").startsWith("video/");
       pin.rawAudio = (entry.caps || "").startsWith("audio/x-raw");
+      pin.rawVideo = (entry.caps || "").startsWith("video/x-raw");
       if (entry.id !== pin.id) {
         if (pin.sent && pin.id !== null)
           this.unwatch(pin);
         pin.audio?.clear();
+        pin.picture?.clear();
         pin.id = entry.id;
         pin.sent = false;
       }
@@ -260,6 +277,7 @@ export class Pins {
     pin.sent = false;
     pin.id = null;
     pin.audio?.clear();
+    pin.picture?.clear();
     this.fill(pin);
   }
 
@@ -285,6 +303,10 @@ export class Pins {
         pin.audio.showReason("Audio levels are not kept in recordings.");
       else
         pin.audio?.clear();
+      if (pin.picture && pin.rawVideo && pin.stats)
+        pin.picture.showReason("Pictures are not kept in recordings.");
+      else
+        pin.picture?.clear();
       this.fill(pin);
     }
     this.place();
@@ -405,9 +427,22 @@ export class Pins {
         dx: pin.dx, dy: pin.dy };
       head.setPointerCapture(e.pointerId);
     });
+    // A drag whose release never came (the browser cancelled it, or the
+    // button was let go elsewhere) ends here, not on the next click.
+    const end = () => {
+      if (drag?.moved)
+        this.save();
+      drag = null;
+    };
+    head.addEventListener("pointercancel", end);
+    head.addEventListener("lostpointercapture", end);
     head.addEventListener("pointermove", (e) => {
       if (!drag)
         return;
+      if (e.pointerType === "mouse" && e.buttons === 0) {
+        end();
+        return;
+      }
       const mx = e.clientX - drag.x;
       const my = e.clientY - drag.y;
       if (!drag.moved && Math.hypot(mx, my) < 4)
@@ -430,11 +465,11 @@ export class Pins {
       this.place();
     });
     head.addEventListener("pointerup", () => {
-      if (drag && !drag.moved && pin.id !== null)
+      if (drag && !drag.moved && pin.id !== null) {
+        drag = null;
         this.handlers.reveal(this.target(pin));
-      else if (drag)
-        this.save();
-      drag = null;
+      }
+      end();
     });
   }
 

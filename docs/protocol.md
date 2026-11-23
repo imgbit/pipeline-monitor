@@ -308,9 +308,7 @@ the last 50 ms; only pads with something new are listed. Not recorded.
    "levels":[{"peak":[-6.02],"rms":[-9.03],"clipped":0,"clipped_total":0,
      "silent_for":null,"digital_silence":false},
     {"peak":[-12.04],"rms":[-15.05],"clipped":0,"clipped_total":0,
-     "silent_for":null,"digital_silence":false}]},
-  {"pad":16,"pad_path":"pipeline0/avenc_aac0:src",
-   "unavailable":"compressed (audio/mpeg): no levels without decoding"}]}
+     "silent_for":null,"digital_silence":false}]}]}
 ```
 
 - `levels`: one entry for each of the first `shown` channels; `peak` and
@@ -326,8 +324,9 @@ the last 50 ms; only pads with something new are listed. Not recorded.
 - `silent_for`: nanoseconds the channel has been below -60 dBFS, once that
   is 2 s or more, else `null`; `digital_silence` when every sample in that
   time was exactly 0.
-- `unavailable`: why a pad of audio has no levels (compressed, not in
-  system memory), sent with the format rules above.
+- `unavailable`: why a pad of raw audio has no levels (its samples are
+  not in system memory), sent with the format rules above. Compressed
+  audio is not listed.
 
 ### video
 
@@ -340,9 +339,7 @@ most one a second, sent within 50 ms of being taken. Not recorded.
    "format":"I420","width":1920,"height":1080,
    "picture":{"width":160,"height":90,"pts":3236724333,
      "brightness_avg":0.471,"brightness_max":1.000,"black":false,
-     "unchanged_for":12000000000,"rgb":"…"}},
-  {"pad":9,"pad_path":"pipeline0/x264enc0:src",
-   "unavailable":"compressed (video/x-h264): no picture without decoding"}]}
+     "unchanged_for":12000000000,"rgb":"…"}}]}
 ```
 
 - `format`, `width`, `height`: the frames' own; `picture` their copy, its
@@ -355,8 +352,8 @@ most one a second, sent within 50 ms of being taken. Not recorded.
 - `picture` is `null` until the first one is taken; the format and the
   newest picture are sent again when the caps change and to a page that
   starts watching.
-- `unavailable`: why a pad of video has no picture (compressed, frames in
-  GPU or other device memory).
+- `unavailable`: why a pad of raw video has no picture (its frames are in
+  GPU or other device memory). Compressed video is not listed.
 
 ### properties
 

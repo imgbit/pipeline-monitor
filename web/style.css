@@ -1016,7 +1016,7 @@ body.viewing-dot #process-perf { display: none; }
 /* Audio levels in a pin card */
 .pin-audio { padding: 4px 8px 2px; }
 .pin-audio .pin-rows { padding: 4px 0 2px; }
-.pin-audio-note { color: var(--muted); padding-bottom: 4px; }
+.pin-audio-note, .pin-video-note { color: var(--muted); padding-bottom: 4px; }
 .meter { display: grid; grid-template-columns: 30px 1fr; align-items: center; gap: 6px; margin: 4px 0; }
 .meter-label { color: var(--muted); font-size: 11px; }
 .meter-bar {
@@ -1035,3 +1035,10 @@ body.viewing-dot #process-perf { display: none; }
 .meter-mini { display: inline-flex; flex-direction: column; gap: 2px; width: 40px; flex: none; }
 .meter-mini .meter-bar { height: 4px; border-radius: 1px; }
 .pin-card.folded .pin-audio { display: none; }
+
+/* A pinned video pad's picture */
+.pin-video { padding: 6px 8px 2px; }
+.pin-video .pin-rows { padding: 4px 0 2px; }
+.pin-picture { display: block; width: 100%; max-width: 320px; height: auto; border-radius: 3px; background: #000; image-rendering: auto; }
+.pin-video.stale .pin-picture { opacity: 0.45; }
+.pin-card.folded .pin-video { display: none; }

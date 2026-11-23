@@ -184,10 +184,8 @@ check_reason (const gchar * caps_text, const gchar * expected)
 static void
 test_reasons (void)
 {
-  check_reason ("video/x-h264, stream-format=byte-stream",
-      "compressed (video/x-h264): no picture without decoding");
-  check_reason ("image/jpeg", "compressed (image/jpeg): no picture without "
-      "decoding");
+  check_reason ("video/x-h264, stream-format=byte-stream", NULL);
+  check_reason ("image/jpeg", NULL);
   check_reason ("video/x-raw(memory:GLMemory), format=RGBA, width=320, "
       "height=240, framerate=30/1",
       "frames in GPU or device memory (memory:GLMemory): no picture");

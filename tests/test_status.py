@@ -131,6 +131,9 @@ def pads(serve, tool):
         code, out, _ = status(tool, "--url", url, "--pad", "vid:src")
         check(code == 0 and "Flow: " in out and "Audio" not in out,
               "a video pad has flow and no audio", out)
+        check(re.search(r"^Picture: 320x240 \S+; brightness avg \d+ %, max "
+                        r"\d+ %; changing$", out, re.M),
+              "a video pad has picture facts", out)
 
         code, out, _ = status(tool, "--url", url, "--pad", "st:src", "--json")
         lines = [json.loads(line) for line in out.splitlines()]

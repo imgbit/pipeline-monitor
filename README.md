@@ -202,7 +202,7 @@ CPU, problems with their hints, and errors and warnings.
 ```sh
 pipeline-monitor status                  # every program found
 pipeline-monitor status --element queue0 # one element: pads, caps, queue, properties
-pipeline-monitor status --pad mixer:src  # one pad for 2.5 s: flow, audio levels
+pipeline-monitor status --pad mixer:src  # one pad for 2.5 s: flow, audio levels, picture
 pipeline-monitor status --graph          # every element, link and caps
 pipeline-monitor status --log            # the errors and warnings logged
 pipeline-monitor status rec.jsonl --at 12.5  # a recording, at 12.5 s

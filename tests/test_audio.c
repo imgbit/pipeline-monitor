@@ -313,10 +313,8 @@ check_reason (const gchar * caps_text, const gchar * expected)
 static void
 test_reasons (void)
 {
-  check_reason ("audio/mpeg, mpegversion=4",
-      "compressed (audio/mpeg): no levels without decoding");
-  check_reason ("audio/x-opus", "compressed (audio/x-opus): no levels "
-      "without decoding");
+  check_reason ("audio/mpeg, mpegversion=4", NULL);
+  check_reason ("audio/x-opus", NULL);
   check_reason ("audio/x-raw(memory:SomeDevice), format=S16LE, rate=48000, "
       "channels=2, layout=interleaved",
       "samples not in system memory (memory:SomeDevice)");

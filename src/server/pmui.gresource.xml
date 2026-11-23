@@ -13,6 +13,7 @@
     <file>tooltip.js</file>
     <file>pins.js</file>
     <file>meters.js</file>
+    <file>picture.js</file>
     <file>units.js</file>
     <file>levels.js</file>
     <file>latency.js</file>

@@ -1216,6 +1216,8 @@ typedef struct
   gint64 pad;
   JsonNode *pads;
   GPtrArray *audio;
+  /* The newest "video" entry, without its pixels. */
+  JsonNode *video;
 } PadWatch;
 
 /* The entry for the watched pad in a message's list, or NULL. */
@@ -1250,6 +1252,15 @@ on_watch_message (SoupWebsocketConnection * conn, gint kind, GBytes * bytes,
   } else if (m && g_strcmp0 (str (m, "type"), "audio") == 0 &&
       (e = entry_for (m, "audio", w->pad))) {
     g_ptr_array_add (w->audio, json_node_copy (e));
+  } else if (m && g_strcmp0 (str (m, "type"), "video") == 0 &&
+      (e = entry_for (m, "video", w->pad))) {
+    JsonObject *picture;
+
+    g_clear_pointer (&w->video, json_node_unref);
+    w->video = json_node_copy (e);
+    picture = child_obj (obj (w->video), "picture");
+    if (picture)
+      json_object_remove_member (picture, "rgb");
   }
   g_clear_pointer (&root, json_node_unref);
 }
@@ -1315,6 +1326,7 @@ pad_watch_clear (PadWatch * w)
   g_clear_pointer (&w->loop, g_main_loop_unref);
   g_clear_pointer (&w->pads, json_node_unref);
   g_clear_pointer (&w->audio, g_ptr_array_unref);
+  g_clear_pointer (&w->video, json_node_unref);
 }
 
 /* KiB, MiB…, with a plain space: GLib puts a no-break space there. */
@@ -1495,6 +1507,39 @@ print_audio (JsonNode * merged)
   }
 }
 
+static void
+print_picture (JsonNode * video)
+{
+  JsonObject *v = obj (video), *p;
+
+  if (v == NULL)
+    return;
+  if (str (v, "unavailable")) {
+    g_print ("Picture: %s\n", str (v, "unavailable"));
+    return;
+  }
+  g_print ("Picture: %" G_GINT64_FORMAT "x%" G_GINT64_FORMAT " %s",
+      inum (v, "width"), inum (v, "height"), str (v, "format"));
+  p = child_obj (v, "picture");
+  if (p == NULL) {
+    g_print (", no frame while watching\n");
+    return;
+  }
+  g_print ("; brightness avg %.0f %%, max %.0f %%%s", num (p,
+          "brightness_avg") * 100, num (p, "brightness_max") * 100,
+      json_object_get_boolean_member_with_default (p, "black", FALSE) ?
+      " (black)" : "");
+  if (num (p, "unchanged_for") >= 1.5e9) {
+    gchar *t = span_text (num (p, "unchanged_for"));
+
+    g_print ("; unchanged for %s", t);
+    g_free (t);
+  } else {
+    g_print ("; changing");
+  }
+  g_print ("\n");
+}
+
 static gint
 print_one_pad (Status * s, const gchar * name, gboolean json)
 {
@@ -1550,8 +1595,10 @@ print_one_pad (Status * s, const gchar * name, gboolean json)
       print_flow (obj (e));
     else
       g_print ("Flow: the pad was not watched while recording\n");
-    if (str (p, "caps") && g_str_has_prefix (str (p, "caps"), "audio/"))
+    if (str (p, "caps") && g_str_has_prefix (str (p, "caps"), "audio/x-raw"))
       g_print ("Audio levels: not kept in recordings\n");
+    if (str (p, "caps") && g_str_has_prefix (str (p, "caps"), "video/x-raw"))
+      g_print ("Pictures: not kept in recordings\n");
     return 0;
   } else {
     PadWatch w = { 0, };
@@ -1578,6 +1625,11 @@ print_one_pad (Status * s, const gchar * name, gboolean json)
         g_print ("{\"type\":\"audio\",\"audio\":[%s]}\n", text);
         g_free (text);
       }
+      if (w.video) {
+        text = json_to_string (w.video, FALSE);
+        g_print ("{\"type\":\"video\",\"video\":[%s]}\n", text);
+        g_free (text);
+      }
     } else {
       g_print ("%s, watched for %.1f s\n", str (p, "path"),
           PAD_WATCH_MS / 1000.0);
@@ -1594,6 +1646,7 @@ print_one_pad (Status * s, const gchar * name, gboolean json)
         g_print ("Flow: no values while watching\n");
       }
       print_audio (merged);
+      print_picture (w.video);
     }
     g_clear_pointer (&merged, json_node_unref);
     pad_watch_clear (&w);
@@ -1767,8 +1820,8 @@ pm_status_main (gint argc, gchar ** argv)
           "One element (name or path): pads, queue, changed properties, "
           "problems, log", "NAME"},
     {"pad", 0, 0, G_OPTION_ARG_STRING, &o.pad,
-          "One pad (element:pad or its path): its flow, and audio levels "
-          "(watched for 2.5 s)", "PAD"},
+          "One pad (element:pad or its path): its flow, audio levels or "
+          "what the picture shows (watched for 2.5 s)", "PAD"},
     {"log", 0, 0, G_OPTION_ARG_NONE, &log_flag,
         "The errors and warnings logged", NULL},
     {"last", 0, 0, G_OPTION_ARG_STRING, &log_text,

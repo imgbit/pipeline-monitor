@@ -42,11 +42,9 @@ pm_audio_meter_new (GstCaps * caps, gchar ** reason)
   name = gst_structure_get_name (s);
   if (!g_str_has_prefix (name, "audio/"))
     return NULL;
-  if (strcmp (name, "audio/x-raw") != 0) {
-    *reason = g_strdup_printf ("compressed (%s): no levels without decoding",
-        name);
+  /* Compressed: nothing to say, its caps tell. */
+  if (strcmp (name, "audio/x-raw") != 0)
     return NULL;
-  }
   features = gst_caps_get_features (caps, 0);
   if (features != NULL && !gst_caps_features_is_any (features) &&
       !gst_caps_features_contains (features,

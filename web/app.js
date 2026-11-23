@@ -1823,6 +1823,8 @@ function handleMessage(message) {
     pins.apply(message);
   } else if (message.type === "audio") {
     pins.applyAudio(message);
+  } else if (message.type === "video") {
+    pins.applyVideo(message);
   } else if (message.type === "log") {
     log.apply(message);
     if (state.selected !== null)
