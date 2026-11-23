@@ -1,9 +1,11 @@
 /* SPDX-FileCopyrightText: 2026 Łukasz Huńczak */
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #include "pmmonitor.h"
+#include "pmaudio.h"
 #include "pmjson.h"
 #include "pmlevels.h"
 
+#include <math.h>
 #include <string.h>
 
 /* The window for rates and gaps: the last WINDOW_SLOTS ticks of the
@@ -69,6 +71,12 @@ struct _PmPadStats
   GstClock *clock;
   GstClockTime base_time;
   GstClockTime refreshed;
+  /* Replaced at CAPS events by the streaming thread, under the lock; the
+   * probe reads it there without the lock (events and buffers of a pad
+   * are not probed at the same time). */
+  PmAudioMeter *audio;
+  gchar *audio_reason;
+  guint audio_seq;
 };
 
 typedef struct _PmEntry PmEntry;
@@ -84,6 +92,16 @@ struct _PmEntry
   GHashTable *clients;
   PmSlot window[HISTORY_SLOTS];
   guint64 ticks;
+  /* Copied from the stats at each audio tick, for the messages. */
+  guint audio_seq;
+  gboolean audio_metered;
+  GstAudioInfo audio_info;
+  guint audio_shown;
+  gchar *audio_reason;
+  PmAudioLevel audio_levels[PM_AUDIO_SHOWN];
+  /* What this round sends: new levels, and the format or the reason
+   * (again) after a change or a new client. */
+  gboolean audio_fresh, audio_announce, audio_new_client;
 };
 
 struct _PmMonitor
@@ -99,6 +117,8 @@ stats_unref (PmPadStats * stats)
   if (!g_atomic_int_dec_and_test (&stats->ref))
     return;
   gst_clear_object (&stats->clock);
+  pm_audio_meter_free (stats->audio);
+  g_free (stats->audio_reason);
   g_mutex_clear (&stats->lock);
   g_free (stats);
 }
@@ -207,22 +227,81 @@ count_event (PmPadStats * stats, GstEvent * event)
   }
 }
 
+static void
+set_audio (PmPadStats * stats, GstCaps * caps)
+{
+  gchar *reason;
+  PmAudioMeter *meter = pm_audio_meter_new (caps, &reason), *old;
+
+  g_mutex_lock (&stats->lock);
+  old = stats->audio;
+  stats->audio = meter;
+  g_free (stats->audio_reason);
+  stats->audio_reason = reason;
+  stats->audio_seq++;
+  g_mutex_unlock (&stats->lock);
+  pm_audio_meter_free (old);
+}
+
+/* The levels of a buffer, measured before taking the lock. */
+static gboolean
+measure_audio (PmPadStats * stats, GstBuffer * buffer, PmAudioSum * sums)
+{
+  if (stats->audio == NULL)
+    return FALSE;
+  return pm_audio_measure (pm_audio_meter_info (stats->audio),
+      pm_audio_meter_shown (stats->audio), buffer, sums);
+}
+
 /* Runs on the streaming thread for every buffer: keep it short. */
 static GstPadProbeReturn
 on_probe (GstPad * pad, GstPadProbeInfo * info, gpointer user_data)
 {
   PmPadStats *stats = user_data;
   GstClockTime arrival;
+  PmAudioSum audio[PM_AUDIO_SHOWN], *audio_list = NULL;
+  guint audio_buffers = 0;
+  gboolean measured = FALSE;
 
   if (info->type & GST_PAD_PROBE_TYPE_EVENT_BOTH) {
+    GstEvent *event = GST_PAD_PROBE_INFO_EVENT (info);
+
+    if (GST_EVENT_TYPE (event) == GST_EVENT_CAPS) {
+      GstCaps *caps;
+
+      gst_event_parse_caps (event, &caps);
+      set_audio (stats, caps);
+    }
     g_mutex_lock (&stats->lock);
-    count_event (stats, GST_PAD_PROBE_INFO_EVENT (info));
+    count_event (stats, event);
     g_mutex_unlock (&stats->lock);
     return GST_PAD_PROBE_OK;
   }
 
+  if (stats->audio != NULL) {
+    if (info->type & GST_PAD_PROBE_TYPE_BUFFER_LIST) {
+      GstBufferList *list = GST_PAD_PROBE_INFO_BUFFER_LIST (info);
+      guint n = gst_buffer_list_length (list);
+
+      audio_list = g_new0 (PmAudioSum, (gsize) n * PM_AUDIO_SHOWN);
+      for (guint i = 0; i < n; i++)
+        measured |= measure_audio (stats, gst_buffer_list_get (list, i),
+            audio_list + i * PM_AUDIO_SHOWN);
+      audio_buffers = n;
+    } else {
+      measured = measure_audio (stats, GST_PAD_PROBE_INFO_BUFFER (info),
+          audio);
+      audio_buffers = 1;
+    }
+  }
+
   arrival = gst_util_get_timestamp ();
   g_mutex_lock (&stats->lock);
+  if (measured) {
+    for (guint i = 0; i < audio_buffers; i++)
+      pm_audio_meter_add (stats->audio,
+          audio_list ? audio_list + i * PM_AUDIO_SHOWN : audio);
+  }
   stats->values.arrival = arrival;
   if (!GST_CLOCK_TIME_IS_VALID (stats->refreshed) ||
       arrival - stats->refreshed >= CLOCK_REFRESH)
@@ -245,6 +324,7 @@ on_probe (GstPad * pad, GstPadProbeInfo * info, gpointer user_data)
     set_last (stats, buffer);
   }
   g_mutex_unlock (&stats->lock);
+  g_free (audio_list);
   return GST_PAD_PROBE_OK;
 }
 
@@ -262,7 +342,19 @@ stats_new (GstPad * pad)
   stats->slot.begin = gst_util_get_timestamp ();
   gst_segment_init (&stats->values.segment, GST_FORMAT_UNDEFINED);
 
-  /* A pad watched mid-stream already had its segment. */
+  /* A pad watched mid-stream already had its caps and segment. */
+  {
+    GstCaps *caps = gst_pad_get_current_caps (pad);
+
+    if (caps != NULL) {
+      gchar *reason;
+
+      stats->audio = pm_audio_meter_new (caps, &reason);
+      stats->audio_reason = reason;
+      gst_caps_unref (caps);
+    }
+  }
+
   segment = gst_pad_get_sticky_event (pad, GST_EVENT_SEGMENT, 0);
   if (segment != NULL) {
     gst_event_copy_segment (segment, &stats->values.segment);
@@ -286,6 +378,7 @@ entry_free (PmEntry * entry)
   g_free (entry->pad_path);
   g_hash_table_unref (entry->clients);
   stats_unref (entry->stats);
+  g_free (entry->audio_reason);
   g_free (entry);
 }
 
@@ -320,6 +413,7 @@ pm_monitor_add (PmMonitor * monitor, gpointer client, guint64 pad_id)
   entry = g_hash_table_lookup (monitor->entries, &pad_id);
   if (entry != NULL) {
     g_hash_table_add (entry->clients, client);
+    entry->audio_new_client = TRUE;
     g_mutex_unlock (&monitor->lock);
     return TRUE;
   }
@@ -337,6 +431,7 @@ pm_monitor_add (PmMonitor * monitor, gpointer client, guint64 pad_id)
   entry->clients = g_hash_table_new (NULL, NULL);
   g_hash_table_add (entry->clients, client);
   entry->stats = stats_new (pad);
+  entry->audio_seq = G_MAXUINT;
   entry->probe = gst_pad_add_probe (pad, GST_PAD_PROBE_TYPE_BUFFER |
       GST_PAD_PROBE_TYPE_BUFFER_LIST | GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM |
       GST_PAD_PROBE_TYPE_EVENT_FLUSH, on_probe, entry->stats,
@@ -661,6 +756,197 @@ pm_monitor_list_json (PmMonitor * monitor)
   }
   g_ptr_array_unref (entries);
   g_mutex_unlock (&monitor->lock);
+  g_string_append (json, "]}");
+  return g_string_free (json, FALSE);
+}
+
+guint
+pm_monitor_count (PmMonitor * monitor)
+{
+  guint n;
+
+  g_mutex_lock (&monitor->lock);
+  n = g_hash_table_size (monitor->entries);
+  g_mutex_unlock (&monitor->lock);
+  return n;
+}
+
+/* Ends the audio window of every watched pad. Called by the server every
+ * 50 ms while pads are watched, before it sends "audio". */
+void
+pm_monitor_audio_tick (PmMonitor * monitor)
+{
+  GstClockTime now = gst_util_get_timestamp ();
+  GHashTableIter iter;
+  gpointer value;
+
+  g_mutex_lock (&monitor->lock);
+  g_hash_table_iter_init (&iter, monitor->entries);
+  while (g_hash_table_iter_next (&iter, NULL, &value)) {
+    PmEntry *entry = value;
+    PmPadStats *stats = entry->stats;
+
+    entry->audio_announce = entry->audio_new_client;
+    entry->audio_new_client = FALSE;
+    g_mutex_lock (&stats->lock);
+    if (stats->audio_seq != entry->audio_seq) {
+      entry->audio_seq = stats->audio_seq;
+      entry->audio_metered = stats->audio != NULL;
+      if (stats->audio != NULL) {
+        entry->audio_info = *pm_audio_meter_info (stats->audio);
+        entry->audio_shown = pm_audio_meter_shown (stats->audio);
+      }
+      g_free (entry->audio_reason);
+      entry->audio_reason = g_strdup (stats->audio_reason);
+      entry->audio_announce = TRUE;
+    }
+    entry->audio_fresh = stats->audio != NULL &&
+        pm_audio_meter_take (stats->audio, now, entry->audio_levels);
+    g_mutex_unlock (&stats->lock);
+  }
+  g_mutex_unlock (&monitor->lock);
+}
+
+static const gchar *
+channel_label (GstAudioChannelPosition position, guint index, gchar * buf)
+{
+  static const struct
+  {
+    GstAudioChannelPosition position;
+    const gchar *label;
+  } labels[] = {
+    {GST_AUDIO_CHANNEL_POSITION_MONO, "mono"},
+    {GST_AUDIO_CHANNEL_POSITION_FRONT_LEFT, "FL"},
+    {GST_AUDIO_CHANNEL_POSITION_FRONT_RIGHT, "FR"},
+    {GST_AUDIO_CHANNEL_POSITION_FRONT_CENTER, "C"},
+    {GST_AUDIO_CHANNEL_POSITION_LFE1, "LFE"},
+    {GST_AUDIO_CHANNEL_POSITION_LFE2, "LFE2"},
+    {GST_AUDIO_CHANNEL_POSITION_REAR_LEFT, "RL"},
+    {GST_AUDIO_CHANNEL_POSITION_REAR_RIGHT, "RR"},
+    {GST_AUDIO_CHANNEL_POSITION_REAR_CENTER, "RC"},
+    {GST_AUDIO_CHANNEL_POSITION_SIDE_LEFT, "SL"},
+    {GST_AUDIO_CHANNEL_POSITION_SIDE_RIGHT, "SR"},
+    {GST_AUDIO_CHANNEL_POSITION_FRONT_LEFT_OF_CENTER, "FLC"},
+    {GST_AUDIO_CHANNEL_POSITION_FRONT_RIGHT_OF_CENTER, "FRC"},
+    {GST_AUDIO_CHANNEL_POSITION_TOP_FRONT_LEFT, "TFL"},
+    {GST_AUDIO_CHANNEL_POSITION_TOP_FRONT_RIGHT, "TFR"},
+    {GST_AUDIO_CHANNEL_POSITION_TOP_FRONT_CENTER, "TFC"},
+    {GST_AUDIO_CHANNEL_POSITION_TOP_CENTER, "TC"},
+    {GST_AUDIO_CHANNEL_POSITION_TOP_REAR_LEFT, "TRL"},
+    {GST_AUDIO_CHANNEL_POSITION_TOP_REAR_RIGHT, "TRR"},
+    {GST_AUDIO_CHANNEL_POSITION_TOP_SIDE_LEFT, "TSL"},
+    {GST_AUDIO_CHANNEL_POSITION_TOP_SIDE_RIGHT, "TSR"},
+    {GST_AUDIO_CHANNEL_POSITION_TOP_REAR_CENTER, "TRC"},
+    {GST_AUDIO_CHANNEL_POSITION_WIDE_LEFT, "WL"},
+    {GST_AUDIO_CHANNEL_POSITION_WIDE_RIGHT, "WR"},
+    {GST_AUDIO_CHANNEL_POSITION_SURROUND_LEFT, "SuL"},
+    {GST_AUDIO_CHANNEL_POSITION_SURROUND_RIGHT, "SuR"},
+  };
+
+  for (guint i = 0; i < G_N_ELEMENTS (labels); i++)
+    if (labels[i].position == position)
+      return labels[i].label;
+  g_snprintf (buf, 16, "%u", index + 1);
+  return buf;
+}
+
+static void
+append_db (GString * json, gdouble db)
+{
+  if (isfinite (db))
+    g_string_append_printf (json, "%.2f", db);
+  else
+    g_string_append (json, "null");
+}
+
+static void
+append_audio (GString * json, PmEntry * entry, GstClockTime now)
+{
+  const GstAudioInfo *info = &entry->audio_info;
+  gchar buf[16];
+  guint c;
+
+  g_string_append_c (json, '{');
+  pm_json_append_value (json, "pad", entry->pad_id);
+  pm_json_append_member_string (json, "pad_path", entry->pad_path);
+  if (!entry->audio_metered) {
+    pm_json_append_member_string (json, "unavailable", entry->audio_reason);
+    pm_json_close (json, '}');
+    return;
+  }
+  pm_json_append_member_string (json, "format",
+      gst_audio_format_to_string (GST_AUDIO_INFO_FORMAT (info)));
+  pm_json_append_value (json, "rate", GST_AUDIO_INFO_RATE (info));
+  pm_json_append_value (json, "channels", GST_AUDIO_INFO_CHANNELS (info));
+  g_string_append_printf (json, "\"interleaved\":%s,",
+      GST_AUDIO_INFO_LAYOUT (info) == GST_AUDIO_LAYOUT_INTERLEAVED ?
+      "true" : "false");
+  g_string_append (json, "\"positions\":[");
+  for (c = 0; c < (guint) GST_AUDIO_INFO_CHANNELS (info); c++) {
+    if (c > 0)
+      g_string_append_c (json, ',');
+    pm_json_append_string (json, GST_AUDIO_INFO_IS_UNPOSITIONED (info) ?
+        (g_snprintf (buf, sizeof (buf), "%u", c + 1), buf) :
+        channel_label (info->position[c], c, buf));
+  }
+  g_string_append (json, "],");
+  pm_json_append_value (json, "shown", entry->audio_shown);
+  if (!entry->audio_fresh) {
+    g_string_append (json, "\"levels\":null}");
+    return;
+  }
+  /* One window per value; a recording may hold several. */
+  g_string_append (json, "\"levels\":[");
+  for (c = 0; c < entry->audio_shown; c++) {
+    const PmAudioLevel *l = &entry->audio_levels[c];
+
+    g_string_append (json, c ? ",{\"peak\":[" : "{\"peak\":[");
+    append_db (json, l->peak_db);
+    g_string_append (json, "],\"rms\":[");
+    append_db (json, l->rms_db);
+    g_string_append (json, "],");
+    pm_json_append_value (json, "clipped", l->clipped);
+    pm_json_append_value (json, "clipped_total", l->clipped_total);
+    if (GST_CLOCK_TIME_IS_VALID (l->silent_since))
+      g_string_append_printf (json, "\"silent_for\":%" G_GUINT64_FORMAT ","
+          "\"digital_silence\":%s}", now - l->silent_since,
+          l->digital_silence ? "true" : "false");
+    else
+      g_string_append (json, "\"silent_for\":null,"
+          "\"digital_silence\":false}");
+  }
+  g_string_append (json, "]}");
+}
+
+/* The client's audio pads with something to send this round, as
+ * {"audio":[...]}, or NULL. */
+gchar *
+pm_monitor_audio_json (PmMonitor * monitor, gpointer client)
+{
+  GstClockTime now = gst_util_get_timestamp ();
+  GString *json = NULL;
+  GPtrArray *entries;
+  guint i;
+
+  g_mutex_lock (&monitor->lock);
+  entries = entries_of (monitor, client);
+  g_ptr_array_sort (entries, compare_entries);
+  for (i = 0; i < entries->len; i++) {
+    PmEntry *entry = g_ptr_array_index (entries, i);
+
+    if (!entry->audio_fresh && !(entry->audio_announce &&
+            (entry->audio_metered || entry->audio_reason != NULL)))
+      continue;
+    if (json == NULL)
+      json = g_string_new ("{\"audio\":[");
+    else
+      g_string_append_c (json, ',');
+    append_audio (json, entry, now);
+  }
+  g_ptr_array_unref (entries);
+  g_mutex_unlock (&monitor->lock);
+  if (json == NULL)
+    return NULL;
   g_string_append (json, "]}");
   return g_string_free (json, FALSE);
 }

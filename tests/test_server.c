@@ -840,6 +840,112 @@ test_monitor (void)
 static guint count_messages (WsClient * client, const gchar * type, gint ms);
 static gint64 element_id (const gchar * name);
 
+/* The audio levels of a watched pad, from its next "audio" message. */
+static JsonObject *
+next_audio (WsClient * client, gint64 pad)
+{
+  for (;;) {
+    gchar *message = ws_next (client, "audio");
+    JsonNode *root = parse (message);
+    JsonArray *list = json_object_get_array_member (json_node_get_object
+        (root), "audio");
+    JsonObject *found = NULL;
+    guint i;
+
+    for (i = 0; i < json_array_get_length (list); i++) {
+      JsonObject *a = json_array_get_object_element (list, i);
+
+      if (json_object_get_int_member (a, "pad") == pad)
+        found = json_object_ref (a);
+    }
+    json_node_unref (root);
+    g_free (message);
+    if (found != NULL)
+      return found;
+  }
+}
+
+static void
+test_audio_levels (void)
+{
+  SoupSession *session = soup_session_new ();
+  gchar *url = server_url ("ws");
+  GstElement *pipeline = start_pipeline ("audiotestsrc is-live=true "
+      "volume=0.5 ! audio/x-raw,format=S16LE,channels=2 ! fakesink "
+      "name=au-sink videotestsrc is-live=true ! fakesink name=au-video");
+  gint64 pad = pad_id ("au-sink", "sink");
+  gint64 video = pad_id ("au-video", "sink");
+  WsClient a, b;
+  JsonObject *audio, *level;
+  JsonArray *positions, *levels;
+  guint n;
+
+  ws_connect (&a, session, url, NULL);
+  ws_connect (&b, session, url, NULL);
+
+  /* A video pad has no levels and sends nothing. */
+  ws_send (&b, "{\"type\":\"watch-pad\",\"pad\":%" G_GINT64_FORMAT "}",
+      video);
+  g_assert_cmpuint (count_messages (&b, "audio", 500), ==, 0);
+
+  ws_send (&a, "{\"type\":\"watch-pad\",\"pad\":%" G_GINT64_FORMAT "}", pad);
+  audio = next_audio (&a, pad);
+  g_assert_cmpstr (json_object_get_string_member (audio, "format"), ==,
+      "S16LE");
+  g_assert_cmpint (json_object_get_int_member (audio, "channels"), ==, 2);
+  g_assert_cmpint (json_object_get_int_member (audio, "shown"), ==, 2);
+  positions = json_object_get_array_member (audio, "positions");
+  g_assert_cmpstr (json_array_get_string_element (positions, 0), ==, "FL");
+  g_assert_cmpstr (json_array_get_string_element (positions, 1), ==, "FR");
+  json_object_unref (audio);
+
+  /* A sine at half scale: -6.02 dBFS peak, -9.03 dBFS RMS. */
+  do {
+    audio = next_audio (&a, pad);
+    levels = json_object_get_array_member (audio, "levels");
+    if (levels == NULL)
+      json_object_unref (audio);
+  } while (levels == NULL);
+  g_assert_cmpuint (json_array_get_length (levels), ==, 2);
+  level = json_array_get_object_element (levels, 0);
+  g_assert_cmpfloat_with_epsilon (json_array_get_double_element
+      (json_object_get_array_member (level, "peak"), 0), -6.02, 0.05);
+  g_assert_cmpfloat_with_epsilon (json_array_get_double_element
+      (json_object_get_array_member (level, "rms"), 0), -9.03, 0.1);
+  g_assert_cmpint (json_object_get_int_member (level, "clipped_total"), ==,
+      0);
+  g_assert_true (json_object_get_null_member (level, "silent_for"));
+  json_object_unref (audio);
+
+  /* About every 50 ms, only to the page that watches it. */
+  n = count_messages (&a, "audio", 1000);
+  g_assert_cmpuint (n, >=, 12);
+  g_assert_cmpuint (n, <=, 24);
+  g_assert_cmpuint (count_messages (&b, "audio", 10), ==, 0);
+
+  /* A second page is told the format too. */
+  ws_send (&b, "{\"type\":\"watch-pad\",\"pad\":%" G_GINT64_FORMAT "}", pad);
+  audio = next_audio (&b, pad);
+  g_assert_cmpstr (json_object_get_string_member (audio, "format"), ==,
+      "S16LE");
+  json_object_unref (audio);
+
+  /* Nothing once no page watches it. */
+  ws_send (&a, "{\"type\":\"unwatch-pad\",\"pad\":%" G_GINT64_FORMAT "}",
+      pad);
+  ws_send (&b, "{\"type\":\"unwatch-pad\",\"pad\":%" G_GINT64_FORMAT "}",
+      pad);
+  g_assert_true (wait_viewers (pad, 0));
+  count_messages (&a, "audio", 100);
+  g_assert_cmpuint (count_messages (&a, "audio", 300), ==, 0);
+
+  ws_disconnect (&b);
+  ws_disconnect (&a);
+  stop_pipeline (pipeline);
+  g_free (url);
+  g_object_unref (session);
+}
+
 /* The next error answer, as an object. */
 static JsonObject *
 next_error (WsClient * client)
@@ -4805,6 +4911,7 @@ main (int argc, char **argv)
   g_test_add_func ("/server/properties-not-answering",
       test_properties_not_answering);
   g_test_add_func ("/server/watch-property", test_watch_property);
+  g_test_add_func ("/server/audio-levels", test_audio_levels);
   g_test_add_func ("/server/pages-latency", test_pages_latency);
   g_test_add_func ("/server/pages-all-stopped", test_pages_all_stopped);
   g_test_add_func ("/server/pages-properties", test_pages_properties);

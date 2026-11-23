@@ -25,6 +25,8 @@
 /* One timer (see tick): samples every TICK_US; a reported change goes out
  * at most CHANGE_US after it, with the samples of its moment. */
 #define TICK_US (250 * G_TIME_SPAN_MILLISECOND)
+/* Audio levels, while pads are watched. */
+#define AUDIO_TICK_MS 50
 #define CHANGE_US (100 * G_TIME_SPAN_MILLISECOND)
 #define MAX_COMMAND_SIZE 65536
 #define UI_RESOURCE_PATH "/pipeline-monitor/ui/"
@@ -93,6 +95,7 @@ struct _PmServer
   /* tick_lock guards tick, next_sample and change_due. */
   GMutex tick_lock;
   GSource *tick;
+  GSource *audio_tick;
   gint64 next_sample;
   gint64 change_due;
   /* Set by pm_server_hold_findings, taken by the next flush; and by
@@ -613,6 +616,8 @@ on_ws_closed (SoupWebsocketConnection * conn, PmServer * self)
     g_object_unref (conn);
 }
 
+static void start_audio_tick (PmServer * self);
+
 static void
 send_stats (SoupWebsocketConnection * conn, const gchar * stats)
 {
@@ -766,7 +771,9 @@ run_command (PmServer * self, SoupWebsocketConnection * conn,
       return g_strdup (NOT_AN_ID ("pad"));
     if (!on) {
       pm_monitor_remove (self->monitor, conn, pad);
-    } else if (!pm_monitor_add (self->monitor, conn, pad)) {
+    } else if (pm_monitor_add (self->monitor, conn, pad)) {
+      start_audio_tick (self);
+    } else {
       gchar *gone = g_strdup_printf ("{\"pads\":[{\"pad\":%" G_GINT64_FORMAT
           ",\"gone\":true}]}", pad);
 
@@ -1351,6 +1358,44 @@ update (PmServer * self, gboolean sample, gboolean force)
   }
 }
 
+/* Audio levels of watched pads to the pages that watch them; stops when
+ * no pad is watched. */
+static gboolean
+audio_tick (gpointer user_data)
+{
+  PmServer *self = user_data;
+  guint i;
+
+  if (pm_monitor_count (self->monitor) == 0) {
+    g_clear_pointer (&self->audio_tick, g_source_unref);
+    return G_SOURCE_REMOVE;
+  }
+  pm_monitor_audio_tick (self->monitor);
+  for (i = 0; i < self->clients->len; i++) {
+    SoupWebsocketConnection *conn = g_ptr_array_index (self->clients, i);
+    gchar *audio = pm_monitor_audio_json (self->monitor, conn);
+
+    if (audio != NULL) {
+      gchar *text = pm_json_message ("audio", audio);
+
+      send_text (conn, text);
+      g_free (text);
+      g_free (audio);
+    }
+  }
+  return G_SOURCE_CONTINUE;
+}
+
+static void
+start_audio_tick (PmServer * self)
+{
+  if (self->audio_tick != NULL)
+    return;
+  self->audio_tick = g_timeout_source_new (AUDIO_TICK_MS);
+  g_source_set_callback (self->audio_tick, audio_tick, self, NULL);
+  g_source_attach (self->audio_tick, self->context);
+}
+
 /* The one timer: at the next regular tick, or sooner when a reported
  * change is due. */
 static gboolean
@@ -1702,6 +1747,10 @@ server_thread (gpointer user_data)
   g_source_destroy (self->tick);
   g_clear_pointer (&self->tick, g_source_unref);
   g_mutex_unlock (&self->tick_lock);
+  if (self->audio_tick != NULL) {
+    g_source_destroy (self->audio_tick);
+    g_clear_pointer (&self->audio_tick, g_source_unref);
+  }
 
 done:
   while (self->clients->len > 0) {

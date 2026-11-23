@@ -105,6 +105,7 @@ belongs to that connection only. A new connection starts with nothing.
 | `findings` | when the list changes, at most once per second | all | `GET /api/findings` |
 | `levels` | every 250 ms, and with each graph | all | `GET /api/levels` |
 | `pads` | every 250 ms, for watched pads | that connection | – |
+| `audio` | every 50 ms, for watched pads of raw audio (since 0.14; not recorded) | that connection | – |
 | `properties` | every 250 ms, for watched properties | that connection | `GET /api/properties?element=ID` |
 | `latency` | every 250 ms, while measuring | that connection | – |
 | `performance` | once per second | all | `GET /api/performance` (since 0.13) |
@@ -292,6 +293,40 @@ the task has ended.
 - `window`: rates and gaps between buffers over about the last second
   (longer for sparse streams, up to 10 s).
 - A pad that is gone: `{"pad":11,"pad_path":"…","gone":true}`, once.
+
+### audio
+
+Since 0.14. Levels of the watched pads that carry raw audio, measured over
+the last 50 ms; only pads with something new are listed. Not recorded.
+
+```json
+{"type":"audio","protocol":1,"time":…,
+ "audio":[{"pad":5,"pad_path":"pipeline0/audioconvert0:src",
+   "format":"S16LE","rate":48000,"channels":2,"interleaved":true,
+   "positions":["FL","FR"],"shown":2,
+   "levels":[{"peak":[-6.02],"rms":[-9.03],"clipped":0,"clipped_total":0,
+     "silent_for":null,"digital_silence":false},
+    {"peak":[-12.04],"rms":[-15.05],"clipped":0,"clipped_total":0,
+     "silent_for":null,"digital_silence":false}]},
+  {"pad":16,"pad_path":"pipeline0/avenc_aac0:src",
+   "unavailable":"compressed (audio/mpeg): no levels without decoding"}]}
+```
+
+- `levels`: one entry for each of the first `shown` channels; `peak` and
+  `rms` in dBFS (a full-scale sine: peak 0, RMS -3.01), `null` for no
+  signal at all. They are lists, one value per 50 ms window: one in
+  messages sent live.
+- `levels` is `null` when no samples arrived since the last message; the
+  format is sent again when it changes and to a page that starts watching.
+- `positions`: every channel, from the caps (`FL`, `FR`, `C`, `LFE`, …), or
+  numbers when the caps give none.
+- `clipped`: samples at full scale in this window; `clipped_total` since
+  watching started.
+- `silent_for`: nanoseconds the channel has been below -60 dBFS, once that
+  is 2 s or more, else `null`; `digital_silence` when every sample in that
+  time was exactly 0.
+- `unavailable`: why a pad of audio has no levels (compressed, not in
+  system memory), sent with the format rules above.
 
 ### properties
 
