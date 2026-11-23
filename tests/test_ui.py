@@ -1414,6 +1414,99 @@ def check_two_pipelines(browser, serve):
         server.wait()
 
 
+# Audio levels in pinned pads: stereo at half scale, 5.1 silence with two
+# channels shown, and compressed audio with its reason.
+AUDIO_PIPELINE = (
+    "audiotestsrc is-live=true volume=0.5 ! audio/x-raw,format=S16LE,"
+    "channels=2 ! identity name=au-stereo ! fakesink sync=true "
+    "audiotestsrc is-live=true wave=silence ! audio/x-raw,format=F32LE,"
+    "channels=6,channel-mask=(bitmask)0x3f ! identity name=au-surround ! "
+    "fakesink sync=true "
+    "audiotestsrc is-live=true ! opusenc ! identity name=au-opus ! "
+    "fakesink sync=true")
+
+
+def check_audio_meters(browser, serve):
+    server, url = start_server(serve, AUDIO_PIPELINE)
+
+    def card(name):
+        return ("[...document.querySelectorAll('.pin-card')].find(c => "
+                "c.querySelector('.pin-title').textContent === "
+                f"{json.dumps(name)})")
+
+    def audio_row(name, label):
+        return (f"[...{card(name)}.querySelectorAll('.pin-audio dt')]"
+                f".find(d => d.textContent === {json.dumps(label)})"
+                "?.nextElementSibling.textContent")
+
+    def pin(element):
+        # Open cards could cover the next pad.
+        browser.eval("document.querySelectorAll('.pin-card:not(.folded) "
+                     ".pin-fold').forEach(b => b.click())")
+        port = browser.eval(pad_id_expression(element, "src"))
+        cards = "document.querySelectorAll('.pin-card').length"
+        n = browser.eval(cards)
+        assert browser.click_until(f"#graph [data-port=\"p{port}\"]",
+                                   f"{cards} === {n + 1}"), \
+            f"click did not pin {element}"
+
+    try:
+        browser.call("Page.navigate", url=url)
+        assert browser.wait(f"!!{element_selector('au-opus')}", timeout=10)
+        pin("au-stereo")
+        stereo = card("au-stereo:src")
+        assert browser.wait(f"!{stereo}.querySelector('.pin-audio').hidden "
+                            f"&& {stereo}.querySelectorAll('.meter').length "
+                            "=== 2"), "no meters for stereo"
+        assert browser.eval(f"[...{stereo}.querySelectorAll('.meter-label')]"
+                            ".map(l => l.textContent).join()") == "FL,FR"
+        assert browser.wait(f"/^FL −6\\.0 · FR −6\\.0 dBFS$/.test("
+                            f"{audio_row('au-stereo:src', 'peak')})"), \
+            f"peak: {browser.eval(audio_row('au-stereo:src', 'peak'))}"
+        assert browser.wait(f"/^FL −9\\.0 · FR −9\\.0 dBFS$/.test("
+                            f"{audio_row('au-stereo:src', 'RMS')})"), \
+            f"RMS: {browser.eval(audio_row('au-stereo:src', 'RMS'))}"
+        assert browser.eval(audio_row("au-stereo:src", "audio")) == \
+            "S16LE, 44.1 kHz, 2 channels"
+        assert browser.eval(audio_row("au-stereo:src", "clipped")) == "0"
+        # -6 dBFS on a -60..0 scale: the bar ends at 90 %.
+        left = browser.eval(f"parseFloat({stereo}.querySelector("
+                            "'.meter-off').style.left)")
+        assert 89 < left < 91, f"bar at {left} %"
+        assert browser.eval(f"[...{stereo}.querySelectorAll('.pin-audio dt')]"
+                            ".every(d => d.dataset.tip)"), "rows without tips"
+
+        pin("au-surround")
+        assert browser.wait(f"{json.dumps('F32LE, 44.1 kHz, 6 channels (FL FR shown)')}"
+                            f" === {audio_row('au-surround:src', 'audio')}"), \
+            browser.eval(audio_row("au-surround:src", "audio"))
+        assert browser.wait(f"/^FL [2-9] s \\(digital silence\\) · FR [2-9] s"
+                            f" \\(digital silence\\)$/.test("
+                            f"{audio_row('au-surround:src', 'silent')})",
+                            timeout=6), \
+            browser.eval(audio_row("au-surround:src", "silent"))
+
+        pin("au-opus")
+        opus = card("au-opus:src")
+        assert browser.wait(f"{opus}.querySelector('.pin-audio-note')"
+                            ".textContent === 'compressed (audio/x-opus): no "
+                            "levels without decoding'"), "no reason for opus"
+        assert browser.eval(f"{opus}.querySelector('.pin-audio .pin-rows')"
+                            ".hidden"), "meter rows shown for opus"
+        assert browser.wait(f"!{opus}.querySelector(':scope > .pin-rows')"
+                            ".hidden"), "pad rows hidden for opus"
+
+        # Folded: small bars in the head instead.
+        assert browser.wait(f"!{stereo}.querySelector('.meter-mini').hidden"
+                            f" && {stereo}.querySelector('.pin-audio')"
+                            ".offsetParent === null"), "no small bars folded"
+        assert_no_value_titles(browser)
+        assert not browser.errors, browser.errors
+    finally:
+        server.terminate()
+        server.wait()
+
+
 # Negotiation fails when the source starts: the finding compares what each
 # side handles, and a press on its place selects the element.
 FORMAT_PIPELINE = "videotestsrc ! capsfilter name=cf ! fakesink"
@@ -4067,7 +4160,7 @@ def check_pins(browser):
     assert browser.wait(f"{pin_row('duration')} === '33.3 ms'"), \
         "time unit did not return to auto"
 
-    browser.hover(f"{card}.querySelector('.pin-rows')")
+    browser.hover(f"{card}.querySelector(':scope > .pin-rows')")
     assert browser.wait("!!document.querySelector('#graph .pad.highlight')"), \
         "hovering a card did not highlight its pad"
 
@@ -4246,6 +4339,7 @@ def main():
             check_property_units(browser, serve)
             check_phone(browser, serve)
             check_dot_reading(browser, serve)
+            check_audio_meters(browser, serve)
     finally:
         if browser:
             browser.close()

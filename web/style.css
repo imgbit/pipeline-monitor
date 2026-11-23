@@ -1012,3 +1012,26 @@ body.viewing-dot #process-perf { display: none; }
 .app-link-place { all: unset; cursor: pointer; color: var(--accent, #2563eb); }
 .app-link-place:hover { text-decoration: underline; }
 .app-compare { display: block; margin-top: 4px; }
+
+/* Audio levels in a pin card */
+.pin-audio { padding: 4px 8px 2px; }
+.pin-audio .pin-rows { padding: 4px 0 2px; }
+.pin-audio-note { color: var(--muted); padding-bottom: 4px; }
+.meter { display: grid; grid-template-columns: 30px 1fr; align-items: center; gap: 6px; margin: 4px 0; }
+.meter-label { color: var(--muted); font-size: 11px; }
+.meter-bar {
+  position: relative; height: 10px; border-radius: 2px; overflow: hidden;
+  background: linear-gradient(90deg, var(--playing) 0 70%, var(--paused) 70% 90%, var(--error) 90% 100%);
+}
+.meter-off { position: absolute; top: 0; bottom: 0; left: 0; right: 0; background: color-mix(in srgb, var(--muted) 22%, var(--panel)); }
+.meter-peak { position: absolute; top: 0; bottom: 0; background: color-mix(in srgb, var(--panel) 45%, transparent); }
+.meter-hold { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--fg); }
+.meter-bar.clipping { box-shadow: inset -4px 0 0 var(--error); }
+.meter-scale { display: grid; grid-template-columns: 30px 1fr; gap: 6px; font-size: 10px; color: var(--muted); }
+.meter-scale::before { content: ""; }
+.meter-ticks { position: relative; height: 12px; margin: 0 6px 0 4px; }
+.meter-ticks span { position: absolute; transform: translateX(-50%); font-variant-numeric: tabular-nums; }
+.pin-audio dd.bad { color: var(--error); font-weight: 600; }
+.meter-mini { display: inline-flex; flex-direction: column; gap: 2px; width: 40px; flex: none; }
+.meter-mini .meter-bar { height: 4px; border-radius: 1px; }
+.pin-card.folded .pin-audio { display: none; }

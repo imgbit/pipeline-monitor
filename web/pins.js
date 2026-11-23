@@ -5,6 +5,7 @@
 // or detached (fixed on screen). Pins are kept per pad path, so they come
 // back after a reload or when the pad is created again.
 
+import { AudioMeter } from "./meters.js";
 import { tip } from "./tooltip.js";
 import { formatBytes, formatSpan, formatStamp, rawNs } from "./units.js";
 
@@ -206,8 +207,27 @@ export class Pins {
 
   // A new connection knows nothing of our pads.
   connected() {
-    for (const pin of this.pins.values())
+    for (const pin of this.pins.values()) {
       pin.sent = false;
+      pin.audio?.clear();
+    }
+  }
+
+  buildMedia(pin, head) {
+    pin.audio = new AudioMeter(pin.card, head);
+    pin.audio.attachMini(pin.summary);
+  }
+
+  // An "audio" message.
+  applyAudio(message) {
+    let resized = false;
+    for (const entry of message.audio) {
+      const pin = [...this.pins.values()].find((p) => p.id === entry.pad);
+      if (pin?.audio)
+        resized = pin.audio.apply(entry, pin.folded) || resized;
+    }
+    if (resized)
+      this.place();
   }
 
   // Matches pins to a new graph; found: Map path -> {id, caps}.
@@ -220,9 +240,11 @@ export class Pins {
         continue;
       }
       pin.video = (entry.caps || "").startsWith("video/");
+      pin.rawAudio = (entry.caps || "").startsWith("audio/x-raw");
       if (entry.id !== pin.id) {
         if (pin.sent && pin.id !== null)
           this.unwatch(pin);
+        pin.audio?.clear();
         pin.id = entry.id;
         pin.sent = false;
       }
@@ -237,6 +259,7 @@ export class Pins {
     pin.gone = true;
     pin.sent = false;
     pin.id = null;
+    pin.audio?.clear();
     this.fill(pin);
   }
 
@@ -258,6 +281,10 @@ export class Pins {
       const entry = message?.pads?.find((e) => e.pad === pin.id);
       pin.gone = Boolean(entry?.gone);
       pin.stats = entry && !entry.gone ? entry : null;
+      if (pin.audio && pin.rawAudio && pin.stats)
+        pin.audio.showReason("Audio levels are not kept in recordings.");
+      else
+        pin.audio?.clear();
       this.fill(pin);
     }
     this.place();
@@ -305,7 +332,9 @@ export class Pins {
       `Back to its ${this.noun}`);
     const close = button(head, "pin-close", "close", "Unpin");
     pin.note = add(card, "div", "pin-note", "waiting for data…");
-    this.buildRows(pin, add(card, "dl", "pin-rows"));
+    pin.rows = add(card, "dl", "pin-rows");
+    this.buildRows(pin, pin.rows);
+    this.buildMedia?.(pin, head);
 
     fold.addEventListener("click", () => {
       pin.folded = !pin.folded;
@@ -422,9 +451,8 @@ export class Pins {
       ? (s ? `${this.noun} is gone, last values:` : `${this.noun} is gone`)
       : "waiting for data…";
     // No values (yet, or at this moment of a recording): no old ones.
-    const rows = card.querySelector("dl");
-    if (rows)
-      rows.hidden = !s;
+    if (pin.rows)
+      pin.rows.hidden = !s;
     if (!s) {
       pin.summary.textContent = "";
       return;
@@ -594,6 +622,9 @@ export class ElementPins extends Pins {
     super(layer, lines, handlers, key, "element");
     this.texts = texts;
   }
+
+  // Elements have no audio of their own.
+  buildMedia() {}
 
   target(pin) {
     return `e${pin.id}`;

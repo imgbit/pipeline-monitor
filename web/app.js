@@ -1821,6 +1821,8 @@ function handleMessage(message) {
     elementPins.apply(message);
   } else if (message.type === "pads") {
     pins.apply(message);
+  } else if (message.type === "audio") {
+    pins.applyAudio(message);
   } else if (message.type === "log") {
     log.apply(message);
     if (state.selected !== null)
