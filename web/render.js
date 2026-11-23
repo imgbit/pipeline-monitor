@@ -214,12 +214,24 @@ export class GraphView {
     return { x: r.x + r.width / 2 - s.x, y: r.y + r.height / 2 - s.y };
   }
 
-  // Pans so that a pad is in the middle.
+  // Shows a pad or element: a flash where it is, or, off screen, a pan
+  // that puts it in the middle.
   reveal(port) {
     const point = this.portPoint(port);
     if (!point)
       return;
     const r = this.svg.getBoundingClientRect();
+    const margin = 24;
+    if (point.x >= margin && point.y >= margin &&
+        point.x <= r.width - margin && point.y <= r.height - margin) {
+      const node = this.targetNode(port);
+      node.classList.remove("flash");
+      // Restarts the animation.
+      void node.getBoundingClientRect();
+      node.classList.add("flash");
+      setTimeout(() => node.classList.remove("flash"), 1000);
+      return;
+    }
     this.setAutoFit(false);
     this.transform.x += r.width / 2 - point.x;
     this.transform.y += r.height / 2 - point.y;

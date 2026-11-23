@@ -7,7 +7,7 @@
 
 import { AudioMeter } from "./meters.js";
 import { PictureView } from "./picture.js";
-import { tip } from "./tooltip.js";
+import { selectingIn, tip } from "./tooltip.js";
 import { formatBytes, formatSpan, formatStamp, rawNs } from "./units.js";
 
 const PINS_KEY = "pipeline-monitor.pins";
@@ -492,6 +492,8 @@ export class Pins {
       pin.summary.textContent = "";
       return;
     }
+    if (selectingIn(pin.rows))
+      return;
     this.fillRows(pin);
   }
 

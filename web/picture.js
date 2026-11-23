@@ -4,7 +4,7 @@
 // A pinned video pad's picture, about once a second, with what it shows
 // (brightness, black, unchanged) as rows.
 
-import { tip } from "./tooltip.js";
+import { selectingIn, tip } from "./tooltip.js";
 
 // No new picture for this long: the one shown is marked as old.
 const STALE_MS = 2500;
@@ -12,11 +12,11 @@ const STALE_MS = 2500;
 const UNCHANGED_NS = 1.5e9;
 
 const TIPS = {
-  picture: "The frames' format and size. The picture is a small copy of " +
-    "one frame a second.",
+  picture: "The frames' format and size. The picture above is a small " +
+    "copy of one frame, taken once a second.",
   brightness: "Luma of the picture, from 0 % (black) to 100 % (white): " +
     "the average and the brightest place. Black: below 10 % everywhere.",
-  unchanged: "How long the picture has stayed exactly the same, compared " +
+  "same picture": "How long the picture has stayed exactly the same, compared " +
     "once a second: a repeated frame, as from a frozen source or a stuck " +
     "decoder. Live cameras have noise, so a still scene still changes.",
 };
@@ -46,7 +46,7 @@ export class PictureView {
     this.canvas = add(this.box, "canvas", "pin-picture");
     this.rows = add(this.box, "dl", "pin-rows");
     this.cells = {};
-    for (const key of ["picture", "brightness", "unchanged"]) {
+    for (const key of ["picture", "brightness", "same picture"]) {
       tip(add(this.rows, "dt", undefined, key), TIPS[key]);
       this.cells[key] = add(this.rows, "dd");
     }
@@ -80,28 +80,34 @@ export class PictureView {
     this.note.hidden = true;
     this.box.hidden = false;
     this.rows.hidden = false;
-    this.cells.picture.textContent = `${entry.width}×${entry.height} ` +
-      `${entry.format}, 1 per second`;
     const p = entry.picture;
+    const rows = !selectingIn(this.rows);
+    if (rows)
+      this.cells.picture.textContent = `${entry.width}×${entry.height} ` +
+        `${entry.format}`;
     if (!p) {
       this.canvas.hidden = true;
-      this.cells.brightness.textContent = "—";
-      this.cells.unchanged.textContent = "waiting for a frame…";
+      if (rows) {
+        this.cells.brightness.textContent = "—";
+        this.cells["same picture"].textContent = "waiting for a frame…";
+      }
       return hidden;
     }
     const resized = hidden || this.canvas.hidden ||
       this.canvas.width !== p.width || this.canvas.height !== p.height;
     this.draw(p);
     const pct = (v) => `${Math.round(v * 100)} %`;
-    this.cells.brightness.textContent = `avg ${pct(p.brightness_avg)} · ` +
-      `max ${pct(p.brightness_max)}${p.black ? " · black" : ""}`;
-    this.cells.unchanged.textContent = p.unchanged_for >= UNCHANGED_NS
-      ? seconds(p.unchanged_for) : "—";
+    if (rows) {
+      this.cells.brightness.textContent = `avg ${pct(p.brightness_avg)} · ` +
+        `max ${pct(p.brightness_max)}${p.black ? " · black" : ""}`;
+      this.cells["same picture"].textContent =
+        p.unchanged_for >= UNCHANGED_NS ? seconds(p.unchanged_for) : "no";
+    }
     this.box.classList.remove("stale");
     clearTimeout(this.stale);
     this.stale = setTimeout(() => {
       this.box.classList.add("stale");
-      this.cells.unchanged.textContent = "no new frames";
+      this.cells["same picture"].textContent = "no new frames";
     }, STALE_MS);
     return resized;
   }

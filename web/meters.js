@@ -4,7 +4,7 @@
 // Audio levels in a pinned pad's card: a bar per channel, and the facts
 // (format, peak, RMS, clipping, silence) as rows.
 
-import { tip } from "./tooltip.js";
+import { selectingIn, tip } from "./tooltip.js";
 
 const FLOOR = -60;
 // Colour zones, as in most digital meters: above the EBU alignment level
@@ -233,6 +233,8 @@ export class AudioMeter {
   }
 
   fillRows(levels) {
+    if (selectingIn(this.rows))
+      return;
     const named = (f) => this.channels.map((ch, i) =>
       `${ch.label} ${f(levels[i], ch)}`).join(" · ");
     if (!levels) {

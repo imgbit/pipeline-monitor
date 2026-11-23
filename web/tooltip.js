@@ -82,6 +82,14 @@ export class Tooltip {
 // has one is underlined with dots; its text shows on hover (after a
 // moment) or on a tap or click, until a tap elsewhere or Escape. Buttons
 // keep the browser's own hint of what they do.
+// Whether text in node is selected: values there are then left as they
+// are, so the selection is not lost to the next update.
+export function selectingIn(node) {
+  const s = document.getSelection();
+  return Boolean(s && !s.isCollapsed && s.rangeCount &&
+    node.contains(s.getRangeAt(0).commonAncestorContainer));
+}
+
 export function tip(node, text) {
   if (text)
     node.dataset.tip = text;

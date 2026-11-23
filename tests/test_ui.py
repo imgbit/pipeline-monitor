@@ -1554,8 +1554,7 @@ def check_pictures(browser, serve):
         pixel = browser.eval(f"[...{canvas}.getContext('2d').getImageData("
                              "80, 60, 1, 1).data].join()")
         assert all(int(v) > 240 for v in pixel.split(",")), pixel
-        assert browser.eval(row("pic-white:src", "picture")) == \
-            "320×240 I420, 1 per second"
+        assert browser.eval(row("pic-white:src", "picture")) == "320×240 I420"
         # Limited-range white is RGB 254: 99 %.
         assert re.fullmatch(r"avg (99|100) % · max (99|100) %", browser.eval(
             row("pic-white:src", "brightness"))), \
@@ -1563,9 +1562,34 @@ def check_pictures(browser, serve):
         assert browser.eval(f"[...{white}.querySelectorAll('.pin-video dt')]"
                             ".every(d => d.dataset.tip)"), "rows without tips"
 
+        # Selected values are left as they are, so they can be copied.
+        for label, scope in (("brightness", ".pin-video dt"),
+                             ("buffers/s", ":scope > .pin-rows dt")):
+            browser.eval(f"(d => {{ const r = document.createRange(); "
+                         f"r.selectNodeContents(d); const s = "
+                         f"getSelection(); s.removeAllRanges(); "
+                         f"s.addRange(r); }})([...{white}.querySelectorAll("
+                         f"{json.dumps(scope)})].find(t => t.textContent === "
+                         f"{json.dumps(label)}).nextElementSibling)")
+            time.sleep(1.5)
+            assert browser.eval("getSelection().toString().length > 0"), \
+                f"an update cleared the selection of {label}"
+        browser.eval("getSelection().removeAllRanges()")
+
+        # A click on the card's title, its pad on screen: the pad flashes,
+        # the graph stays where it is.
+        pad = (f"document.querySelector('#graph [data-port=\"p"
+               f"{browser.eval(pad_id_expression('pic-white', 'src'))}\"]')")
+        before = browser.eval(f"JSON.stringify({pad}.getBoundingClientRect())")
+        browser.click_point(f"{white}.querySelector('.pin-title')")
+        assert browser.wait(f"{pad}.classList.contains('flash')"), \
+            "the pad did not flash"
+        assert browser.eval(f"JSON.stringify({pad}.getBoundingClientRect())"
+                            ) == before, "the graph moved"
+
         pin("pic-black")
         brightness = row("pic-black:src", "brightness")
-        unchanged = row("pic-black:src", "unchanged")
+        unchanged = row("pic-black:src", "same picture")
         assert browser.wait(f"/ · black$/.test({brightness})"), \
             browser.eval(brightness)
         assert browser.wait(f"/^[2-9] s$/.test({unchanged})", timeout=6), \
@@ -4265,18 +4289,40 @@ def check_pins(browser):
     assert browser.wait("!!document.querySelector('#graph .pad.highlight')"), \
         "hovering a card did not highlight its pad"
 
-    # A click on the card's title brings its pad to the middle.
+    # A click on the card's title, its pad on screen: the pad flashes and
+    # the graph stays.
+    before = browser.eval(f"JSON.stringify(document.querySelector('{pad}')"
+                          ".getBoundingClientRect())")
+    browser.click(".pin-card .pin-title")
+    assert browser.wait(f"document.querySelector('{pad}').classList"
+                        ".contains('flash')"), "clicking a card did not show "\
+        "its pad"
+    assert browser.eval(f"JSON.stringify(document.querySelector('{pad}')"
+                        ".getBoundingClientRect())") == before, \
+        "the graph moved for a pad on screen"
+
+    browser.drag(".pin-card .pin-head", 220, 160)
+    assert browser.wait(f"{card}.classList.contains('detached')"), \
+        "dragging far did not detach"
+    # Its pad off screen (zoomed in far at a corner), a click on the title
+    # brings it to the middle.
+    browser.eval("(s => { const r = s.getBoundingClientRect(); "
+                 "s.dispatchEvent(new WheelEvent('wheel', {bubbles: true, "
+                 "cancelable: true, clientX: r.x + 5, clientY: r.y + 5, "
+                 "deltaY: -2000})); })(document.querySelector('#graph svg') ||"
+                 " document.getElementById('graph'))")
+    off_screen = (f"(p => (g => p.right < g.x || p.x > g.right || "
+                  f"p.bottom < g.y || p.y > g.bottom)(document.getElementById("
+                  f"'graph').getBoundingClientRect()))(document.querySelector("
+                  f"'{pad}').getBoundingClientRect())")
+    assert browser.wait(off_screen), "the graph did not pan away"
     browser.click(".pin-card .pin-title")
     assert browser.wait(
         f"(p => (g => Math.abs(p.x + p.width / 2 - g.x - g.width / 2) < 20 && "
         f"Math.abs(p.y + p.height / 2 - g.y - g.height / 2) < 20)("
         f"document.getElementById('graph').getBoundingClientRect()))("
         f"document.querySelector('{pad}').getBoundingClientRect())"), \
-        "clicking a card did not show its pad"
-
-    browser.drag(".pin-card .pin-head", 220, 160)
-    assert browser.wait(f"{card}.classList.contains('detached')"), \
-        "dragging far did not detach"
+        "clicking a card did not bring its pad back"
     browser.call("Page.reload")
     assert browser.wait(f"{cards} === 1 && "
                         f"{card}.classList.contains('detached')"), \
