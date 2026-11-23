@@ -106,6 +106,7 @@ belongs to that connection only. A new connection starts with nothing.
 | `levels` | every 250 ms, and with each graph | all | `GET /api/levels` |
 | `pads` | every 250 ms, for watched pads | that connection | – |
 | `audio` | every 50 ms, for watched pads of raw audio (since 0.14; not recorded) | that connection | – |
+| `video` | about once a second, for watched pads of raw video (since 0.14; not recorded) | that connection | – |
 | `properties` | every 250 ms, for watched properties | that connection | `GET /api/properties?element=ID` |
 | `latency` | every 250 ms, while measuring | that connection | – |
 | `performance` | once per second | all | `GET /api/performance` (since 0.13) |
@@ -327,6 +328,35 @@ the last 50 ms; only pads with something new are listed. Not recorded.
   time was exactly 0.
 - `unavailable`: why a pad of audio has no levels (compressed, not in
   system memory), sent with the format rules above.
+
+### video
+
+Since 0.14. A small picture of the watched pads that carry raw video, at
+most one a second, sent within 50 ms of being taken. Not recorded.
+
+```json
+{"type":"video","protocol":1,"time":…,
+ "video":[{"pad":7,"pad_path":"pipeline0/videoconvert0:src",
+   "format":"I420","width":1920,"height":1080,
+   "picture":{"width":160,"height":90,"pts":3236724333,
+     "brightness_avg":0.471,"brightness_max":1.000,"black":false,
+     "unchanged_for":12000000000,"rgb":"…"}},
+  {"pad":9,"pad_path":"pipeline0/x264enc0:src",
+   "unavailable":"compressed (video/x-h264): no picture without decoding"}]}
+```
+
+- `format`, `width`, `height`: the frames' own; `picture` their copy, its
+  longest side 160 pixels, shaped with the pixel aspect ratio.
+- `rgb`: the picture's pixels, base64, 3 bytes (R, G, B) each, row by row.
+- `brightness_avg`, `brightness_max`: luma from 0 to 1 over the picture;
+  `black` when it is below 0.1 everywhere.
+- `unchanged_for`: nanoseconds the picture has been exactly the same
+  (pictures are compared once a second).
+- `picture` is `null` until the first one is taken; the format and the
+  newest picture are sent again when the caps change and to a page that
+  starts watching.
+- `unavailable`: why a pad of video has no picture (compressed, frames in
+  GPU or other device memory).
 
 ### properties
 

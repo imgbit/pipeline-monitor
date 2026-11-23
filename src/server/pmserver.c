@@ -25,7 +25,7 @@
 /* One timer (see tick): samples every TICK_US; a reported change goes out
  * at most CHANGE_US after it, with the samples of its moment. */
 #define TICK_US (250 * G_TIME_SPAN_MILLISECOND)
-/* Audio levels, while pads are watched. */
+/* Audio levels and pictures, while pads are watched. */
 #define AUDIO_TICK_MS 50
 #define CHANGE_US (100 * G_TIME_SPAN_MILLISECOND)
 #define MAX_COMMAND_SIZE 65536
@@ -1358,8 +1358,8 @@ update (PmServer * self, gboolean sample, gboolean force)
   }
 }
 
-/* Audio levels of watched pads to the pages that watch them; stops when
- * no pad is watched. */
+/* Audio levels and pictures of watched pads to the pages that watch
+ * them; stops when no pad is watched. */
 static gboolean
 audio_tick (gpointer user_data)
 {
@@ -1370,10 +1370,11 @@ audio_tick (gpointer user_data)
     g_clear_pointer (&self->audio_tick, g_source_unref);
     return G_SOURCE_REMOVE;
   }
-  pm_monitor_audio_tick (self->monitor);
+  pm_monitor_media_tick (self->monitor);
   for (i = 0; i < self->clients->len; i++) {
     SoupWebsocketConnection *conn = g_ptr_array_index (self->clients, i);
     gchar *audio = pm_monitor_audio_json (self->monitor, conn);
+    gchar *video = pm_monitor_video_json (self->monitor, conn);
 
     if (audio != NULL) {
       gchar *text = pm_json_message ("audio", audio);
@@ -1381,6 +1382,13 @@ audio_tick (gpointer user_data)
       send_text (conn, text);
       g_free (text);
       g_free (audio);
+    }
+    if (video != NULL) {
+      gchar *text = pm_json_message ("video", video);
+
+      send_text (conn, text);
+      g_free (text);
+      g_free (video);
     }
   }
   return G_SOURCE_CONTINUE;

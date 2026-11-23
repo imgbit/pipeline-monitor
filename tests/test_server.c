@@ -865,6 +865,108 @@ next_audio (WsClient * client, gint64 pad)
   }
 }
 
+/* The next "video" entry for a watched pad. */
+static JsonObject *
+next_video (WsClient * client, gint64 pad)
+{
+  for (;;) {
+    gchar *message = ws_next (client, "video");
+    JsonNode *root = parse (message);
+    JsonArray *list = json_object_get_array_member (json_node_get_object
+        (root), "video");
+    JsonObject *found = NULL;
+    guint i;
+
+    for (i = 0; i < json_array_get_length (list); i++) {
+      JsonObject *v = json_array_get_object_element (list, i);
+
+      if (json_object_get_int_member (v, "pad") == pad)
+        found = json_object_ref (v);
+    }
+    json_node_unref (root);
+    g_free (message);
+    if (found != NULL)
+      return found;
+  }
+}
+
+static void
+test_video_pictures (void)
+{
+  SoupSession *session = soup_session_new ();
+  gchar *url = server_url ("ws");
+  GstElement *pipeline = start_pipeline ("videotestsrc is-live=true "
+      "pattern=white ! video/x-raw,format=I420,width=320,height=240,"
+      "framerate=30/1 ! fakesink name=vi-sink "
+      "audiotestsrc is-live=true ! fakesink name=vi-audio");
+  gint64 pad = pad_id ("vi-sink", "sink");
+  gint64 audio = pad_id ("vi-audio", "sink");
+  WsClient a, b;
+  JsonObject *video, *picture;
+  gchar *rgb;
+  gsize size;
+  guint n;
+  gint64 first_pts;
+
+  ws_connect (&a, session, url, NULL);
+  ws_connect (&b, session, url, NULL);
+
+  /* An audio pad sends no pictures. */
+  ws_send (&b, "{\"type\":\"watch-pad\",\"pad\":%" G_GINT64_FORMAT "}",
+      audio);
+  g_assert_cmpuint (count_messages (&b, "video", 1500), ==, 0);
+
+  ws_send (&a, "{\"type\":\"watch-pad\",\"pad\":%" G_GINT64_FORMAT "}", pad);
+  do {
+    video = next_video (&a, pad);
+    picture = json_object_get_object_member (video, "picture");
+    if (picture == NULL)
+      json_object_unref (video);
+  } while (picture == NULL);
+  g_assert_cmpstr (json_object_get_string_member (video, "format"), ==,
+      "I420");
+  g_assert_cmpint (json_object_get_int_member (video, "width"), ==, 320);
+  g_assert_cmpint (json_object_get_int_member (picture, "width"), ==, 160);
+  g_assert_cmpint (json_object_get_int_member (picture, "height"), ==, 120);
+  g_assert_cmpfloat (json_object_get_double_member (picture,
+          "brightness_avg"), >, 0.95);
+  g_assert_false (json_object_get_boolean_member (picture, "black"));
+  rgb = (gchar *) g_base64_decode (json_object_get_string_member (picture,
+          "rgb"), &size);
+  g_assert_cmpuint (size, ==, 160 * 120 * 3);
+  g_assert_cmpint ((guint8) rgb[0], >, 240);
+  g_free (rgb);
+  first_pts = json_object_get_int_member (picture, "pts");
+  json_object_unref (video);
+
+  /* The next one about a second later, the same picture. */
+  video = next_video (&a, pad);
+  picture = json_object_get_object_member (video, "picture");
+  g_assert_cmpint (json_object_get_int_member (picture, "pts") - first_pts,
+      >=, 900 * GST_MSECOND);
+  g_assert_cmpint (json_object_get_int_member (picture, "unchanged_for"), >=,
+      900 * GST_MSECOND);
+  json_object_unref (video);
+
+  /* About one a second, only to the page that watches the pad. */
+  n = count_messages (&a, "video", 3000);
+  g_assert_cmpuint (n, >=, 2);
+  g_assert_cmpuint (n, <=, 4);
+  g_assert_cmpuint (count_messages (&b, "video", 10), ==, 0);
+
+  /* A second page gets the newest picture at once. */
+  ws_send (&b, "{\"type\":\"watch-pad\",\"pad\":%" G_GINT64_FORMAT "}", pad);
+  video = next_video (&b, pad);
+  g_assert_nonnull (json_object_get_object_member (video, "picture"));
+  json_object_unref (video);
+
+  ws_disconnect (&b);
+  ws_disconnect (&a);
+  stop_pipeline (pipeline);
+  g_free (url);
+  g_object_unref (session);
+}
+
 static void
 test_audio_levels (void)
 {
@@ -1838,8 +1940,8 @@ test_recordings (void)
 
 /* The rules every message follows (docs/protocol.md). */
 static const gchar *message_types[] = { "hello", "graph", "log", "findings",
-  "levels", "pads", "properties", "latency", "performance", "error", "bye",
-  "watched-pads", "recordings", NULL
+  "levels", "pads", "audio", "video", "properties", "latency", "performance",
+  "error", "bye", "watched-pads", "recordings", NULL
 };
 
 /* Each reference to an element or pad has its path next to its id. */
@@ -4912,6 +5014,7 @@ main (int argc, char **argv)
       test_properties_not_answering);
   g_test_add_func ("/server/watch-property", test_watch_property);
   g_test_add_func ("/server/audio-levels", test_audio_levels);
+  g_test_add_func ("/server/video-pictures", test_video_pictures);
   g_test_add_func ("/server/pages-latency", test_pages_latency);
   g_test_add_func ("/server/pages-all-stopped", test_pages_all_stopped);
   g_test_add_func ("/server/pages-properties", test_pages_properties);

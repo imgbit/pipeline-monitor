@@ -23,8 +23,9 @@ gchar *pm_monitor_stats_json (PmMonitor * monitor, gpointer client);
 gchar *pm_monitor_list_json (PmMonitor * monitor);
 
 guint pm_monitor_count (PmMonitor * monitor);
-void pm_monitor_audio_tick (PmMonitor * monitor);
+void pm_monitor_media_tick (PmMonitor * monitor);
 gchar *pm_monitor_audio_json (PmMonitor * monitor, gpointer client);
+gchar *pm_monitor_video_json (PmMonitor * monitor, gpointer client);
 
 G_END_DECLS
 

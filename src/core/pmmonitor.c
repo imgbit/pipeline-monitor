@@ -2,6 +2,7 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #include "pmmonitor.h"
 #include "pmaudio.h"
+#include "pmvideo.h"
 #include "pmjson.h"
 #include "pmlevels.h"
 
@@ -77,6 +78,13 @@ struct _PmPadStats
   PmAudioMeter *audio;
   gchar *audio_reason;
   guint audio_seq;
+  /* The same for pictures; the newest picture waits here for the tick. */
+  PmVideoThumb *video;
+  gchar *video_reason;
+  guint video_seq;
+  GstClockTime picture_at;
+  PmPicture *picture;
+  guint picture_seq;
 };
 
 typedef struct _PmEntry PmEntry;
@@ -101,7 +109,14 @@ struct _PmEntry
   PmAudioLevel audio_levels[PM_AUDIO_SHOWN];
   /* What this round sends: new levels, and the format or the reason
    * (again) after a change or a new client. */
-  gboolean audio_fresh, audio_announce, audio_new_client;
+  gboolean audio_fresh, audio_announce, new_client;
+  guint video_seq;
+  gboolean video_shown;
+  GstVideoInfo video_info;
+  gchar *video_reason;
+  guint picture_seq;
+  PmPicture *picture;
+  gboolean video_fresh, video_announce;
 };
 
 struct _PmMonitor
@@ -119,6 +134,9 @@ stats_unref (PmPadStats * stats)
   gst_clear_object (&stats->clock);
   pm_audio_meter_free (stats->audio);
   g_free (stats->audio_reason);
+  pm_video_thumb_free (stats->video);
+  g_free (stats->video_reason);
+  pm_picture_free (stats->picture);
   g_mutex_clear (&stats->lock);
   g_free (stats);
 }
@@ -228,19 +246,31 @@ count_event (PmPadStats * stats, GstEvent * event)
 }
 
 static void
-set_audio (PmPadStats * stats, GstCaps * caps)
+set_media (PmPadStats * stats, GstCaps * caps)
 {
-  gchar *reason;
-  PmAudioMeter *meter = pm_audio_meter_new (caps, &reason), *old;
+  gchar *audio_reason, *video_reason;
+  PmAudioMeter *meter = pm_audio_meter_new (caps, &audio_reason), *old;
+  PmVideoThumb *thumb = pm_video_thumb_new (caps, &video_reason), *old_thumb;
+  PmPicture *old_picture;
 
   g_mutex_lock (&stats->lock);
   old = stats->audio;
   stats->audio = meter;
   g_free (stats->audio_reason);
-  stats->audio_reason = reason;
+  stats->audio_reason = audio_reason;
   stats->audio_seq++;
+  old_thumb = stats->video;
+  stats->video = thumb;
+  g_free (stats->video_reason);
+  stats->video_reason = video_reason;
+  stats->video_seq++;
+  old_picture = stats->picture;
+  stats->picture = NULL;
+  stats->picture_at = GST_CLOCK_TIME_NONE;
   g_mutex_unlock (&stats->lock);
   pm_audio_meter_free (old);
+  pm_video_thumb_free (old_thumb);
+  pm_picture_free (old_picture);
 }
 
 /* The levels of a buffer, measured before taking the lock. */
@@ -262,6 +292,7 @@ on_probe (GstPad * pad, GstPadProbeInfo * info, gpointer user_data)
   PmAudioSum audio[PM_AUDIO_SHOWN], *audio_list = NULL;
   guint audio_buffers = 0;
   gboolean measured = FALSE;
+  PmPicture *picture = NULL, *old_picture = NULL;
 
   if (info->type & GST_PAD_PROBE_TYPE_EVENT_BOTH) {
     GstEvent *event = GST_PAD_PROBE_INFO_EVENT (info);
@@ -270,7 +301,7 @@ on_probe (GstPad * pad, GstPadProbeInfo * info, gpointer user_data)
       GstCaps *caps;
 
       gst_event_parse_caps (event, &caps);
-      set_audio (stats, caps);
+      set_media (stats, caps);
     }
     g_mutex_lock (&stats->lock);
     count_event (stats, event);
@@ -278,6 +309,26 @@ on_probe (GstPad * pad, GstPadProbeInfo * info, gpointer user_data)
     return GST_PAD_PROBE_OK;
   }
 
+  arrival = gst_util_get_timestamp ();
+  /* At most one picture per PM_VIDEO_EVERY, of the newest buffer. */
+  if (stats->video != NULL && (!GST_CLOCK_TIME_IS_VALID (stats->picture_at)
+          || arrival - stats->picture_at >= PM_VIDEO_EVERY)) {
+    GstBuffer *buffer = NULL;
+
+    if (info->type & GST_PAD_PROBE_TYPE_BUFFER_LIST) {
+      GstBufferList *list = GST_PAD_PROBE_INFO_BUFFER_LIST (info);
+      guint n = gst_buffer_list_length (list);
+
+      if (n > 0)
+        buffer = gst_buffer_list_get (list, n - 1);
+    } else {
+      buffer = GST_PAD_PROBE_INFO_BUFFER (info);
+    }
+    if (buffer != NULL) {
+      picture = pm_video_thumb_take (stats->video, buffer, arrival);
+      stats->picture_at = arrival;
+    }
+  }
   if (stats->audio != NULL) {
     if (info->type & GST_PAD_PROBE_TYPE_BUFFER_LIST) {
       GstBufferList *list = GST_PAD_PROBE_INFO_BUFFER_LIST (info);
@@ -295,8 +346,12 @@ on_probe (GstPad * pad, GstPadProbeInfo * info, gpointer user_data)
     }
   }
 
-  arrival = gst_util_get_timestamp ();
   g_mutex_lock (&stats->lock);
+  if (picture != NULL) {
+    old_picture = stats->picture;
+    stats->picture = picture;
+    stats->picture_seq++;
+  }
   if (measured) {
     for (guint i = 0; i < audio_buffers; i++)
       pm_audio_meter_add (stats->audio,
@@ -325,6 +380,7 @@ on_probe (GstPad * pad, GstPadProbeInfo * info, gpointer user_data)
   }
   g_mutex_unlock (&stats->lock);
   g_free (audio_list);
+  pm_picture_free (old_picture);
   return GST_PAD_PROBE_OK;
 }
 
@@ -339,6 +395,7 @@ stats_new (GstPad * pad)
   g_mutex_init (&stats->lock);
   stats->last_arrival = GST_CLOCK_TIME_NONE;
   stats->refreshed = GST_CLOCK_TIME_NONE;
+  stats->picture_at = GST_CLOCK_TIME_NONE;
   stats->slot.begin = gst_util_get_timestamp ();
   gst_segment_init (&stats->values.segment, GST_FORMAT_UNDEFINED);
 
@@ -351,6 +408,8 @@ stats_new (GstPad * pad)
 
       stats->audio = pm_audio_meter_new (caps, &reason);
       stats->audio_reason = reason;
+      stats->video = pm_video_thumb_new (caps, &reason);
+      stats->video_reason = reason;
       gst_caps_unref (caps);
     }
   }
@@ -379,6 +438,8 @@ entry_free (PmEntry * entry)
   g_hash_table_unref (entry->clients);
   stats_unref (entry->stats);
   g_free (entry->audio_reason);
+  g_free (entry->video_reason);
+  pm_picture_free (entry->picture);
   g_free (entry);
 }
 
@@ -413,7 +474,7 @@ pm_monitor_add (PmMonitor * monitor, gpointer client, guint64 pad_id)
   entry = g_hash_table_lookup (monitor->entries, &pad_id);
   if (entry != NULL) {
     g_hash_table_add (entry->clients, client);
-    entry->audio_new_client = TRUE;
+    entry->new_client = TRUE;
     g_mutex_unlock (&monitor->lock);
     return TRUE;
   }
@@ -432,6 +493,7 @@ pm_monitor_add (PmMonitor * monitor, gpointer client, guint64 pad_id)
   g_hash_table_add (entry->clients, client);
   entry->stats = stats_new (pad);
   entry->audio_seq = G_MAXUINT;
+  entry->video_seq = G_MAXUINT;
   entry->probe = gst_pad_add_probe (pad, GST_PAD_PROBE_TYPE_BUFFER |
       GST_PAD_PROBE_TYPE_BUFFER_LIST | GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM |
       GST_PAD_PROBE_TYPE_EVENT_FLUSH, on_probe, entry->stats,
@@ -771,10 +833,11 @@ pm_monitor_count (PmMonitor * monitor)
   return n;
 }
 
-/* Ends the audio window of every watched pad. Called by the server every
- * 50 ms while pads are watched, before it sends "audio". */
+/* Ends the audio window of every watched pad, and takes the newest
+ * pictures. Called by the server every 50 ms while pads are watched,
+ * before it sends "audio" and "video". */
 void
-pm_monitor_audio_tick (PmMonitor * monitor)
+pm_monitor_media_tick (PmMonitor * monitor)
 {
   GstClockTime now = gst_util_get_timestamp ();
   GHashTableIter iter;
@@ -786,9 +849,27 @@ pm_monitor_audio_tick (PmMonitor * monitor)
     PmEntry *entry = value;
     PmPadStats *stats = entry->stats;
 
-    entry->audio_announce = entry->audio_new_client;
-    entry->audio_new_client = FALSE;
+    entry->audio_announce = entry->video_announce = entry->new_client;
+    entry->new_client = FALSE;
     g_mutex_lock (&stats->lock);
+    if (stats->video_seq != entry->video_seq) {
+      entry->video_seq = stats->video_seq;
+      entry->video_shown = stats->video != NULL;
+      if (stats->video != NULL)
+        entry->video_info = *pm_video_thumb_info (stats->video);
+      g_free (entry->video_reason);
+      entry->video_reason = g_strdup (stats->video_reason);
+      g_clear_pointer (&entry->picture, pm_picture_free);
+      entry->video_announce = TRUE;
+    }
+    entry->video_fresh = FALSE;
+    if (stats->picture != NULL && stats->picture_seq != entry->picture_seq) {
+      pm_picture_free (entry->picture);
+      entry->picture = stats->picture;
+      stats->picture = NULL;
+      entry->picture_seq = stats->picture_seq;
+      entry->video_fresh = TRUE;
+    }
     if (stats->audio_seq != entry->audio_seq) {
       entry->audio_seq = stats->audio_seq;
       entry->audio_metered = stats->audio != NULL;
@@ -942,6 +1023,79 @@ pm_monitor_audio_json (PmMonitor * monitor, gpointer client)
     else
       g_string_append_c (json, ',');
     append_audio (json, entry, now);
+  }
+  g_ptr_array_unref (entries);
+  g_mutex_unlock (&monitor->lock);
+  if (json == NULL)
+    return NULL;
+  g_string_append (json, "]}");
+  return g_string_free (json, FALSE);
+}
+
+static void
+append_video (GString * json, PmEntry * entry, GstClockTime now)
+{
+  const GstVideoInfo *info = &entry->video_info;
+  const PmPicture *p = entry->picture;
+
+  g_string_append_c (json, '{');
+  pm_json_append_value (json, "pad", entry->pad_id);
+  pm_json_append_member_string (json, "pad_path", entry->pad_path);
+  if (!entry->video_shown) {
+    pm_json_append_member_string (json, "unavailable", entry->video_reason);
+    pm_json_close (json, '}');
+    return;
+  }
+  pm_json_append_member_string (json, "format",
+      gst_video_format_to_string (GST_VIDEO_INFO_FORMAT (info)));
+  pm_json_append_value (json, "width", GST_VIDEO_INFO_WIDTH (info));
+  pm_json_append_value (json, "height", GST_VIDEO_INFO_HEIGHT (info));
+  if (p == NULL) {
+    g_string_append (json, "\"picture\":null}");
+    return;
+  }
+  g_string_append (json, "\"picture\":{");
+  pm_json_append_value (json, "width", p->width);
+  pm_json_append_value (json, "height", p->height);
+  pm_json_append_value (json, "pts", p->pts);
+  g_string_append_printf (json, "\"brightness_avg\":%.3f,"
+      "\"brightness_max\":%.3f,\"black\":%s,", p->brightness_avg,
+      p->brightness_max, p->black ? "true" : "false");
+  pm_json_append_value (json, "unchanged_for", now - p->unchanged_since);
+  {
+    gchar *rgb = g_base64_encode (p->rgb, (gsize) p->width * p->height * 3);
+
+    pm_json_append_member_string (json, "rgb", rgb);
+    g_free (rgb);
+  }
+  pm_json_close (json, '}');
+  g_string_append_c (json, '}');
+}
+
+/* The client's video pads with a new picture this round, or whose format
+ * or reason is (re)announced, as {"video":[...]}, or NULL. */
+gchar *
+pm_monitor_video_json (PmMonitor * monitor, gpointer client)
+{
+  GstClockTime now = gst_util_get_timestamp ();
+  GString *json = NULL;
+  GPtrArray *entries;
+  guint i;
+
+  g_mutex_lock (&monitor->lock);
+  entries = entries_of (monitor, client);
+  g_ptr_array_sort (entries, compare_entries);
+  for (i = 0; i < entries->len; i++) {
+    PmEntry *entry = g_ptr_array_index (entries, i);
+
+    if (!entry->video_fresh && !(entry->video_announce &&
+            (entry->video_shown || entry->video_reason != NULL)))
+      continue;
+    if (json == NULL)
+      json = g_string_new ("{\"video\":[");
+    else
+      g_string_append_c (json, ',');
+    append_video (json, entry, now);
   }
   g_ptr_array_unref (entries);
   g_mutex_unlock (&monitor->lock);
