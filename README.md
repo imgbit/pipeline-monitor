@@ -26,6 +26,12 @@ variable, without changing your application, and open http://127.0.0.1:8765/.
   video), bytes/s, gaps between buffers, delay against the clock, timestamps,
   flags and segment; cards follow their pad or can be dragged off and kept
   on screen. Probes run only on pinned pads
+- Pictures and sound levels: a pinned pad of raw video shows a small
+  picture of its frames once a second, with their brightness, black frames
+  and how long the picture has stayed exactly the same (a frozen source or
+  a stuck decoder); a pinned pad of raw audio shows a level meter for its
+  first two channels: peak and RMS in dBFS, clipped samples and silence.
+  Live only, not recorded
 - Queue fill: on every queue and queue2, and on each stream of a
   multiqueue, a bar and a number show how full it is and the limit it is
   nearest (buffers, bytes or time); hover for all three against their

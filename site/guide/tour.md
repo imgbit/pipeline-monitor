@@ -33,6 +33,12 @@
 - **Pinned pads:** click a pad to pin it: a card with buffers per second,
   gaps, the last buffer's age and timestamps, its delay against the
   clock. Fold, move or close the card.
+- **Pictures and levels:** pin a pad of raw video for a small picture of
+  it once a second, with its brightness, black frames, and how long the
+  picture has stayed exactly the same (a frozen source or a stuck
+  decoder). Pin a pad of raw audio for a level meter of its first two
+  channels: peak and RMS in dBFS, clipped samples and silence. Both are
+  live only: recordings do not keep them.
 - **Pinned properties:** in the details, pin a property: a card with its
   value, live; counters show their rate.
 - **Latency:** **Measure** in an element's details, or **latency** under
