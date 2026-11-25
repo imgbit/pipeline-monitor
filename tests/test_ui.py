@@ -29,13 +29,19 @@ import urllib.request
 
 PIPELINE = ("videotestsrc is-live=true ! jpegenc ! decodebin3 ! queue ! "
             "tee name=t ! queue ! videoconvert ! fakesink")
-# Static branches for the README screenshot ("t" would be toggled).
-SHOT_PIPELINE = ("videotestsrc is-live=true ! jpegenc ! decodebin3 ! queue ! "
-                 "tee name=split ! queue ! videoconvert ! fakesink "
-                 "split. ! queue ! fakesink "
-                 "audiotestsrc is-live=true ! opusenc ! decodebin3 ! "
-                 "audioconvert ! queue max-size-time=500000000 ! "
-                 "fakesink sync=true ts-offset=300000000")
+# The README screenshot: test pattern bars with an orange ball, and two
+# beating sines, so the picture and the meter both show something.
+SHOT_PIPELINE = (
+    "compositor name=mix sink_1::width=320 sink_1::height=240 ! "
+    "videoconvert ! queue name=display ! fakesink sync=true "
+    "videotestsrc is-live=true pattern=smpte ! mix. "
+    "videotestsrc is-live=true pattern=ball foreground-color=0xffff8a00 "
+    "background-color=0x00000000 ! "
+    "video/x-raw,format=BGRA,width=160,height=120 ! mix. "
+    "audiomixer name=amix ! audio/x-raw,channels=2 ! queue name=sound ! "
+    "fakesink sync=true "
+    "audiotestsrc is-live=true freq=440 volume=0.3 ! amix. "
+    "audiotestsrc is-live=true freq=441 volume=0.3 ! amix.")
 TRANSFORM = "document.querySelector('#graph > g').getAttribute('transform')"
 AUTO_FIT = "document.getElementById('auto-fit').getAttribute('aria-pressed')"
 NODES = "document.querySelectorAll('#graph .node').length"
@@ -4410,7 +4416,7 @@ def check_pins(browser):
 
 
 def screenshot(browser, url, path):
-    browser.call("Emulation.setDeviceMetricsOverride", width=1280, height=660,
+    browser.call("Emulation.setDeviceMetricsOverride", width=1280, height=720,
                  deviceScaleFactor=2, mobile=False)
     browser.call("Emulation.setEmulatedMedia", features=[
         {"name": "prefers-color-scheme", "value": "light"}])
@@ -4427,35 +4433,36 @@ def screenshot(browser, url, path):
     browser.click("#measure-all")
     browser.wait("document.querySelectorAll('#graph .latency-text').length "
                  ">= 5", timeout=6)
-    # The video source's pad pinned, folded to its summary line.
-    src = browser.eval(f"{element_selector('videotestsrc0')}?.dataset.id")
-    browser.click_until(f'#graph .node[data-id="{src}"] .pad[data-port]',
-                        "document.querySelectorAll('.pin-card').length === 1")
-    folded = "document.querySelector('.pin-card').classList.contains('folded')"
-    assert browser.click_until(".pin-card .pin-fold", folded), \
-        f"the pin card did not fold\n{browser.history()}"
-    # The audio queue's details: its level, latency and properties.
-    queue = browser.eval(f"{element_selector('queue3')}?.dataset.id")
-    section = "document.querySelector('#details .latency-section')"
-    browser.click_until(f'#graph .node[data-id="{queue}"] > rect.box',
-                        f"/ms avg/.test({section}?.textContent)")
-    # Smaller and to the left, so the queue is not under the panel.
+    # The picture and the meter: the two queues' outputs pinned.
+    for name in ("display", "sound"):
+        port = browser.eval(pad_id_expression(name, "src"))
+        cards = "document.querySelectorAll('.pin-card').length"
+        n = browser.eval(cards)
+        assert browser.click_until(f'#graph [data-port="p{port}"]',
+                                   f"{cards} === {n + 1}"), name
+    # The graph one step smaller, up and to the left.
     browser.click("#zoom-out")
-    for kind, x, y in (("mousePressed", 700, 120), ("mouseMoved", 620, 110),
-                       ("mouseMoved", 590, 95), ("mouseReleased", 590, 95)):
+    for kind, x, y in (("mousePressed", 640, 165), ("mouseMoved", 585, 90),
+                       ("mouseMoved", 530, 15), ("mouseReleased", 530, 15)):
         browser.call("Input.dispatchMouseEvent", type=kind, x=x, y=y,
-                     button="left", buttons=1, clickCount=1)
-    # The card moved down off the bins, still at its pad (under 100 px).
-    x, y = browser.eval("(r => [r.left + 30, r.top + r.height / 2])("
-                        "document.querySelector('.pin-card .pin-title')"
+                     button="left", buttons=0 if kind == "mouseReleased"
+                     else 1, clickCount=1)
+    time.sleep(0.5)
+    # The picture's card in the free column on the right.
+    x, y = browser.eval("(r => [r.x + 30, r.y + r.height / 2])([...document"
+                        ".querySelectorAll('.pin-card')].find(c => c"
+                        ".querySelector('.pin-title').textContent === "
+                        "'display:src').querySelector('.pin-title')"
                         ".getBoundingClientRect())")
-    for kind, dy in (("mousePressed", 0), ("mouseMoved", 40),
-                     ("mouseMoved", 80), ("mouseReleased", 80)):
-        browser.call("Input.dispatchMouseEvent", type=kind, x=x, y=y + dy,
+    for i in range(13):
+        kind = "mousePressed" if i == 0 else "mouseMoved"
+        browser.call("Input.dispatchMouseEvent", type=kind,
+                     x=x + (1030 - x) * i / 12, y=y + (70 - y) * i / 12,
                      button="left", buttons=1, clickCount=1)
-    # The threads view, its legend below the audio branch.
-    browser.click("#threads")
-    time.sleep(4)
+    browser.call("Input.dispatchMouseEvent", type="mouseReleased", x=1030,
+                 y=70, button="left", buttons=0, clickCount=1)
+    browser.call("Input.dispatchMouseEvent", type="mouseMoved", x=5, y=700)
+    time.sleep(3)
     browser.screenshot(path)
 
 
