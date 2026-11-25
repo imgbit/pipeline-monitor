@@ -83,9 +83,9 @@ pm_video_thumb_new (GstCaps * caps, gchar ** reason)
           GST_VIDEO_DITHER_NONE,
           GST_VIDEO_CONVERTER_OPT_THREADS, G_TYPE_UINT, 1, NULL));
   if (thumb->converter == NULL) {
-    g_free (thumb);
     *reason = g_strdup_printf ("format %s: no picture",
         gst_video_format_to_string (GST_VIDEO_INFO_FORMAT (&thumb->in)));
+    g_free (thumb);
     return NULL;
   }
   thumb->unchanged_since = GST_CLOCK_TIME_NONE;
