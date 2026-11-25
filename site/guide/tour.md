@@ -33,6 +33,9 @@
 - **Pinned pads:** click a pad to pin it: a card with buffers per second,
   gaps, the last buffer's age and timestamps, its delay against the
   clock. Fold, move or close the card.
+
+![A pinned video pad with its picture, and a pinned audio pad with its level meter](images/media.png)
+
 - **Pictures and levels:** pin a pad of raw video for a small picture of
   it once a second, with its brightness, black frames, and how long the
   picture has stayed exactly the same (a frozen source or a stuck

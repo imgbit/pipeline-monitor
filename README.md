@@ -2,7 +2,7 @@
 
 See a running GStreamer pipeline live in your browser.
 
-![pipeline-monitor recording a pipeline in the threads view: each element in the colour of the thread that runs it, latency under every element, a pinned pad's live values, and the audio queue's level, latency and properties](.github/screenshot.png)
+![pipeline-monitor recording a pipeline: a pinned video pad showing its picture (colour bars with an orange ball), a pinned audio pad with its stereo level meter, and latency under every element](.github/screenshot.png)
 
 Short videos: [Fix your GStreamer pipeline](https://www.youtube.com/playlist?list=PLHYOr70akpmI)
 on YouTube, one problem per episode.
