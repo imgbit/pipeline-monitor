@@ -3701,7 +3701,8 @@ def check_site(browser, serve):
         with open(os.path.join(out, "guide", "tour.html"),
                   encoding="utf-8") as f:
             page = f.read()
-        assert "goatcounter" in page and "without cookies" in page
+        # Counted there too; the note is on the main page only.
+        assert "goatcounter" in page and "without cookies" not in page
     # The package's own page stays as it is: no site tags, no counter.
     with open(os.path.join(here, "..", "web", "index.html"),
               encoding="utf-8") as f:

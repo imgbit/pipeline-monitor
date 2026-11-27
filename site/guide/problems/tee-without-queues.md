@@ -21,12 +21,12 @@ pipeline never gets past PAUSED: each side waits for the other.
 `GST_TRACERS=pipeline-monitor` and open the address it prints. Within a few
 seconds, under **Problems**:
 
-- **Data flow blocked at pipeline0/videoconvert0:src → pipeline0/display:sink**
-  — The push into pipeline0/display:sink has not returned. display is in
+- **Data flow blocked at pipeline0/videoconvert0:src → pipeline0/display:sink
+  for 9 s** (counting up) — The push into pipeline0/display:sink has not returned. display is in
   PAUSED and prerolled.
 - **pipeline0/filesink0:sink has no data** — The nearest pad before it that
   has received data is pipeline0/x264enc0:sink.
-- **pipeline0 has not reached PAUSED (it is READY)** — Still changing
+- **pipeline0 has not reached PAUSED for 9 s (it is READY)** — Still changing
   state: filesink0 (READY → PAUSED). Prerolled: display. Waiting for
   preroll: filesink0.
 

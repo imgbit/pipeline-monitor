@@ -200,7 +200,7 @@ Then open the address it prints, by default http://127.0.0.1:8765/.
 The server has no authentication. It only accepts connections from the same
 machine and only from its own page.
 
-### In the terminal, and for AI assistants
+### In the terminal
 
 `pipeline-monitor status` prints what the page shows, as text: each
 running program with the tracer, its pipelines and states, queue fill,
@@ -215,16 +215,10 @@ pipeline-monitor status --log            # the errors and warnings logged
 pipeline-monitor status rec.jsonl --at 12.5  # a recording, at 12.5 s
 ```
 
-It exits with 1 when it finds an error, so scripts and AI coding
-assistants (Claude Code, Cursor, Codex and others that run commands) can
-use it directly: ask yours to "run `pipeline-monitor status` and find out
-why the pipeline stalls". `--json` gives the plugin's own messages, and
-the same data is on HTTP, e.g.
-`curl -s http://127.0.0.1:8765/api/findings`; see
+It exits with 1 when it finds an error, so scripts can use it as it is.
+`--json` gives the plugin's own messages, and the same data is on HTTP,
+e.g. `curl -s http://127.0.0.1:8765/api/findings`; see
 [docs/protocol.md](docs/protocol.md).
-
-Would an MCP server help you (for assistants that cannot run commands)?
-Say so in [Discussions](https://github.com/imgbit/pipeline-monitor/discussions).
 
 ### Recordings
 
@@ -270,8 +264,7 @@ what passes between appsink and appsrc, and detects pipeline issues. It
 records what it shows to files you can play back later or share, also
 without the program (the `pipeline-monitor` command) and on the web, with
 demo recordings and a guide. It opens GStreamer's `.dot` files, and
-`pipeline-monitor status` prints what it sees as text, for people and AI
-assistants. Each open page is independent, and the
+`pipeline-monitor status` prints what it sees as text. Each open page is independent, and the
 interface it uses is documented for other tools
 ([docs/protocol.md](docs/protocol.md), protocol 1).
 It is tested on macOS (Apple Silicon) with GStreamer 1.28.8, and in CI on

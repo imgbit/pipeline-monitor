@@ -29,4 +29,49 @@ Sizes take `K`, `M` or `G`.
 | `--recordings DIR` | another folder |
 | `--port N` | the port (default 8766, or the next free one) |
 | `--no-browser` | only print the address |
+| `pipeline-monitor status` | what the page shows, as text ([below](#status)) |
 | `--version` | the version |
+
+<h3 id="status">In the terminal: <code>pipeline-monitor status</code></h3>
+
+With your program running with the tracer, `pipeline-monitor status`
+prints what the page shows: each program, its pipelines and states, queue
+fill, CPU, the problems found with their hints, and errors and warnings.
+
+```
+appsrc-scenarios (pid 10168) at http://127.0.0.1:8765/
+  GStreamer 1.28.8, pipeline-monitor 0.14.0
+camera0  PLAYING  live  running 0:00:08.204  latency 0 ns  clock GstSystemClock
+  3 elements; queues, fullest first: out0 0 %
+display  PLAYING  live  running 0:00:08.203  latency 0 ns  clock GstSystemClock
+  3 elements; queues, fullest first: in 8640 % bytes
+Process: CPU 1 % of a core, memory 42.8 MiB, 6 threads
+Problems
+  warning  display/in has held more than its max-bytes for 7 s (86×), and keeps queueing
+           More is pushed into it than leaves it. Past its limits
+           appsrc only emits enough-data; to stop there, set
+           block=true (the push waits) or leaky-type (it drops).
+  warning  display/in sends camera0/out0's buffers in a segment from 0:00:00.000, not the one they arrived in (from 0:00:05.000)
+           Their timestamps are read against another start, so they
+           play at another time. appsrc keeps its own segment
+           unless samples are pushed (push-sample) with
+           handle-segment-change=true and format=time.
+Log: no errors or warnings
+```
+
+Every line is something pipeline-monitor observed in the running
+program: states, levels, the formats negotiated, what elements reported.
+Hints explain what an observation means; none is a guess.
+
+| | |
+|---|---|
+| `--element NAME` | one element: its pads with their caps and links, its queue, the latency it reports, the properties changed from their defaults, its problems and log entries |
+| `--pad ELEMENT:PAD` | one pad, watched for 2.5 s: buffers per second, bytes, gaps, the last buffer; for raw audio the peak and RMS level of each channel in dBFS, clipped samples and silence; for raw video the picture's brightness, whether it is black, and how long it has not changed |
+| `--graph` | every element, link and negotiated format |
+| `--log` (`--last N`) | errors and warnings with GStreamer's details |
+| `--watch` | again every second |
+| `FILE.jsonl` (`--at 12.5`) | a recording, or the moment 12.5 s in |
+| `--json` | the plugin's own messages, one per line ([format](https://github.com/imgbit/pipeline-monitor/blob/main/docs/protocol.md)) |
+
+It exits with 1 when it finds an error (warnings do not count), 3 when no
+program is running with the tracer, so scripts can use it as it is.

@@ -38,6 +38,7 @@ SITE_DESCRIPTION = (
 
 # Visits counted without cookies (GoatCounter; it does not count localhost).
 # Only on the published site: the packages' page loads nothing from outside.
+# The note about it is on the main page only.
 COUNTER = ('<script data-goatcounter="https://imaginarybit.goatcounter.com/'
            'count" async src="https://gc.zgo.at/count.js"></script>')
 PRIVACY = ("Visits to this site are counted without cookies (GoatCounter). "
@@ -88,12 +89,15 @@ GUIDE = [
      "graph, threads, problems, queue levels, pinned pads, latency, "
      "performance and recordings."),
     ("options", "Options", "pipeline-monitor's options: port, recordings, "
-     "recording from the start, waiting for the page, and more."),
-    ("assistant", "AI assistants", "Let an AI assistant read your running "
-     "pipeline with pipeline-monitor status: problems, queues, caps, logs."),
+     "recording from the start, waiting for the page, and the "
+     "pipeline-monitor command, also as text in the terminal."),
     ("troubleshooting", "Troubleshooting", "When pipeline-monitor shows no "
      "address, no page or no graph: the usual causes and their fixes."),
 ]
+# The video series, one problem per episode.
+PLAYLIST = "https://www.youtube.com/playlist?list=PLHYOr70akpmI"
+# Old guide pages and where their content is now.
+MOVED = {"assistant": "options.html#status"}
 # Common pipeline problems, one page each (site/guide/problems/NAME.md),
 # listed on the guide's "Problems" page.
 PROBLEMS = [
@@ -105,6 +109,11 @@ PROBLEMS = [
      "A GStreamer pipeline ends at once with \"Delayed linking failed\" and "
      "\"Internal data stream error\": why the link fails, how to see it, "
      "and the fix."),
+    ("live-video-seconds-behind",
+     "Live video seconds behind: x264enc holds the frames",
+     "A live GStreamer pipeline with x264enc shows its picture about two "
+     "seconds late: x264's lookahead, how to measure it per element, and "
+     "the fix, tune=zerolatency."),
 ]
 
 PAGE = """<!doctype html>
@@ -129,7 +138,6 @@ PAGE = """<!doctype html>
 </main>
 <footer>pipeline-monitor {version} &middot;
 <a href="https://github.com/imgbit/pipeline-monitor">source on GitHub</a>
-<br>{privacy}
 </footer>
 </body>
 </html>
@@ -164,7 +172,9 @@ def build_guide(out, require):
                os.path.join(source, "problems", f"{name}.md"))
               for name, title, description in PROBLEMS]
     listing = "# Problems\n\nCommon pipeline problems: what you see, why, " \
-        "what pipeline-monitor shows, and the fix.\n\n" + "\n".join(
+        "what pipeline-monitor shows, and the fix. Short videos of them, " \
+        "one problem each: [Fix your GStreamer pipeline](" + PLAYLIST + \
+        ") on YouTube.\n\n" + "\n".join(
             f"- [{t}]({n}.html): {d}" for n, t, d in PROBLEMS) + "\n"
     pages.append(("problems", "Problems", "Common GStreamer pipeline "
                   "problems: the symptom, the cause, what pipeline-monitor "
@@ -188,7 +198,15 @@ def build_guide(out, require):
                 version=html.escape(version()),
                 social=social(f"{title} - pipeline-monitor guide",
                               description, f"{SITE}guide/{name}.html"),
-                counter=COUNTER, privacy=html.escape(PRIVACY)))
+                counter=COUNTER))
+    # Pages that moved: their old address leads to the new place.
+    for old, new in MOVED.items():
+        with open(os.path.join(target, f"{old}.html"), "w",
+                  encoding="utf-8") as f:
+            f.write('<!doctype html>\n<meta charset="utf-8">\n'
+                    f'<meta http-equiv="refresh" content="0; url={new}">\n'
+                    f'<link rel="canonical" href="{SITE}guide/{new}">\n'
+                    f'<a href="{new}">Moved here</a>\n')
     return True
 
 
