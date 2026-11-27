@@ -80,7 +80,7 @@ On Ubuntu 24.04 or Debian 12 (amd64, arm64), download the `.deb` for your
 system, then:
 
 ```sh
-sudo apt install ./pipeline-monitor_0.13.0-1.ubuntu24.04_amd64.deb
+sudo apt install ./pipeline-monitor_0.14.0-1.ubuntu24.04_amd64.deb
 ```
 
 It goes where the system's GStreamer finds it. To update, install a newer
@@ -261,8 +261,9 @@ Say so in [Discussions](https://github.com/imgbit/pipeline-monitor/discussions).
 
 ## Status
 
-Version 0.13 shows the pipeline graph, errors and warnings, negotiated
-caps, live values of pinned pads, queue fill, the pipeline's clock and
+Version 0.14 shows the pipeline graph, errors and warnings, negotiated
+caps, live values of pinned pads with a picture of video and the levels
+of audio, queue fill, the pipeline's clock and
 times, element properties, live when pinned, latency per element and
 between pads, which thread runs each element and what each thread costs,
 what passes between appsink and appsrc, and detects pipeline issues. It
