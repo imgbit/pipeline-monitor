@@ -8,15 +8,15 @@ the page: run your program with the tracer, then ask the assistant to run
 ### What it prints
 
 ```
-appsrc-scenarios (pid 15777) at http://127.0.0.1:8765/
-  GStreamer 1.28.8, pipeline-monitor 0.13.0
-camera0  PLAYING  live  running 0:00:08.233  latency 0 ns  clock GstSystemClock
+appsrc-scenarios (pid 10168) at http://127.0.0.1:8765/
+  GStreamer 1.28.8, pipeline-monitor 0.14.0
+camera0  PLAYING  live  running 0:00:08.204  latency 0 ns  clock GstSystemClock
   3 elements; queues, fullest first: out0 0 %
-display  PLAYING  live  running 0:00:08.232  latency 0 ns  clock GstSystemClock
-  3 elements; queues, fullest first: in 8582 % bytes
-Process: CPU 1 % of a core, memory 43.1 MiB, 6 threads
+display  PLAYING  live  running 0:00:08.203  latency 0 ns  clock GstSystemClock
+  3 elements; queues, fullest first: in 8640 % bytes
+Process: CPU 1 % of a core, memory 42.8 MiB, 6 threads
 Problems
-  warning  display/in has held more than its max-bytes for 8 s (86×), and keeps queueing
+  warning  display/in has held more than its max-bytes for 7 s (86×), and keeps queueing
            More is pushed into it than leaves it. Past its limits
            appsrc only emits enough-data; to stop there, set
            block=true (the push waits) or leaky-type (it drops).
