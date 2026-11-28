@@ -80,7 +80,7 @@ On Ubuntu 24.04 or Debian 12 (amd64, arm64), download the `.deb` for your
 system, then:
 
 ```sh
-sudo apt install ./pipeline-monitor_0.14.0-1.ubuntu24.04_amd64.deb
+sudo apt install ./pipeline-monitor_0.14.1-1.ubuntu24.04_amd64.deb
 ```
 
 It goes where the system's GStreamer finds it. To update, install a newer
