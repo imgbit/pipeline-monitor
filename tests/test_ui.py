@@ -3805,9 +3805,15 @@ def check_site(browser, serve):
             "no pad tooltip in a recording"
         assert browser.eval(f"!{tip}.textContent.includes('pin')"), \
             "a recording's pad tooltip offers pinning"
+        # A panel open when the recording is closed goes with it: no
+        # problems, log or performance left from it over the welcome.
+        open_panel(browser, "performance")
         browser.click("#viewing-close")
         assert browser.wait(f"{banner}.hidden && !{welcome}.hidden"), \
             "the welcome not back after Close"
+        assert browser.wait("[...document.querySelectorAll('.log-panel')]"
+                            ".every(p => p.hidden)"), \
+            "a panel stayed open after the recording was closed"
         # Open your own recording…: a recording opens at once; a file that
         # is not one is refused in the list, opened to say so.
         browser.set_file("#welcome-file", recorded)

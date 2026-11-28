@@ -1628,9 +1628,9 @@ function closeRecording() {
   state.places = { tops: new Map() };
   history.replaceState(null, "", "#viewer");
   update();
-  // On the site the welcome is back; elsewhere the list.
-  if (siteList === null)
-    dock.open("recordings");
+  // On the site the welcome is back, and no panel is left showing the
+  // recording's problems, log or performance; elsewhere the list.
+  dock.open(siteList === null ? "recordings" : null);
 }
 
 // A recording in the program's folder (or "opened": the file the command
