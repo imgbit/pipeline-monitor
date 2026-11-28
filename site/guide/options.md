@@ -39,12 +39,12 @@ prints what the page shows: each program, its pipelines and states, queue
 fill, CPU, the problems found with their hints, and errors and warnings.
 
 ```
-appsrc-scenarios (pid 10168) at http://127.0.0.1:8765/
-  GStreamer 1.28.8, pipeline-monitor 0.14.0
-camera0  PLAYING  live  running 0:00:08.204  latency 0 ns  clock GstSystemClock
+appsrc-scenarios (pid 27033) at http://127.0.0.1:8765/
+  GStreamer 1.28.8, pipeline-monitor 0.14.1
+camera0  PLAYING  live  running 0:00:08.205  latency 0 ns  clock GstSystemClock
   3 elements; queues, fullest first: out0 0 %
-display  PLAYING  live  running 0:00:08.203  latency 0 ns  clock GstSystemClock
-  3 elements; queues, fullest first: in 8640 % bytes
+display  PLAYING  live  running 0:00:08.205  latency 0 ns  clock GstSystemClock
+  3 elements; queues, fullest first: in 8582 % bytes
 Process: CPU 1 % of a core, memory 42.8 MiB, 6 threads
 Problems
   warning  display/in has held more than its max-bytes for 7 s (86×), and keeps queueing
